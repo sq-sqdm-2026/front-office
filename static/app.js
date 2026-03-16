@@ -360,6 +360,10 @@ async function simDays(n) {
   await loadState();
   const ticker = document.getElementById('ticker');
   if (r) ticker.textContent = `Simulated ${n}d, ${r.games_played} games | ${fmtDate(r.new_date)}`;
+  // After advancing the date, reset calendar to show current month
+  const d = new Date(STATE.currentDate + 'T12:00:00');
+  STATE.calMonth = d.getMonth();
+  STATE.calYear = d.getFullYear();
   const active = document.querySelector('.content-screen.active');
   if (active) showScreen(active.id.replace('s-', ''));
   btns.forEach((b, i) => { b.disabled = false; b.textContent = i === 0 ? '▶ Day' : '▶▶ Week'; });
@@ -370,6 +374,20 @@ async function simDays(n) {
 // ============================================================
 async function loadCalendar() {
   const el = document.getElementById('s-calendar');
+
+  // Sync calendar month/year with current game date to ensure we always show the current month
+  // This is especially important after simulating days
+  const d = new Date(STATE.currentDate + 'T12:00:00');
+  const currentMonth = d.getMonth();
+  const currentYear = d.getFullYear();
+
+  // If calMonth/calYear haven't been set yet, initialize them
+  // Otherwise, if they differ from current date, update them (user navigated and sim advanced)
+  if (STATE.calMonth === null || STATE.calYear === null) {
+    STATE.calMonth = currentMonth;
+    STATE.calYear = currentYear;
+  }
+
   const m = STATE.calMonth, y = STATE.calYear;
   const monthNames = ['January','February','March','April','May','June','July','August','September','October','November','December'];
 
@@ -1041,6 +1059,49 @@ async function showPlayer(pid) {
     </table></div>`;
   }
 
+  // Determine which action buttons to show
+  const isUserTeam = p.team_id === STATE.userTeamId;
+  const isFreeAgent = !p.team_id;
+  const isActive = p.roster_status === 'active';
+  const isMinors = p.roster_status && p.roster_status.includes('minors');
+  const isIL = p.roster_status && p.roster_status.includes('il_');
+  const hasOptionYears = p.option_years_remaining && p.option_years_remaining > 0;
+  const onFortyMan = p.on_forty_man;
+
+  let actionBarHtml = '';
+  if (isUserTeam || isFreeAgent) {
+    actionBarHtml = '<div class="player-action-bar" style="display:flex;gap:4px;margin-top:8px;flex-wrap:wrap;border-top:1px solid var(--border);padding-top:8px">';
+
+    if (isUserTeam && isActive) {
+      // Active roster actions
+      if (hasOptionYears) {
+        actionBarHtml += `<button class="btn btn-sm" onclick="showOptionMenu(${p.id})">Option to Minors</button>`;
+      }
+      actionBarHtml += `<button class="btn btn-sm" onclick="showILMenu(${p.id})">Place on IL</button>`;
+      actionBarHtml += `<button class="btn btn-sm" onclick="confirmDFA(${p.id})">DFA</button>`;
+      actionBarHtml += `<button class="btn btn-sm" onclick="confirmRelease(${p.id})">Release</button>`;
+      actionBarHtml += `<button class="btn btn-sm" onclick="showExtendModal(${p.id})">Extend Contract</button>`;
+      actionBarHtml += `<button class="btn btn-sm" onclick="confirmAddToBlock(${p.id})">Add to Trading Block</button>`;
+    } else if (isUserTeam && isMinors) {
+      // Minor league actions
+      actionBarHtml += `<button class="btn btn-sm" onclick="confirmCallUp(${p.id})">Call Up</button>`;
+      actionBarHtml += `<button class="btn btn-sm" onclick="confirmRelease(${p.id})">Release</button>`;
+      if (!onFortyMan) {
+        actionBarHtml += `<button class="btn btn-sm" onclick="confirmAddToFortyMan(${p.id})">Add to 40-Man</button>`;
+      }
+    } else if (isUserTeam && isIL) {
+      // IL actions
+      actionBarHtml += `<button class="btn btn-sm" onclick="confirmActivateFromIL(${p.id})">Activate from IL</button>`;
+    }
+
+    if (isFreeAgent) {
+      // Free agent actions
+      actionBarHtml += `<button class="btn btn-primary btn-sm" onclick="showSignPlayerModal(${p.id})">Sign Player</button>`;
+    }
+
+    actionBarHtml += '</div>';
+  }
+
   body.innerHTML = `
     <div class="modal-header">
       <div>
@@ -1055,6 +1116,7 @@ async function showPlayer(pid) {
         <button class="btn btn-sm" style="margin-top: 6px;" onclick="compareWithPlayer(${p.id})">Compare</button>
       </div>
     </div>
+    ${actionBarHtml}
     <div class="modal-tabs">
       <button class="modal-tab active" onclick="switchPlayerTab(event, 'overview')">Overview</button>
       <button class="modal-tab" onclick="switchPlayerTab(event, 'stats')">Stats</button>
@@ -1083,6 +1145,388 @@ function switchPlayerTab(e, tab) {
   document.querySelectorAll('[id^="player-tab-"]').forEach(t => t.style.display = 'none');
   e.target.classList.add('active');
   document.getElementById(`player-tab-${tab}`).style.display = 'block';
+}
+
+// ============================================================
+// PLAYER ACTION BUTTONS
+// ============================================================
+async function confirmDFA(pid) {
+  if (confirm('Designate this player for assignment?')) {
+    const r = await api(`/roster/dfa/${pid}`, { method: 'POST' });
+    if (r?.success) {
+      showToast('Player designated for assignment', 'success');
+      closeModal();
+      loadRoster();
+    } else {
+      showToast(r?.error || 'Error designating player', 'error');
+    }
+  }
+}
+
+function showOptionMenu(pid) {
+  const levels = [
+    { val: 'minors_aaa', label: 'AAA' },
+    { val: 'minors_aa', label: 'AA' },
+    { val: 'minors_low', label: 'Low-A' }
+  ];
+  const opts = levels.map(l => `<option value="${l.val}">${l.label}</option>`).join('');
+  const choice = prompt(`Option player to which level?\n\nAAA\nAA\nLow-A`, 'minors_aaa');
+  if (choice) {
+    optionPlayer(pid, choice);
+  }
+}
+
+async function optionPlayer(pid, level) {
+  const r = await api(`/roster/option/${pid}?level=${level}`, { method: 'POST' });
+  if (r?.success) {
+    showToast(`Player optioned to ${level}`, 'success');
+    closeModal();
+    loadRoster();
+  } else {
+    showToast(r?.error || 'Error optioning player', 'error');
+  }
+}
+
+function showILMenu(pid) {
+  const tiers = ['10', '15', '60'];
+  let html = '<div style="position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:var(--bg-1);border:1px solid var(--border);border-radius:4px;padding:16px;z-index:10000;min-width:250px">';
+  html += '<div style="font-weight:700;margin-bottom:12px">Place on Injured List</div>';
+  tiers.forEach(tier => {
+    html += `<button class="btn btn-sm" style="width:100%;margin-bottom:8px" onclick="placeOnIL(${pid}, '${tier}'); this.closest('[style*=position]').parentElement.removeChild(this.closest('[style*=position]'))">${tier}-Day IL</button>`;
+  });
+  html += '</div>';
+  const overlay = document.createElement('div');
+  overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:9999';
+  overlay.onclick = () => overlay.parentElement.removeChild(overlay);
+  document.body.appendChild(overlay);
+  overlay.innerHTML = html;
+}
+
+async function placeOnIL(pid, tier) {
+  const r = await api(`/roster/${STATE.userTeamId}/place-il`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ player_id: pid, tier })
+  });
+  if (r?.success) {
+    showToast(`Player placed on ${tier}-day IL`, 'success');
+    closeModal();
+    loadRoster();
+  } else {
+    showToast(r?.error || 'Error placing player on IL', 'error');
+  }
+}
+
+async function confirmRelease(pid) {
+  if (confirm('Release this player? They will become a free agent.')) {
+    const r = await api(`/roster/release/${pid}`, { method: 'POST' });
+    if (r?.success) {
+      showToast('Player released', 'success');
+      closeModal();
+      loadRoster();
+    } else {
+      showToast(r?.error || 'Error releasing player', 'error');
+    }
+  }
+}
+
+async function confirmCallUp(pid) {
+  if (confirm('Call up this player to the active roster?')) {
+    const r = await api(`/roster/call-up/${pid}`, { method: 'POST' });
+    if (r?.success) {
+      showToast('Player called up', 'success');
+      closeModal();
+      loadRoster();
+    } else {
+      showToast(r?.error || 'Error calling up player', 'error');
+    }
+  }
+}
+
+async function confirmActivateFromIL(pid) {
+  if (confirm('Activate this player from the injured list?')) {
+    const r = await api(`/roster/${STATE.userTeamId}/activate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ player_id: pid })
+    });
+    if (r?.success) {
+      showToast('Player activated from IL', 'success');
+      closeModal();
+      loadRoster();
+    } else {
+      showToast(r?.error || 'Error activating player', 'error');
+    }
+  }
+}
+
+async function confirmAddToFortyMan(pid) {
+  if (confirm('Add this player to the 40-man roster?')) {
+    const r = await api(`/roster/forty-man/add/${pid}`, { method: 'POST' });
+    if (r?.success) {
+      showToast('Player added to 40-man roster', 'success');
+      closeModal();
+      loadRoster();
+    } else {
+      showToast(r?.error || 'Error adding player to 40-man', 'error');
+    }
+  }
+}
+
+function showSignPlayerModal(pid) {
+  // Create a sign player modal for free agents
+  const modal = document.createElement('div');
+  modal.className = 'modal';
+  modal.style.display = 'flex';
+  modal.onclick = (e) => { if (e.target === modal) modal.remove(); };
+
+  modal.innerHTML = `
+    <div class="modal-content" style="max-width:400px">
+      <button class="modal-close" onclick="this.closest('.modal').remove()">&times;</button>
+      <div style="font-weight:700;margin-bottom:16px;font-size:16px">Sign Player</div>
+      <div id="sign-current" style="margin-bottom:16px"></div>
+      <div style="margin-bottom:12px">
+        <label style="font-size:12px;color:var(--text-muted);text-transform:uppercase">Years</label>
+        <input type="number" id="sign-years" min="1" max="10" value="1" style="width:100%;padding:8px;margin-top:4px;background:var(--bg-2);border:1px solid var(--border);color:var(--text);border-radius:2px">
+      </div>
+      <div style="margin-bottom:12px">
+        <label style="font-size:12px;color:var(--text-muted);text-transform:uppercase">Annual Salary</label>
+        <input type="number" id="sign-salary" value="5000000" style="width:100%;padding:8px;margin-top:4px;background:var(--bg-2);border:1px solid var(--border);color:var(--text);border-radius:2px">
+      </div>
+      <button class="btn btn-primary" style="width:100%;margin-top:16px" onclick="submitSignPlayer(${pid})">Offer Contract</button>
+    </div>
+  `;
+  document.body.appendChild(modal);
+
+  // Load player info
+  api('/player/' + pid).then(d => {
+    if (d?.player) {
+      const p = d.player;
+      document.getElementById('sign-current').innerHTML = `
+        <div style="padding:12px;background:var(--bg-2);border-radius:2px">
+          <div style="font-weight:700">${p.first_name} ${p.last_name}</div>
+          <div style="font-size:11px;color:var(--text-muted)">${p.position} | Age ${p.age}</div>
+        </div>
+      `;
+    }
+  });
+}
+
+async function submitSignPlayer(pid) {
+  const years = parseInt(document.getElementById('sign-years').value);
+  const salary = parseInt(document.getElementById('sign-salary').value);
+
+  if (isNaN(years) || isNaN(salary) || years < 1 || salary < 0) {
+    showToast('Invalid contract terms', 'error');
+    return;
+  }
+
+  const r = await api('/free-agency/sign', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ player_id: pid, team_id: STATE.userTeamId, years, annual_salary: salary })
+  });
+
+  if (r?.success) {
+    showToast('Player signed', 'success');
+    document.querySelector('.modal').remove();
+    closeModal();
+    loadRoster();
+  } else {
+    showToast(r?.error || 'Error signing player', 'error');
+  }
+}
+
+function showExtendModal(pid) {
+  const modal = document.getElementById('player-modal');
+  const extModal = document.createElement('div');
+  extModal.id = 'extend-modal';
+  extModal.className = 'modal';
+  extModal.style.display = 'flex';
+  extModal.onclick = (e) => { if (e.target === extModal) extModal.remove(); };
+
+  extModal.innerHTML = `
+    <div class="modal-content" style="max-width:450px">
+      <button class="modal-close" onclick="document.getElementById('extend-modal').remove()">&times;</button>
+      <div style="font-weight:700;margin-bottom:16px;font-size:16px">Extend Contract</div>
+      <div id="extend-current"></div>
+
+      <div style="margin-top:16px">
+        <label style="font-size:12px;color:var(--text-muted);text-transform:uppercase">Annual Salary</label>
+        <div style="display:flex;gap:8px;margin-top:4px">
+          <input type="range" id="extend-salary-slider" min="500000" max="30000000" step="100000" value="5000000" style="flex:1;cursor:pointer" onchange="updateExtendSalaryDisplay()">
+          <input type="number" id="extend-salary" min="500000" max="30000000" step="100000" value="5000000" style="width:130px;padding:6px;background:var(--bg-2);border:1px solid var(--border);color:var(--text);border-radius:2px" onchange="updateExtendSalarySlider()">
+        </div>
+      </div>
+
+      <div style="margin-top:12px">
+        <label style="font-size:12px;color:var(--text-muted);text-transform:uppercase">Years (1-10)</label>
+        <select id="extend-years" style="width:100%;padding:8px;margin-top:4px;background:var(--bg-2);border:1px solid var(--border);color:var(--text);border-radius:2px">
+          ${[1,2,3,4,5,6,7,8,9,10].map(y => `<option value="${y}" ${y === 3 ? 'selected' : ''}>${y}</option>`).join('')}
+        </select>
+      </div>
+
+      <div style="margin-top:12px;display:flex;align-items:center;gap:8px">
+        <input type="checkbox" id="extend-notrade" style="width:18px;height:18px;cursor:pointer">
+        <label style="font-size:12px;color:var(--text-muted);cursor:pointer;margin:0" for="extend-notrade">Include No-Trade Clause</label>
+      </div>
+
+      <div style="margin-top:12px;padding:12px;background:var(--bg-2);border-radius:2px">
+        <div style="font-size:11px;color:var(--text-muted);margin-bottom:6px">Market Value Estimate</div>
+        <div id="extend-market" style="font-weight:700;color:var(--accent);font-size:14px">Loading...</div>
+      </div>
+
+      <button class="btn btn-primary" style="width:100%;margin-top:16px" onclick="submitContractExtension(${pid})">Offer Extension</button>
+
+      <div id="extend-result" style="margin-top:16px;padding:12px;background:var(--bg-2);border-radius:2px;display:none"></div>
+    </div>
+  `;
+  document.body.appendChild(extModal);
+  loadExtendData(pid);
+}
+
+function updateExtendSalaryDisplay() {
+  const slider = document.getElementById('extend-salary-slider');
+  const input = document.getElementById('extend-salary');
+  input.value = slider.value;
+}
+
+function updateExtendSalarySlider() {
+  const slider = document.getElementById('extend-salary-slider');
+  const input = document.getElementById('extend-salary');
+  slider.value = input.value;
+}
+
+async function loadExtendData(pid) {
+  const d = await api('/player/' + pid);
+  if (d?.player) {
+    const p = d.player;
+    const current = `<div style="padding:12px;background:var(--bg-1);border-radius:2px;font-size:12px">
+      <div style="margin-bottom:6px"><span style="color:var(--text-muted)">Current Salary:</span> <strong>${fmt$(p.annual_salary)}</strong></div>
+      <div><span style="color:var(--text-muted)">Years Remaining:</span> <strong>${p.years_remaining || 0}</strong></div>
+    </div>`;
+    document.getElementById('extend-current').innerHTML = current;
+
+    const isPit = p.position === 'SP' || p.position === 'RP';
+    const overall = isPit
+      ? (p.stuff_rating * 2 + p.control_rating * 1.5) / 3.5
+      : (p.contact_rating * 1.5 + p.power_rating * 1.5 + p.speed_rating * 0.5 + p.fielding_rating * 0.5) / 4;
+
+    const marketValue = Math.round(overall * 100000 * (p.service_years || 1));
+    document.getElementById('extend-market').textContent = fmt$(marketValue);
+    document.getElementById('extend-salary').value = marketValue;
+    document.getElementById('extend-salary-slider').value = marketValue;
+  }
+}
+
+async function submitContractExtension(pid) {
+  const years = parseInt(document.getElementById('extend-years').value);
+  const salary = parseInt(document.getElementById('extend-salary').value);
+  const noTrade = document.getElementById('extend-notrade')?.checked || false;
+
+  if (!years || !salary || years < 1 || years > 10) {
+    showToast('Invalid years or salary', 'error');
+    return;
+  }
+
+  const r = await post('/contracts/extend-offer', {
+    player_id: pid,
+    team_id: STATE.userTeamId,
+    salary: salary,
+    years: years,
+    no_trade_clause: noTrade
+  });
+
+  if (!r) {
+    showToast('Error submitting extension', 'error');
+    return;
+  }
+
+  // Display result in modal
+  const resultDiv = document.getElementById('extend-result');
+  if (!resultDiv) return;
+
+  resultDiv.style.display = 'block';
+
+  if (r.accepted) {
+    resultDiv.innerHTML = `
+      <div style="color:var(--green);font-weight:700;margin-bottom:8px">✓ ACCEPTED</div>
+      <div style="font-size:12px;color:var(--text)">${r.reason}</div>
+    `;
+    showToast('Contract extended successfully', 'success');
+    setTimeout(() => {
+      document.getElementById('extend-modal').remove();
+      closeModal();
+      loadRoster();
+    }, 1500);
+  } else if (r.counter_offer) {
+    const counterSal = r.counter_offer.salary;
+    const counterYrs = r.counter_offer.years;
+    const counterSalStr = fmt$(counterSal);
+    resultDiv.innerHTML = `
+      <div style="color:var(--accent);font-weight:700;margin-bottom:8px">COUNTERED</div>
+      <div style="font-size:12px;color:var(--text);margin-bottom:8px">${r.reason}</div>
+      <div style="padding:8px;background:var(--bg-1);border-left:2px solid var(--accent);margin-bottom:8px">
+        <div style="font-size:11px;color:var(--text-muted)">Counter offer:</div>
+        <div style="font-weight:700">${counterSalStr}/yr for ${counterYrs} years</div>
+      </div>
+      <div style="display:flex;gap:6px">
+        <button class="btn btn-sm btn-primary" style="flex:1" onclick="acceptExtensionCounter(${pid}, ${counterSal}, ${counterYrs}, ${noTrade})">Accept</button>
+        <button class="btn btn-sm" style="flex:1" onclick="declineExtension()">Decline</button>
+      </div>
+    `;
+  } else {
+    resultDiv.innerHTML = `
+      <div style="color:var(--red);font-weight:700;margin-bottom:8px">✗ REJECTED</div>
+      <div style="font-size:12px;color:var(--text)">${r.reason}</div>
+    `;
+  }
+}
+
+async function acceptExtensionCounter(pid, salary, years, noTrade) {
+  const r = await post('/contracts/extend-offer', {
+    player_id: pid,
+    team_id: STATE.userTeamId,
+    salary: salary,
+    years: years,
+    no_trade_clause: noTrade
+  });
+
+  if (r?.accepted) {
+    showToast('Contract extended at counter offer!', 'success');
+    setTimeout(() => {
+      document.getElementById('extend-modal').remove();
+      closeModal();
+      loadRoster();
+    }, 1000);
+  } else {
+    showToast('Player did not accept counter offer', 'info');
+  }
+}
+
+function declineExtension() {
+  document.getElementById('extend-modal').remove();
+}
+
+async function confirmAddToBlock(pid) {
+  if (confirm('Add this player to the trading block?')) {
+    const r = await api(`/trading-block/add/${pid}`, { method: 'POST' });
+    if (r?.success) {
+      showToast('Player added to trading block', 'success');
+      closeModal();
+      loadTradingBlock();
+    } else {
+      showToast(r?.error || 'Error adding to trading block', 'error');
+    }
+  }
+}
+
+async function addToTradeAndSwitch(pid) {
+  // Add the player to the trade offer
+  STATE.tradeOffer = [pid];
+  showScreen('trades');
+  closeModal();
+  showToast('Player added to trade offer. Select a team to trade with.', 'info');
 }
 
 function switchBoxScoreTab(e, tab) {
@@ -1222,21 +1666,65 @@ function closeComparisonModal() {
 // ============================================================
 // PLAYER COMPARISON
 // ============================================================
-let comparisonTarget = null;
-
-async function startComparison(pid) {
-  comparisonTarget = pid;
-  showToast('Click another player to compare', 'info');
-}
+let comparisonBasePlayer = null;
 
 async function compareWithPlayer(pid) {
-  if (!comparisonTarget || comparisonTarget === pid) {
-    showToast('Select two different players to compare', 'error');
-    return;
-  }
+  // Store the base player and open a search modal to select the comparison player
+  comparisonBasePlayer = pid;
 
-  const p1Data = await api('/player/' + comparisonTarget);
-  const p2Data = await api('/player/' + pid);
+  // Create a search modal for selecting the second player
+  const modal = document.createElement('div');
+  modal.className = 'modal';
+  modal.style.display = 'flex';
+  modal.onclick = (e) => { if (e.target === modal) { modal.remove(); comparisonBasePlayer = null; } };
+
+  modal.innerHTML = `
+    <div class="modal-content" style="max-width:400px">
+      <button class="modal-close" onclick="this.closest('.modal').remove(); comparisonBasePlayer = null;">&times;</button>
+      <div style="font-weight:700;margin-bottom:12px;font-size:16px">Select Player to Compare</div>
+      <input type="text" id="compare-search" placeholder="Search player name..." style="width:100%;padding:8px;margin-bottom:12px;background:var(--bg-2);border:1px solid var(--border);color:var(--text);border-radius:2px">
+      <div id="compare-results" style="max-height:400px;overflow-y:auto"></div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+
+  // Bind search input
+  const searchInput = document.getElementById('compare-search');
+  searchInput.addEventListener('input', async (e) => {
+    const query = e.target.value.trim();
+    if (query.length < 2) {
+      document.getElementById('compare-results').innerHTML = '';
+      return;
+    }
+
+    const results = await api(`/players/search?q=${encodeURIComponent(query)}`);
+    const resultsDiv = document.getElementById('compare-results');
+
+    if (!results?.players || results.players.length === 0) {
+      resultsDiv.innerHTML = '<div style="padding:12px;color:var(--text-muted)">No players found</div>';
+      return;
+    }
+
+    let html = '';
+    for (const p of results.players.slice(0, 10)) {
+      if (p.id !== comparisonBasePlayer) {
+        html += `
+          <div style="padding:8px;border-bottom:1px solid var(--border);cursor:pointer;hover-effect" onclick="performComparison(${comparisonBasePlayer}, ${p.id}); this.closest('.modal').remove(); comparisonBasePlayer = null;">
+            <div style="font-weight:700">${p.first_name} ${p.last_name}</div>
+            <div style="font-size:11px;color:var(--text-muted)">${p.position} | Age ${p.age} | ${p.abbreviation || 'FA'}</div>
+          </div>
+        `;
+      }
+    }
+    resultsDiv.innerHTML = html;
+  });
+
+  searchInput.focus();
+}
+
+async function performComparison(pid1, pid2) {
+  const p1Data = await api('/player/' + pid1);
+  const p2Data = await api('/player/' + pid2);
 
   if (!p1Data?.player || !p2Data?.player) {
     showToast('Could not load player data', 'error');
@@ -1313,7 +1801,6 @@ async function compareWithPlayer(pid) {
 
   document.getElementById('comparison-body').innerHTML = html;
   document.getElementById('comparison-modal').style.display = 'flex';
-  comparisonTarget = null;
 }
 
 // ============================================================
@@ -1666,7 +2153,7 @@ async function loadFA() {
         <td class="c">${p.position}</td><td class="r">${p.age}</td><td class="c">${p.bats}/${p.throws}</td>
         <td class="c">${key}</td><td class="r mono">${fmt$(p.asking_salary)}</td>
         <td class="r">${p.asking_years}</td><td class="r">${p.market_interest}</td>
-        <td><button class="btn btn-sm btn-primary" onclick="signFA(${p.id},${p.asking_salary},${p.asking_years})">Sign</button></td>
+        <td><button class="btn btn-sm btn-primary" onclick="openFANegotiationModal(${p.id})">Negotiate</button></td>
       </tr>`;
     }).join('')}
     </tbody>
@@ -1679,6 +2166,170 @@ async function signFA(pid, sal, yrs) {
   await post('/free-agents/sign', { player_id: pid, team_id: STATE.userTeamId, salary: sal, years: yrs });
   showToast('Player signed', 'success');
   loadFA();
+}
+
+async function openFANegotiationModal(pid) {
+  if (!STATE.userTeamId) return;
+
+  // Get player details
+  const playerData = await api('/player/' + pid);
+  if (!playerData?.player) {
+    showToast('Could not load player data', 'error');
+    return;
+  }
+
+  const p = playerData.player;
+  const askingSalary = p.asking_salary || 5000000;
+  const askingYears = p.asking_years || 3;
+  const askingStr = fmt$(askingSalary);
+
+  const modal = document.createElement('div');
+  modal.className = 'modal';
+  modal.style.display = 'flex';
+  modal.id = 'fa-negotiation-modal';
+  modal.onclick = (e) => { if (e.target === modal) modal.remove(); };
+
+  modal.innerHTML = `
+    <div class="modal-content" style="max-width:450px">
+      <button class="modal-close" onclick="this.closest('.modal').remove()">&times;</button>
+      <div style="font-weight:700;margin-bottom:16px;font-size:16px">Negotiate with ${p.first_name} ${p.last_name}</div>
+
+      <div style="padding:12px;background:var(--bg-2);border-radius:2px;margin-bottom:16px">
+        <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px">ASKING PRICE</div>
+        <div style="display:flex;justify-content:space-between;font-weight:700">
+          <span>${askingStr}/yr</span>
+          <span>${askingYears} years</span>
+        </div>
+      </div>
+
+      <div style="margin-bottom:12px">
+        <label style="font-size:12px;color:var(--text-muted);text-transform:uppercase">Annual Salary</label>
+        <div style="display:flex;gap:8px;margin-top:4px">
+          <input type="range" id="fa-salary-slider" min="500000" max="20000000" step="100000" value="${askingSalary}" style="flex:1;cursor:pointer" onchange="updateFASalaryDisplay()">
+          <input type="number" id="fa-salary-input" min="500000" max="20000000" step="100000" value="${askingSalary}" style="width:120px;padding:6px;background:var(--bg-2);border:1px solid var(--border);color:var(--text);border-radius:2px" onchange="updateFASalarySlider()">
+        </div>
+        <div style="font-size:10px;color:var(--text-muted);margin-top:4px" id="fa-salary-pct">100% of asking</div>
+      </div>
+
+      <div style="margin-bottom:16px">
+        <label style="font-size:12px;color:var(--text-muted);text-transform:uppercase">Years</label>
+        <select id="fa-years" style="width:100%;padding:8px;margin-top:4px;background:var(--bg-2);border:1px solid var(--border);color:var(--text);border-radius:2px">
+          ${[1,2,3,4,5,6,7,8,9,10].map(y => `<option value="${y}" ${y === askingYears ? 'selected' : ''}>${y}</option>`).join('')}
+        </select>
+      </div>
+
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-primary" style="flex:1" onclick="submitFANegotiation(${pid})">Make Offer</button>
+        <button class="btn btn-secondary" style="flex:1" onclick="this.closest('.modal').remove()">Cancel</button>
+      </div>
+
+      <div id="fa-negotiation-result" style="margin-top:16px;padding:12px;background:var(--bg-2);border-radius:2px;display:none"></div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+
+  // Store asking price for reference
+  window._faAskingSalary = askingSalary;
+}
+
+function updateFASalaryDisplay() {
+  const slider = document.getElementById('fa-salary-slider');
+  const input = document.getElementById('fa-salary-input');
+  const pctDiv = document.getElementById('fa-salary-pct');
+
+  input.value = slider.value;
+
+  const pct = (slider.value / window._faAskingSalary * 100).toFixed(0);
+  pctDiv.textContent = pct + '% of asking';
+}
+
+function updateFASalarySlider() {
+  const slider = document.getElementById('fa-salary-slider');
+  const input = document.getElementById('fa-salary-input');
+  const pctDiv = document.getElementById('fa-salary-pct');
+
+  slider.value = input.value;
+
+  const pct = (input.value / window._faAskingSalary * 100).toFixed(0);
+  pctDiv.textContent = pct + '% of asking';
+}
+
+async function submitFANegotiation(pid) {
+  const salary = parseInt(document.getElementById('fa-salary-input').value);
+  const years = parseInt(document.getElementById('fa-years').value);
+
+  if (isNaN(salary) || isNaN(years) || salary < 500000 || years < 1) {
+    showToast('Invalid contract terms', 'error');
+    return;
+  }
+
+  const result = await post('/free-agents/negotiate', {
+    player_id: pid,
+    team_id: STATE.userTeamId,
+    salary: salary,
+    years: years
+  });
+
+  if (!result) {
+    showToast('Error negotiating with player', 'error');
+    return;
+  }
+
+  // Display result
+  const resultDiv = document.getElementById('fa-negotiation-result');
+  resultDiv.style.display = 'block';
+
+  if (result.accepted) {
+    resultDiv.innerHTML = `
+      <div style="color:var(--green);font-weight:700;margin-bottom:8px">✓ ACCEPTED</div>
+      <div style="font-size:12px;color:var(--text)">${result.reason}</div>
+    `;
+    showToast('Player signed!', 'success');
+    setTimeout(() => {
+      document.getElementById('fa-negotiation-modal').remove();
+      loadFA();
+    }, 1500);
+  } else if (result.counter_offer) {
+    const counterSal = result.counter_offer.salary;
+    const counterYrs = result.counter_offer.years;
+    const counterSalStr = fmt$(counterSal);
+    resultDiv.innerHTML = `
+      <div style="color:var(--accent);font-weight:700;margin-bottom:8px">✗ COUNTERED</div>
+      <div style="font-size:12px;color:var(--text);margin-bottom:8px">${result.reason}</div>
+      <div style="padding:8px;background:var(--bg-1);border-left:2px solid var(--accent);margin-bottom:8px">
+        <div style="font-size:11px;color:var(--text-muted)">Counter offer:</div>
+        <div style="font-weight:700">${counterSalStr}/yr for ${counterYrs} years</div>
+      </div>
+      <div style="display:flex;gap:6px">
+        <button class="btn btn-sm btn-primary" style="flex:1" onclick="acceptFACounter(${pid}, ${counterSal}, ${counterYrs})">Accept</button>
+        <button class="btn btn-sm" style="flex:1" onclick="declineAndClose()">Decline</button>
+      </div>
+    `;
+  } else {
+    resultDiv.innerHTML = `
+      <div style="color:var(--red);font-weight:700;margin-bottom:8px">✗ REJECTED</div>
+      <div style="font-size:12px;color:var(--text)">${result.reason}</div>
+    `;
+  }
+}
+
+async function acceptFACounter(pid, salary, years) {
+  const result = await post('/free-agents/sign', {
+    player_id: pid,
+    team_id: STATE.userTeamId,
+    salary: salary,
+    years: years
+  });
+
+  showToast('Player signed at counter offer!', 'success');
+  setTimeout(() => {
+    document.getElementById('fa-negotiation-modal').remove();
+    loadFA();
+  }, 1000);
+}
+
+function declineAndClose() {
+  document.getElementById('fa-negotiation-modal').remove();
 }
 
 // ============================================================
@@ -1994,6 +2645,40 @@ function openSettingsModal() {
 
 function closeSettingsModal() {
   document.getElementById('settings-modal').style.display = 'none';
+}
+
+async function reseedDatabase(forceFetch) {
+  const endpoint = forceFetch ? '/admin/refetch' : '/admin/reseed';
+  const statusEl = document.getElementById('reseed-status');
+  const reseedBtn = document.getElementById('reseed-btn');
+  const refetchBtn = document.getElementById('refetch-btn');
+
+  if (!confirm('This will DELETE your current save and reseed with real MLB rosters. Continue?')) return;
+
+  statusEl.style.display = 'block';
+  statusEl.textContent = 'Working... fetching MLB data (this takes 3-5 minutes)...';
+  reseedBtn.disabled = true;
+  refetchBtn.disabled = true;
+
+  try {
+    const resp = await fetch(endpoint, { method: 'POST' });
+    const data = await resp.json();
+
+    if (data.success) {
+      statusEl.textContent = data.steps.join(' | ');
+      showToast('Database reseeded! Reloading...', 'success');
+      setTimeout(() => window.location.reload(), 2000);
+    } else {
+      statusEl.textContent = 'Error: ' + data.error;
+      showToast('Reseed failed: ' + data.error, 'error');
+    }
+  } catch (e) {
+    statusEl.textContent = 'Error: ' + e.message;
+    showToast('Reseed failed: ' + e.message, 'error');
+  } finally {
+    reseedBtn.disabled = false;
+    refetchBtn.disabled = false;
+  }
 }
 
 let columnPickerType = null;

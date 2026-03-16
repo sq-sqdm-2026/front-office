@@ -693,12 +693,13 @@ def sim_day(game_date: str = None, db_path: str = None) -> list:
             "innings": len(result["innings_away"]),
         })
 
-        # Update morale for both teams after game
-        update_player_morale(home_id, db_path)
-        update_player_morale(away_id, db_path)
-
     conn.commit()
     conn.close()
+
+    # Update morale for both teams after game (after closing main connection)
+    for result_item in results:
+        update_player_morale(result_item["home_team_id"], db_path)
+        update_player_morale(result_item["away_team_id"], db_path)
 
     # Update team chemistry after games
     for result_item in results:

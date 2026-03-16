@@ -185,7 +185,7 @@ def update_player_morale(team_id: int, db_path: str = None):
     conn = get_connection(db_path)
 
     # Get team record
-    team_record = conn.execute("""
+    wins = conn.execute("""
         SELECT COUNT(*) as wins FROM schedule
         WHERE (home_team_id = ? OR away_team_id = ?)
         AND is_played = 1 AND season = 2026
@@ -245,8 +245,9 @@ def update_player_morale(team_id: int, db_path: str = None):
 
         # Playing time component
         games_played = conn.execute("""
-            SELECT COUNT(*) as games FROM batting_lines
-            WHERE player_id = ? AND team_id = ? AND season = 2026
+            SELECT COUNT(*) as games FROM batting_lines bl
+            JOIN schedule s ON bl.schedule_id = s.id
+            WHERE bl.player_id = ? AND bl.team_id = ? AND s.season = 2026
         """, (p["id"], team_id)).fetchone()
 
         games = games_played["games"] or 0

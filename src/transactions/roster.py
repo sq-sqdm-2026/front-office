@@ -180,6 +180,38 @@ def remove_from_forty_man(player_id: int, db_path: str = None) -> dict:
     return {"success": True, "player_id": player_id}
 
 
+def release_player(player_id: int, db_path: str = None) -> dict:
+    """Release a player from the team. They become a free agent."""
+    conn = get_connection(db_path)
+    player = conn.execute("SELECT * FROM players WHERE id=?", (player_id,)).fetchone()
+    if not player:
+        conn.close()
+        return {"error": "Player not found"}
+
+    # Set player as free agent
+    conn.execute("""
+        UPDATE players SET team_id=NULL, roster_status='free_agent', on_forty_man=0
+        WHERE id=?
+    """, (player_id,))
+
+    # Delete any existing contract
+    conn.execute("DELETE FROM contracts WHERE player_id=?", (player_id,))
+
+    # Log the transaction
+    state = conn.execute("SELECT current_date FROM game_state WHERE id=1").fetchone()
+    release_date = state["current_date"] if state else "2025-01-01"
+
+    conn.execute("""
+        INSERT INTO transactions (transaction_date, transaction_type, details_json,
+            team1_id, player_ids)
+        VALUES (?, 'release', '{}', ?, ?)
+    """, (release_date, player["team_id"], str(player_id)))
+
+    conn.commit()
+    conn.close()
+    return {"success": True, "player_id": player_id}
+
+
 def get_roster_summary(team_id: int, db_path: str = None) -> dict:
     """Get a team's full roster organized by status."""
     active = query("""

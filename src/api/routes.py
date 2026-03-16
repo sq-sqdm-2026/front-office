@@ -6,7 +6,7 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse, FileResponse
 from pydantic import BaseModel
-from ..database.db import query, execute
+from ..database.db import query, execute, get_connection
 from ..simulation.season import get_standings, advance_date, sim_day
 from ..transactions.trades import propose_trade, execute_trade
 from ..transactions.free_agency import get_free_agents, sign_free_agent
@@ -15,7 +15,7 @@ from ..ai.gm_brain import generate_scouting_report
 from ..ai.scouting_modes import get_displayed_ratings
 from ..transactions.roster import (
     call_up_player, option_player, dfa_player, get_roster_summary,
-    add_to_forty_man, remove_from_forty_man
+    add_to_forty_man, remove_from_forty_man, release_player
 )
 from ..transactions.trades import propose_waiver_trade
 from ..transactions.draft import generate_draft_class, make_draft_pick
@@ -474,6 +474,226 @@ async def sign_fa(req: SigningRequest):
     return sign_free_agent(req.player_id, req.team_id, req.salary, req.years)
 
 
+class FreeAgentNegotiationRequest(BaseModel):
+    player_id: int
+    team_id: int
+    salary: int
+    years: int
+
+@app.post("/free-agents/negotiate")
+async def negotiate_free_agent(req: FreeAgentNegotiationRequest):
+    """Negotiate with a free agent (can offer less than asking price)."""
+    import random
+
+    # Get player and their asking terms
+    player = query("""
+        SELECT p.*, c.annual_salary, c.total_years
+        FROM players p
+        LEFT JOIN contracts c ON c.player_id = p.id
+        WHERE p.id = ? AND p.roster_status = 'free_agent'
+    """, (req.player_id,))
+
+    if not player:
+        raise HTTPException(404, "Player not found or not a free agent")
+
+    p = player[0]
+    asking_salary = p.get('asking_salary', 5000000)
+    asking_years = p.get('asking_years', 3)
+
+    # Calculate acceptance probability based on offer quality
+    salary_ratio = req.salary / asking_salary if asking_salary > 0 else 1.0
+
+    accepted = False
+    counter_offer = None
+    reason = ""
+
+    if salary_ratio >= 1.0:
+        # Offer meets or exceeds asking: auto-accept
+        accepted = True
+        reason = "Offer meets or exceeds asking price"
+    elif salary_ratio >= 0.95:
+        # 95-99%: 80% chance accept
+        accepted = random.random() < 0.80
+        reason = "Offer close to asking price" if accepted else "Wants more money"
+    elif salary_ratio >= 0.80:
+        # 80-94%: 50% chance accept, likely counter
+        if random.random() < 0.50:
+            accepted = True
+            reason = "Accepted slightly reduced offer"
+        else:
+            counter_offer = {
+                "salary": int(asking_salary * 0.95),
+                "years": asking_years
+            }
+            reason = "Countered with closer offer"
+    elif salary_ratio >= 0.60:
+        # 60-79%: 20% chance accept, likely counter
+        if random.random() < 0.20:
+            accepted = True
+            reason = "Accepted despite lower offer"
+        else:
+            counter_offer = {
+                "salary": int((req.salary + asking_salary) / 2),
+                "years": asking_years
+            }
+            reason = "Countered splitting the difference"
+    else:
+        # <60%: automatic reject with counter
+        counter_offer = {
+            "salary": int(asking_salary * 0.90),
+            "years": asking_years
+        }
+        reason = "Offer too low, countered"
+
+    # Factor in team competitiveness if accepted
+    if accepted:
+        team = query("SELECT wins, losses FROM teams WHERE id=?", (req.team_id,))
+        if team:
+            t = team[0]
+            win_pct = t.get('wins', 0) / (t.get('wins', 0) + t.get('losses', 1))
+            if win_pct > 0.550:
+                # Winning team gets slight discount to salary requirement
+                if random.random() < 0.3:
+                    reason = f"{reason} (winning team appeal)"
+
+    if accepted:
+        # Sign the player
+        result = sign_free_agent(req.player_id, req.team_id, req.salary, req.years)
+        return {
+            "accepted": True,
+            "result": result,
+            "reason": reason
+        }
+
+    return {
+        "accepted": False,
+        "counter_offer": counter_offer,
+        "reason": reason
+    }
+
+
+class ContractExtensionRequest(BaseModel):
+    player_id: int
+    team_id: int
+    salary: int
+    years: int
+    no_trade_clause: bool = False
+
+@app.post("/contracts/extend-offer")
+async def extend_contract(req: ContractExtensionRequest):
+    """Propose a contract extension to a player on your roster."""
+    import random
+
+    # Verify player is on user's team
+    player = query("""
+        SELECT p.*, c.annual_salary, c.years_remaining
+        FROM players p
+        LEFT JOIN contracts c ON c.player_id = p.id
+        WHERE p.id = ? AND p.team_id = ?
+    """, (req.player_id, req.team_id))
+
+    if not player:
+        raise HTTPException(404, "Player not found on your team")
+
+    p = player[0]
+    current_salary = p.get('annual_salary', 3000000)
+    years_remaining = p.get('years_remaining', 1)
+
+    # Calculate acceptance based on various factors
+
+    # 1. Base salary requirement: must be >= current salary or player insulted
+    if req.salary < current_salary:
+        return {
+            "accepted": False,
+            "counter_offer": None,
+            "reason": "Offer is below current salary - player is insulted"
+        }
+
+    # 2. Player overall rating (higher rating = wants more money)
+    is_pitcher = p['position'] in ('SP', 'RP')
+    if is_pitcher:
+        overall = (p['stuff_rating'] * 2 + p['control_rating'] * 1.5) / 3.5
+    else:
+        overall = (p['contact_rating'] * 1.5 + p['power_rating'] * 1.5 +
+                  p['speed_rating'] * 0.5 + p['fielding_rating'] * 0.5) / 4
+
+    # 3. Age factor: older players prefer shorter deals, younger prefer longer
+    age_preference = "short" if p['age'] > 32 else "long"
+
+    # 4. Years remaining factor: if >2 years left, less likely to extend
+    if years_remaining > 2:
+        # Player not in a hurry
+        accept_chance = 0.3
+    elif years_remaining == 2:
+        accept_chance = 0.5
+    else:
+        # Final year or one year left - more likely to lock in
+        accept_chance = 0.7
+
+    # 5. Loyalty trait (simulated with consistency rating)
+    loyalty_factor = (p.get('consistency_rating', 50) - 30) / 70  # Scale 0-1
+    accept_chance += loyalty_factor * 0.15
+
+    # 6. Salary increase factor
+    salary_increase_pct = (req.salary - current_salary) / current_salary
+    if salary_increase_pct >= 0.20:
+        accept_chance += 0.20
+    elif salary_increase_pct >= 0.10:
+        accept_chance += 0.10
+    elif salary_increase_pct >= 0.05:
+        accept_chance += 0.05
+
+    # 7. Years offered vs preference
+    years_mismatch = 0
+    if age_preference == "short" and req.years > 3:
+        years_mismatch = -0.2
+    elif age_preference == "long" and req.years < 3:
+        years_mismatch = -0.15
+
+    accept_chance += years_mismatch
+    accept_chance = max(0.1, min(0.9, accept_chance))  # Clamp 0.1-0.9
+
+    accepted = random.random() < accept_chance
+    counter_offer = None
+    reason = ""
+
+    if accepted:
+        # Update contract in database
+        conn = get_connection()
+        conn.execute("""
+            UPDATE contracts
+            SET annual_salary = ?, years_remaining = ?, total_years = ?, no_trade_clause = ?
+            WHERE player_id = ?
+        """, (req.salary, req.years, req.years, int(req.no_trade_clause), req.player_id))
+
+        # Log transaction
+        conn.execute("""
+            INSERT INTO transactions (team_id, transaction_type, player_id, details, transaction_date)
+            VALUES (?, 'contract_extension', ?, ?, date('now'))
+        """, (req.team_id, req.player_id, f"Extended {req.years}yr at ${req.salary:,}/yr"))
+
+        conn.commit()
+        conn.close()
+
+        reason = f"Player accepted extension through age {p['age'] + req.years}"
+    else:
+        # Generate counter-offer
+        counter_salary = int(current_salary * 1.05)  # +5% counter
+        counter_years = req.years - 1 if req.years > 1 else 1
+
+        counter_offer = {
+            "salary": counter_salary,
+            "years": counter_years
+        }
+        reason = "Player countered - wants more or fewer years"
+
+    return {
+        "accepted": accepted,
+        "counter_offer": counter_offer,
+        "reason": reason
+    }
+
+
 # ============================================================
 # SCHEDULE
 # ============================================================
@@ -716,6 +936,12 @@ async def roster_dfa(player_id: int):
     return dfa_player(player_id)
 
 
+@app.post("/roster/release/{player_id}")
+async def roster_release(player_id: int):
+    """Release a player from the team (becomes a free agent)."""
+    return release_player(player_id)
+
+
 class ILRequest(BaseModel):
     player_id: int
     tier: str = "60"  # 60-day, 15-day, etc.
@@ -746,36 +972,6 @@ async def activate_from_il(team_id: int, req: ILRequest):
     """, (req.player_id,))
 
     return {"success": True, "name": f"{player[0]['first_name']} {player[0]['last_name']}"}
-
-
-class LineupRequest(BaseModel):
-    lineup: list[int]  # Player IDs in batting order (1-9)
-    rotation: list[int] = []  # Pitcher IDs for rotation (optional)
-
-@app.post("/roster/{team_id}/lineup")
-async def save_lineup(team_id: int, req: LineupRequest):
-    """Save custom batting lineup and/or pitching rotation."""
-    import json as _json
-
-    # Validate that players belong to the team
-    for pid in req.lineup + req.rotation:
-        player = query("SELECT team_id FROM players WHERE id=?", (pid,))
-        if not player or player[0]["team_id"] != team_id:
-            raise HTTPException(400, f"Player {pid} not on team {team_id}")
-
-    # Save lineup JSON
-    lineup_json = _json.dumps({"player_ids": req.lineup})
-    rotation_json = _json.dumps({"player_ids": req.rotation}) if req.rotation else None
-
-    execute("UPDATE teams SET lineup_json=?, rotation_json=? WHERE id=?",
-            (lineup_json, rotation_json, team_id))
-
-    return {
-        "success": True,
-        "team_id": team_id,
-        "lineup_count": len(req.lineup),
-        "rotation_count": len(req.rotation),
-    }
 
 
 # ============================================================
@@ -1760,3 +1956,113 @@ async def export_financials_csv(team_id: int):
         media_type="text/csv",
         headers={"Content-Disposition": f"attachment; filename=financials_{team[0]['abbreviation']}.csv"}
     )
+
+
+# ============================================================
+# DATABASE RESET / RESEED
+# ============================================================
+
+@app.post("/admin/reseed")
+async def reseed_database():
+    """
+    Delete the current database and reseed with fresh MLB data.
+    Fetches from MLB Stats API if no cache exists.
+    Returns status updates as the process runs.
+    """
+    import json
+    from pathlib import Path
+
+    db_path = Path(__file__).parent.parent.parent / "front_office.db"
+    cache_path = Path(__file__).parent.parent.parent / "mlb_cache.json"
+
+    steps = []
+
+    # Step 1: Fetch fresh data from MLB API if no cache
+    if not cache_path.exists():
+        try:
+            steps.append("Fetching real MLB data from API (this takes a few minutes)...")
+            from ..database.real_data import fetch_all_mlb_data, enrich_teams_with_market_data
+
+            data = fetch_all_mlb_data()
+            data["teams"] = enrich_teams_with_market_data(data["teams"])
+
+            with open(cache_path, "w") as f:
+                json.dump(data, f, indent=2)
+
+            total = sum(len(ps) for ps in data["players"].values())
+            steps.append(f"Fetched {len(data['teams'])} teams, {total} players")
+        except Exception as e:
+            return {"success": False, "error": str(e), "steps": steps}
+    else:
+        steps.append("Using existing MLB data cache")
+
+    # Step 2: Delete existing database
+    if db_path.exists():
+        try:
+            import os
+            os.remove(str(db_path))
+            steps.append("Deleted old database")
+        except Exception as e:
+            return {"success": False, "error": f"Could not delete DB: {e}", "steps": steps}
+
+    # Step 3: Reseed
+    try:
+        from ..database.seed_real import seed_real_database
+        seed_real_database()
+        steps.append("Reseeded with real MLB data")
+    except Exception as e:
+        return {"success": False, "error": f"Seed failed: {e}", "steps": steps}
+
+    steps.append("Done! Refresh the page to see the new rosters.")
+    return {"success": True, "steps": steps}
+
+
+@app.post("/admin/refetch")
+async def refetch_mlb_data():
+    """
+    Force re-fetch MLB data from the API (ignoring existing cache).
+    Then reseed the database.
+    """
+    import json
+    from pathlib import Path
+
+    cache_path = Path(__file__).parent.parent.parent / "mlb_cache.json"
+    db_path = Path(__file__).parent.parent.parent / "front_office.db"
+
+    steps = []
+
+    # Force fresh fetch
+    try:
+        steps.append("Fetching fresh MLB data from API...")
+        from ..database.real_data import fetch_all_mlb_data, enrich_teams_with_market_data
+
+        data = fetch_all_mlb_data()
+        data["teams"] = enrich_teams_with_market_data(data["teams"])
+
+        with open(cache_path, "w") as f:
+            json.dump(data, f, indent=2)
+
+        total = sum(len(ps) for ps in data["players"].values())
+        steps.append(f"Fetched {len(data['teams'])} teams, {total} players")
+    except Exception as e:
+        return {"success": False, "error": str(e), "steps": steps}
+
+    # Delete existing database
+    if db_path.exists():
+        try:
+            import os
+            os.remove(str(db_path))
+            steps.append("Deleted old database")
+        except Exception as e:
+            return {"success": False, "error": f"Could not delete DB: {e}", "steps": steps}
+
+    # Reseed
+    try:
+        from ..database.seed_real import seed_real_database
+        seed_real_database()
+        steps.append("Reseeded with real MLB data")
+    except Exception as e:
+        return {"success": False, "error": f"Seed failed: {e}", "steps": steps}
+
+    steps.append("Done! Refresh the page to see the new rosters.")
+    return {"success": True, "steps": steps}

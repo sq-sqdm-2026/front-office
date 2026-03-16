@@ -877,20 +877,20 @@ def _apply_hit_and_run(pitcher: PitcherStats, batter: BatterStats,
     Runner goes, batter must swing. Higher contact chance, lower power.
     """
     # Force swing, higher contact rate
-    contact_mod = 1.2  # Contact becomes more likely
-    power_mod = 0.7    # Power diminished
+    contact_mod_swing = 1.2  # Contact becomes more likely
+    power_mod_swing = 0.7    # Power diminished
 
     # Simulate at-bat with modified ratings
-    platoon = _platoon_adjustment(batter.bats, pitcher.throws)
+    platoon_contact, platoon_power = _platoon_adjustment(batter.bats, pitcher.throws, batter.platoon_split_json)
     fatigue = _fatigue_modifier(pitcher)
 
     pitcher_stuff_mod = _rating_to_prob(int(pitcher.stuff * fatigue), 1.0)
-    batter_contact_mod = _rating_to_prob(int(batter.contact * contact_mod), 1.0) * platoon
-    batter_power_mod = _rating_to_prob(int(batter.power * power_mod), 1.0) * platoon
+    batter_contact_mod = _rating_to_prob(int(batter.contact * contact_mod_swing), 1.0) * platoon_contact
+    batter_power_mod = _rating_to_prob(int(batter.power * power_mod_swing), 1.0) * platoon_power
 
     # Base probabilities with modifications
     hr_prob = batter_power_mod * 0.02 * park.hr_factor / pitcher_stuff_mod
-    double_prob = batter_power_mod * 0.03 * park.double_factor * 0.8 * platoon
+    double_prob = batter_power_mod * 0.03 * park.double_factor * 0.8 * platoon_power
     triple_prob = 0.001  # Very unlikely on hit-and-run
     single_prob = batter_contact_mod * 0.18 * park.hit_factor / pitcher_stuff_mod
     go_prob = 0.25

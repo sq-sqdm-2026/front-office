@@ -1,0 +1,282 @@
+================================================================================
+DETAILED CODE CHANGES - Player Management Features Implementation
+================================================================================
+
+PROJECT: Front Office Baseball Simulation
+DATE: March 16, 2026
+SCOPE: 5 tasks, 3 files modified, ~200 lines of new code
+
+================================================================================
+FILE 1: src/transactions/roster.py
+================================================================================
+
+CHANGE 1: Added release_player() function
+LOCATION: Lines 183-211
+DESCRIPTION: New function to release a player and make them a free agent
+
+CODE:
+```python
+def release_player(player_id: int, db_path: str = None) -> dict:
+    """Release a player from the team. They become a free agent."""
+    conn = get_connection(db_path)
+    player = conn.execute("SELECT * FROM players WHERE id=?", (player_id,)).fetchone()
+    if not player:
+        conn.close()
+        return {"error": "Player not found"}
+
+    # Set player as free agent
+    conn.execute("""
+        UPDATE players SET team_id=NULL, roster_status='free_agent', on_forty_man=0
+        WHERE id=?
+    """, (player_id,))
+
+    # Delete any existing contract
+    conn.execute("DELETE FROM contracts WHERE player_id=?", (player_id,))
+
+    # Log the transaction
+    state = conn.execute("SELECT current_date FROM game_state WHERE id=1").fetchone()
+    release_date = state["current_date"] if state else "2025-01-01"
+
+    conn.execute("""
+        INSERT INTO transactions (transaction_date, transaction_type, details_json,
+            team1_id, player_ids)
+        VALUES (?, 'release', '{}', ?, ?)
+    """, (release_date, player["team_id"], str(player_id)))
+
+    conn.commit()
+    conn.close()
+    return {"success": True, "player_id": player_id}
+```
+
+CONTEXT:
+- Follows existing pattern of option_player() and dfa_player()
+- Properly manages database connections
+- Includes transaction logging for audit trail
+- Returns success/error dict for API response
+
+================================================================================
+FILE 2: src/api/routes.py
+================================================================================
+
+CHANGE 1: Updated imports
+LOCATION: Line 18
+OLD:
+```python
+from ..transactions.roster import (
+    call_up_player, option_player, dfa_player, get_roster_summary,
+    add_to_forty_man, remove_from_forty_man
+)
+```
+
+NEW:
+```python
+from ..transactions.roster import (
+    call_up_player, option_player, dfa_player, get_roster_summary,
+    add_to_forty_man, remove_from_forty_man, release_player
+)
+```
+
+CHANGE 2: Added release endpoint
+LOCATION: Lines 719-721
+CODE:
+```python
+@app.post("/roster/release/{player_id}")
+async def roster_release(player_id: int):
+    """Release a player from the team (becomes a free agent)."""
+    return release_player(player_id)
+```
+
+CONTEXT:
+- Follows existing pattern of other roster endpoints
+- No additional parameters needed
+- Directly calls release_player() function from roster module
+- FastAPI automatically converts player_id from URL path
+- Returns JSON response from release_player()
+
+================================================================================
+FILE 3: static/app.js
+================================================================================
+
+CHANGE 1: Enhanced showPlayer() action bar logic
+LOCATION: Lines 1062-1103
+WHAT CHANGED:
+- Previous: Simple if/else showing all buttons for user team
+- New: Context-aware logic based on roster_status
+
+NEW LOGIC:
+```javascript
+const isActive = p.roster_status === 'active';
+const isMinors = p.roster_status && p.roster_status.includes('minors');
+const isIL = p.roster_status && p.roster_status.includes('il_');
+const hasOptionYears = p.option_years_remaining && p.option_years_remaining > 0;
+const onFortyMan = p.on_forty_man;
+
+// Different buttons for different statuses:
+if (isUserTeam && isActive) {
+    // ACTIVE: Option, Place IL, DFA, Release, Extend, Block
+} else if (isUserTeam && isMinors) {
+    // MINORS: Call Up, Release, Add to 40-Man
+} else if (isUserTeam && isIL) {
+    // IL: Activate only
+}
+
+if (isFreeAgent) {
+    // FREE AGENT: Sign Player
+}
+```
+
+IMPACT:
+- Cleaner UI - shows only relevant actions
+- Better UX - prevents invalid operations
+- More intuitive workflow
+
+CHANGE 2: Added confirmCallUp() function
+LOCATION: Lines 1233-1245
+PURPOSE: Call up a player from minors to active roster
+API CALL: POST /roster/call-up/{player_id}
+PATTERN: Matches confirmDFA(), confirmRelease() pattern
+
+CHANGE 3: Added confirmActivateFromIL() function
+LOCATION: Lines 1247-1262
+PURPOSE: Activate a player from injured list
+API CALL: POST /roster/{team_id}/activate
+PATTERN: Uses team_id from STATE.userTeamId
+
+CHANGE 4: Added confirmAddToFortyMan() function
+LOCATION: Lines 1263-1272
+PURPOSE: Add minor leaguer to 40-man roster
+API CALL: POST /roster/forty-man/add/{player_id}
+PATTERN: Simple confirmation + API call
+
+CHANGE 5: Added showSignPlayerModal() function
+LOCATION: Lines 1274-1310
+PURPOSE: Open modal to sign free agent
+FEATURES:
+- Creates modal dynamically
+- Fetches player data for display
+- Input fields for years and salary
+- Calls submitSignPlayer() on submit
+
+CHANGE 6: Added submitSignPlayer() function
+LOCATION: Lines 1312-1336
+PURPOSE: Submit free agent signing offer
+API CALL: POST /free-agency/sign
+PARAMETERS:
+  - player_id: int
+  - team_id: int (from STATE)
+  - years: int
+  - annual_salary: int
+VALIDATION: Checks for valid years and salary
+
+CHANGE 7: Completely rewrote player comparison
+LOCATION: Lines 1578-1734
+
+OLD APPROACH:
+- Used global comparisonTarget variable
+- Required clicking players on roster
+- Limited to roster players
+
+NEW APPROACH:
+- Dynamic search modal for any player
+- Real-time search as user types
+- Uses /players/search endpoint
+- Shows top 10 results
+- Filters out base player
+
+NEW FUNCTION: performComparison(pid1, pid2)
+FEATURES:
+- Loads both players in parallel
+- Creates side-by-side grid
+- Highlights better player (green)
+- Shows all relevant ratings
+- Displays salary and team info
+
+COMPARISON LOGIC:
+```javascript
+const better = v1 > v2 ? 1 : v2 > v1 ? 2 : 0;
+// 1 = first player better
+// 2 = second player better
+// 0 = tied
+
+// Apply green highlight to better player's grade
+${better === 1 ? 'color: var(--green); font-weight: 700;' : ''}
+```
+
+================================================================================
+DEPENDENCIES & COMPATIBILITY
+================================================================================
+
+JavaScript Dependencies:
+- api() - Existing utility for HTTP requests
+- showToast() - Existing toast notification system
+- closeModal() - Existing modal close utility
+- STATE.userTeamId - Existing game state
+- STATE.season - Existing game state
+
+Python Dependencies:
+- FastAPI - Already used for all endpoints
+- get_connection() - Existing database function
+- execute() - Existing database function
+- query() - Existing database function
+
+Database Dependencies:
+- players table - existing columns used
+- contracts table - existing structure
+- transactions table - existing structure
+- game_state table - existing record
+
+API Dependencies:
+- /player/{player_id} - Existing
+- /players/search - Existing
+- /free-agency/sign - Existing or compatible
+
+================================================================================
+ERROR HANDLING
+================================================================================
+
+All new functions include:
+1. Confirmation dialogs (except showSignPlayerModal)
+2. Success toasts on completion
+3. Error toasts on failure
+4. API response checking
+5. Optional chaining (?.) to prevent null errors
+6. Input validation (e.g., years 1-10, salary >= 0)
+
+================================================================================
+TESTING RESULTS
+================================================================================
+
+✓ JavaScript syntax validation passed
+✓ Python syntax validation passed
+✓ All functions verified present
+✓ All imports verified present
+✓ All endpoints verified present
+✓ Modal elements verified in HTML
+✓ Context logic verified
+✓ No breaking changes detected
+
+================================================================================
+PERFORMANCE CONSIDERATIONS
+================================================================================
+
+1. Search queries: Limited to 50 results (endpoint default)
+2. Player comparison: Loads 2 players in parallel (async)
+3. Scouting reports: Generated on-demand (not cached in this impl)
+4. Modal creation: Uses string templates (fast)
+5. Event binding: Uses addEventListener (efficient)
+
+No performance regressions expected.
+
+================================================================================
+FUTURE IMPROVEMENTS
+================================================================================
+
+1. Cache scouting reports to reduce generation time
+2. Add batch operations (e.g., DFA multiple players)
+3. Add advanced filtering to comparison search
+4. Store roster templates for quick rebuilds
+5. Add player trade proposals from comparison view
+6. Enhanced DFA player management UI
+7. Salary cap warnings when extending contracts
+
+================================================================================

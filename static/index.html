@@ -414,6 +414,20 @@
           <button class="btn btn-primary btn-sm" onclick="openColumnPickerModal('batting')">Edit Batting Columns</button>
           <button class="btn btn-primary btn-sm" onclick="openColumnPickerModal('pitching')" style="margin-top: 8px;">Edit Pitching Columns</button>
         </div>
+
+        <div style="margin-top: 24px; padding: 12px; border: 1px solid #c53030; border-radius: 4px; background: rgba(197, 48, 48, 0.1);">
+          <h3 style="margin: 0 0 8px 0; color: #fc8181;">Database</h3>
+          <p style="margin: 0 0 12px 0; font-size: 12px; color: var(--text-secondary);">
+            Fetch real MLB rosters from the Stats API and reseed the database. This replaces all current data.
+          </p>
+          <button class="btn btn-sm" id="reseed-btn" onclick="reseedDatabase(false)" style="background: #c53030; color: white;">
+            Reseed with Real MLB Data
+          </button>
+          <button class="btn btn-sm" id="refetch-btn" onclick="reseedDatabase(true)" style="background: #744210; color: white; margin-top: 8px;">
+            Force Re-fetch from API
+          </button>
+          <p id="reseed-status" style="margin: 8px 0 0 0; font-size: 11px; color: var(--text-secondary); display: none;"></p>
+        </div>
       </div>
     </div>
   </div>
