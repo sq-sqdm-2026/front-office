@@ -1,0 +1,102 @@
+"""
+Front Office - Trade System
+Handles trade proposals, evaluation, execution, and history.
+"""
+import json
+from datetime import date
+from ..database.db import get_connection, query, execute
+from ..ai.gm_brain import evaluate_trade
+
+
+async def propose_trade(proposing_team_id: int, receiving_team_id: int,
+                        players_offered: list[int], players_requested: list[int],
+                        cash_included: int = 0, db_path: str = None) -> dict:
+    """
+    Propose a trade to another team's GM.
+    Returns the GM's response (accept/reject with reasoning).
+    """
+    # Validate players belong to correct teams
+    for pid in players_offered:
+        p = query("SELECT team_id FROM players WHERE id=?", (pid,), db_path=db_path)
+        if not p or p[0]["team_id"] != proposing_team_id:
+            return {"error": f"Player {pid} is not on the proposing team"}
+
+    for pid in players_requested:
+        p = query("SELECT team_id FROM players WHERE id=?", (pid,), db_path=db_path)
+        if not p or p[0]["team_id"] != receiving_team_id:
+            return {"error": f"Player {pid} is not on the receiving team"}
+
+    # Check no-trade clauses
+    for pid in players_requested:
+        contract = query("SELECT no_trade_clause FROM contracts WHERE player_id=?",
+                        (pid,), db_path=db_path)
+        if contract and contract[0]["no_trade_clause"] == 1:
+            return {"error": f"Player {pid} has a full no-trade clause",
+                    "ntc_block": True}
+
+    # Check cash availability
+    if cash_included > 0:
+        team = query("SELECT cash FROM teams WHERE id=?",
+                    (proposing_team_id,), db_path=db_path)
+        if team and team[0]["cash"] < cash_included:
+            return {"error": "Insufficient cash for this trade"}
+
+    # Get GM's evaluation
+    result = await evaluate_trade(
+        proposing_team_id, receiving_team_id,
+        players_offered, players_requested,
+        cash_included, db_path
+    )
+
+    return result
+
+
+def execute_trade(proposing_team_id: int, receiving_team_id: int,
+                  players_offered: list[int], players_requested: list[int],
+                  cash_included: int = 0, db_path: str = None) -> dict:
+    """Execute an accepted trade - move players between teams."""
+    conn = get_connection(db_path)
+
+    # Move offered players to receiving team
+    for pid in players_offered:
+        conn.execute("UPDATE players SET team_id=? WHERE id=?",
+                    (receiving_team_id, pid))
+        conn.execute("UPDATE contracts SET team_id=? WHERE player_id=?",
+                    (receiving_team_id, pid))
+
+    # Move requested players to proposing team
+    for pid in players_requested:
+        conn.execute("UPDATE players SET team_id=? WHERE id=?",
+                    (proposing_team_id, pid))
+        conn.execute("UPDATE contracts SET team_id=? WHERE player_id=?",
+                    (proposing_team_id, pid))
+
+    # Handle cash
+    if cash_included > 0:
+        conn.execute("UPDATE teams SET cash = cash - ? WHERE id=?",
+                    (cash_included, proposing_team_id))
+        conn.execute("UPDATE teams SET cash = cash + ? WHERE id=?",
+                    (cash_included, receiving_team_id))
+
+    # Log transaction
+    state = conn.execute("SELECT current_date FROM game_state WHERE id=1").fetchone()
+    game_date = state["current_date"] if state else date.today().isoformat()
+
+    details = {
+        "proposing_team": proposing_team_id,
+        "receiving_team": receiving_team_id,
+        "players_to_receiving": players_offered,
+        "players_to_proposing": players_requested,
+        "cash": cash_included,
+    }
+    conn.execute("""
+        INSERT INTO transactions (transaction_date, transaction_type, details_json,
+            team1_id, team2_id, player_ids)
+        VALUES (?, 'trade', ?, ?, ?, ?)
+    """, (game_date, json.dumps(details), proposing_team_id, receiving_team_id,
+          ",".join(str(x) for x in players_offered + players_requested)))
+
+    conn.commit()
+    conn.close()
+
+    return {"success": True, "details": details}

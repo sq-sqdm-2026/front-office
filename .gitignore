@@ -1,0 +1,10 @@
+venv/
+__pycache__/
+*.pyc
+*.db
+.DS_Store
+front_office.db
+front_office.db-shm
+front_office.db-wal
+mlb_cache.json
+/tmp/
