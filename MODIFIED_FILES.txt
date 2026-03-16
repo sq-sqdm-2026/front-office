@@ -1,0 +1,254 @@
+================================================================================
+COMPLETE LIST OF MODIFIED FILES
+================================================================================
+
+ABSOLUTE PATHS OF ALL CHANGES
+=============================
+
+NEW FILES CREATED
+-----------------
+/sessions/charming-gracious-curie/mnt/front-office/src/financial/broadcast_stadium.py
+  - 466 lines
+  - Complete broadcast rights and stadium management system
+  - Broadcast deal configuration (4 types)
+  - Stadium upgrade configuration (5 types)
+  - Core functions for deal negotiation and upgrade purchases
+  - Season-end processing functions
+
+DATABASE
+--------
+/sessions/charming-gracious-curie/mnt/front-office/src/database/schema.py
+  - MODIFIED: Lines 64-73
+  - Added 7 new columns to CREATE TABLE IF NOT EXISTS teams:
+    * broadcast_deal_type TEXT DEFAULT 'standard'
+    * broadcast_deal_value INTEGER DEFAULT 0
+    * broadcast_deal_years_remaining INTEGER DEFAULT 3
+    * stadium_built_year INTEGER DEFAULT 2000
+    * stadium_condition INTEGER DEFAULT 85
+    * stadium_upgrades_json TEXT DEFAULT '{}'
+    * stadium_revenue_boost INTEGER DEFAULT 0
+
+/sessions/charming-gracious-curie/mnt/front-office/src/database/db.py
+  - MODIFIED: Added lines 29-50
+  - New function: migrate_add_broadcast_stadium_columns()
+  - Safely adds columns if they don't exist
+  - Uses ALTER TABLE IF NOT EXISTS logic
+
+FINANCIAL & ECONOMICS
+---------------------
+/sessions/charming-gracious-curie/mnt/front-office/src/financial/economics.py
+  - MODIFIED: Lines 81-99
+    - Integrated broadcast deal value into revenue calculation
+    - Check for new broadcast_deal_value before legacy system
+    - Maintains backward compatibility
+  
+  - MODIFIED: Lines 108-117
+    - Added stadium upgrade revenue to local revenue calculation
+    - stadium_upgrade_revenue = t.get("stadium_revenue_boost", 0)
+    - Integrated into local_revenue sum
+
+SIMULATION & SEASON ADVANCEMENT
+-------------------------------
+/sessions/charming-gracious-curie/mnt/front-office/src/simulation/offseason.py
+  - MODIFIED: Line 17
+    - Added import: apply_broadcast_deal_decrement, apply_broadcast_loyalty_penalties
+  
+  - MODIFIED: Lines 224-232 (offseason day 91 processing)
+    - Added calls to apply_broadcast_deal_decrement() for each team
+    - Added calls to apply_broadcast_loyalty_penalties() for each team
+    - Ensures broadcast deals decrement and loyalty penalties apply
+
+API ROUTES
+----------
+/sessions/charming-gracious-curie/mnt/front-office/src/api/routes.py
+  - MODIFIED: Added after line 2138
+  - New section: BROADCAST RIGHTS & STADIUM (NEW OWNER MANAGEMENT FEATURES)
+  - 4 new endpoints:
+    
+    1. GET /finances/{team_id}/broadcast-status
+       - Returns current broadcast deal and available options
+       - Calls: get_broadcast_status()
+    
+    2. POST /finances/{team_id}/broadcast-deal
+       - Request: {"deal_type": "standard|premium_cable|streaming|blackout"}
+       - Calls: negotiate_broadcast_deal()
+    
+    3. GET /finances/{team_id}/stadium
+       - Returns stadium status and available upgrades
+       - Calls: get_stadium_status()
+    
+    4. POST /finances/{team_id}/stadium-upgrade
+       - Request: {"upgrade_key": "luxury_suites|jumbotron|concourse|field_renovation|retractable_roof"}
+       - Calls: purchase_stadium_upgrade()
+
+MAIN APPLICATION STARTUP
+------------------------
+/sessions/charming-gracious-curie/mnt/front-office/src/main.py
+  - MODIFIED: Line 56-58
+    - Added import: migrate_add_broadcast_stadium_columns
+    - Added call: migrate_add_broadcast_stadium_columns()
+    - Runs on every startup for existing databases
+
+FRONTEND - USER INTERFACE
+-------------------------
+/sessions/charming-gracious-curie/mnt/front-office/static/app.js
+  
+  MODIFIED: Lines 2573-2576 (loadFinances function)
+    - Updated Promise.all to fetch broadcast and stadium data
+    - Added: api('/finances/' + STATE.userTeamId + '/broadcast-status')
+    - Added: api('/finances/' + STATE.userTeamId + '/stadium')
+    - Error handling with .catch(() => null)
+    
+  MODIFIED: Lines 2629-2667
+    - Added "Broadcast Rights" card showing:
+      * Current deal name
+      * Annual value
+      * Years remaining
+      * List of available deals with Negotiate buttons
+    
+    - Added "Stadium Management" card showing:
+      * Stadium name and year built
+      * Capacity and condition
+      * Annual upgrade revenue
+      * List of upgrades with Buy buttons
+  
+  ADDED: Lines 2708-2740 (new functions)
+    - negotiateBroadcastDeal(dealType)
+      * POSTs to /finances/{team_id}/broadcast-deal
+      * Refreshes Finances screen on success
+      * Shows toast notifications
+    
+    - purchaseStadiumUpgrade(upgradeKey)
+      * POSTs to /finances/{team_id}/stadium-upgrade
+      * Refreshes Finances screen on success
+      * Shows toast notifications
+
+================================================================================
+SUMMARY OF CHANGES BY LAYER
+================================================================================
+
+DATABASE LAYER
+--------------
+- 7 new columns added to teams table
+- Migration function for safe schema updates
+- Auto-migration on startup
+
+BUSINESS LOGIC LAYER
+--------------------
+- 450-line broadcast_stadium.py module
+- Broadcast deal types and calculations
+- Stadium upgrade types and mechanics
+- Season-end processing hooks
+
+FINANCIAL LAYER
+---------------
+- Broadcast revenue integrated into calculations
+- Stadium revenue integrated into calculations
+- Both flow through to profit/loss calculations
+
+SIMULATION LAYER
+----------------
+- Broadcast deal years decrement at season end
+- Expired deals reset to standard
+- Fan loyalty penalties applied annually
+
+API LAYER
+---------
+- 4 new REST endpoints
+- Input validation
+- Error handling with appropriate HTTP status codes
+
+FRONTEND LAYER
+--------------
+- 2 new cards on Finances screen
+- Broadcast negotiations UI
+- Stadium upgrades purchase UI
+- Integrated with existing toast notifications
+
+================================================================================
+LINE COUNT CHANGES
+================================================================================
+
+Files Created:
+  broadcast_stadium.py ................. 466 lines
+
+Files Modified:
+  schema.py ............................ +10 lines (in CREATE TABLE)
+  db.py ............................... +22 lines (new migration function)
+  economics.py ........................ +18 lines (broadcast and stadium integration)
+  offseason.py ......................... +3 lines (import and 2 function calls)
+  routes.py ........................... +46 lines (4 endpoints + classes)
+  main.py ............................. +2 lines (import and call)
+  app.js .............................. +77 lines (cards + functions)
+
+Total New/Modified: ~644 lines of code
+
+================================================================================
+FILE DEPENDENCIES
+================================================================================
+
+broadcast_stadium.py depends on:
+  - database/db.py (query, execute)
+  - json (standard library)
+
+routes.py depends on:
+  - financial/broadcast_stadium.py (new functions)
+  - pydantic BaseModel (existing)
+
+economics.py depends on:
+  - database/db.py (query, execute)
+  - No new dependencies
+
+offseason.py depends on:
+  - financial/broadcast_stadium.py (new imports)
+  - Existing dependencies
+
+main.py depends on:
+  - database/db.py (migrate_add_broadcast_stadium_columns)
+
+app.js depends on:
+  - No new dependencies
+  - Uses existing api(), post(), showToast() functions
+
+================================================================================
+BACKWARD COMPATIBILITY NOTES
+================================================================================
+
+All changes are backward compatible:
+
+1. Schema changes: Uses IF NOT EXISTS in migration
+2. Broadcast system: Falls back to legacy system if broadcast_deal_value == 0
+3. API: New endpoints don't affect existing ones
+4. Frontend: New cards are added, existing cards unchanged
+5. Financial: New revenue sources are additive
+
+Existing functionality is preserved and enhanced.
+
+================================================================================
+DEPLOYMENT CHECKLIST
+================================================================================
+
+Before deploying:
+  [x] All Python files compile without syntax errors
+  [x] Database migration is safe
+  [x] No destructive database operations
+  [x] Backward compatible with existing data
+  [x] Error handling in place
+  [x] Input validation implemented
+
+Deployment process:
+  1. Copy new/modified files to server
+  2. Restart application
+  3. Migration runs automatically
+  4. No manual database steps needed
+  5. All existing data preserved
+
+Post-deployment:
+  1. Test Finances screen loads without errors
+  2. Verify Broadcast Rights card appears
+  3. Verify Stadium Management card appears
+  4. Try negotiating a broadcast deal
+  5. Try purchasing a stadium upgrade
+  6. Play through a season cycle
+
+================================================================================

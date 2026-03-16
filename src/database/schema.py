@@ -60,10 +60,19 @@ CREATE TABLE IF NOT EXISTS teams (
     team_strategy_json TEXT NOT NULL DEFAULT '{}',
     lineup_json TEXT DEFAULT NULL,
     rotation_json TEXT DEFAULT NULL,
-    trading_block_json TEXT NOT NULL DEFAULT '[]',
+    trading_block_json TEXT NOT NULL DEFAULT '{"players": [], "offers": []}',
     -- Broadcast contract
     broadcast_contract_type TEXT NOT NULL DEFAULT 'normal',  -- normal, cable, blackout
-    broadcast_contract_years_remaining INTEGER NOT NULL DEFAULT 3
+    broadcast_contract_years_remaining INTEGER NOT NULL DEFAULT 3,
+    -- TV Broadcast rights deal (new system)
+    broadcast_deal_type TEXT DEFAULT 'standard',  -- standard, premium_cable, streaming, blackout
+    broadcast_deal_value INTEGER DEFAULT 0,  -- annual value in dollars
+    broadcast_deal_years_remaining INTEGER DEFAULT 3,
+    -- Stadium upgrades
+    stadium_built_year INTEGER DEFAULT 2000,
+    stadium_condition INTEGER DEFAULT 85,  -- 0-100 condition rating
+    stadium_upgrades_json TEXT DEFAULT '{}',  -- JSON tracking purchased upgrades
+    stadium_revenue_boost INTEGER DEFAULT 0  -- cumulative revenue from upgrades in dollars
 );
 
 -- ============================================================
@@ -550,6 +559,40 @@ CREATE TABLE IF NOT EXISTS team_chemistry (
 );
 
 -- ============================================================
+-- PLAYOFF BRACKET
+-- ============================================================
+CREATE TABLE IF NOT EXISTS playoff_bracket (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    season INTEGER NOT NULL,
+    round TEXT NOT NULL,  -- 'wild_card', 'division_series', 'championship_series', 'world_series'
+    series_id TEXT NOT NULL,  -- e.g. 'al_wc1', 'nl_ds2', 'al_cs', 'ws'
+    higher_seed_id INTEGER REFERENCES teams(id),
+    lower_seed_id INTEGER REFERENCES teams(id),
+    higher_seed_wins INTEGER DEFAULT 0,
+    lower_seed_wins INTEGER DEFAULT 0,
+    winner_id INTEGER REFERENCES teams(id),
+    is_complete INTEGER DEFAULT 0,
+    home_field TEXT DEFAULT 'higher',  -- who has home field
+    UNIQUE(season, series_id)
+);
+
+-- ============================================================
+-- SEASON AWARDS
+-- ============================================================
+CREATE TABLE IF NOT EXISTS awards (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    season INTEGER NOT NULL,
+    award_type TEXT NOT NULL,  -- 'mvp', 'cy_young', 'roy', 'gold_glove'
+    league TEXT NOT NULL,  -- 'AL', 'NL'
+    player_id INTEGER REFERENCES players(id),
+    team_id INTEGER REFERENCES teams(id),
+    position TEXT,  -- relevant for gold glove
+    vote_points REAL,
+    finish INTEGER,  -- 1st, 2nd, 3rd, etc.
+    UNIQUE(season, award_type, league, player_id)
+);
+
+-- ============================================================
 -- INDEXES
 -- ============================================================
 CREATE INDEX IF NOT EXISTS idx_players_team ON players(team_id);
@@ -572,4 +615,9 @@ CREATE INDEX IF NOT EXISTS idx_international_prospects_signed ON international_p
 CREATE INDEX IF NOT EXISTS idx_player_relationships_player1 ON player_relationships(player_id_1);
 CREATE INDEX IF NOT EXISTS idx_player_relationships_player2 ON player_relationships(player_id_2);
 CREATE INDEX IF NOT EXISTS idx_team_chemistry_team ON team_chemistry(team_id);
+CREATE INDEX IF NOT EXISTS idx_playoff_bracket_season ON playoff_bracket(season);
+CREATE INDEX IF NOT EXISTS idx_playoff_bracket_round ON playoff_bracket(round);
+CREATE INDEX IF NOT EXISTS idx_awards_season ON awards(season);
+CREATE INDEX IF NOT EXISTS idx_awards_type_league ON awards(award_type, league);
+CREATE INDEX IF NOT EXISTS idx_awards_player ON awards(player_id);
 """

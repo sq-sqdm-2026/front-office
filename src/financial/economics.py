@@ -78,16 +78,22 @@ def calculate_season_finances(team_id: int, season: int, db_path: str = None) ->
     total_concession_base = int(att["total"] * avg_concession * elasticity)
     concession_revenue = int(total_concession_base * (home_att_pct * 0.85 + away_att_pct * 0.15))
 
-    # Broadcast revenue with contract type modifiers
-    broadcast_base = {1: 25, 2: 45, 3: 80, 4: 140, 5: 250}
-    broadcast_revenue = broadcast_base.get(t["market_size"], 60) * 1000000
+    # Broadcast revenue: use new broadcast deal system if available, fall back to legacy system
+    broadcast_deal_value = t.get("broadcast_deal_value", 0)
+    if broadcast_deal_value > 0:
+        # New broadcast deal system
+        broadcast_revenue = broadcast_deal_value
+    else:
+        # Legacy broadcast contract system (for backward compatibility)
+        broadcast_base = {1: 25, 2: 45, 3: 80, 4: 140, 5: 250}
+        broadcast_revenue = broadcast_base.get(t["market_size"], 60) * 1000000
 
-    # Apply broadcast contract type multiplier
-    contract_type = t.get("broadcast_contract_type", "normal")
-    if contract_type == "cable":
-        broadcast_revenue = int(broadcast_revenue * 1.3)
-    elif contract_type == "blackout":
-        broadcast_revenue = int(broadcast_revenue * 1.5)
+        # Apply broadcast contract type multiplier
+        contract_type = t.get("broadcast_contract_type", "normal")
+        if contract_type == "cable":
+            broadcast_revenue = int(broadcast_revenue * 1.3)
+        elif contract_type == "blackout":
+            broadcast_revenue = int(broadcast_revenue * 1.5)
 
     # Performance bonus
     wins = query("""
@@ -105,7 +111,10 @@ def calculate_season_finances(team_id: int, season: int, db_path: str = None) ->
     loyalty_bonus = t["fan_loyalty"] / 100
     merch_revenue = int(merch_base * (0.5 + loyalty_bonus))
 
-    local_revenue = ticket_revenue + concession_revenue + merch_revenue
+    # Stadium upgrade revenue (annual recurring from purchased upgrades)
+    stadium_upgrade_revenue = t.get("stadium_revenue_boost", 0)
+
+    local_revenue = ticket_revenue + concession_revenue + merch_revenue + stadium_upgrade_revenue
     total_revenue = local_revenue + broadcast_revenue
 
     # Apply difficulty modifier to total revenue

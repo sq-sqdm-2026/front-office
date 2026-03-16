@@ -50,12 +50,14 @@
   <!-- Nav -->
   <nav id="main-nav">
     <button class="nav-btn active" data-s="calendar" onclick="showScreen('calendar')">Calendar</button>
+    <button class="nav-btn" data-s="gameday" onclick="showScreen('gameday')">Game Day</button>
     <button class="nav-btn" data-s="roster" onclick="showScreen('roster')">Roster</button>
     <button class="nav-btn" data-s="transactions" onclick="showScreen('transactions')">Transactions</button>
     <button class="nav-btn" data-s="lineup" onclick="showScreen('lineup')">Lineup</button>
     <button class="nav-btn" data-s="depthchart" onclick="showScreen('depthchart')">Depth Chart</button>
     <button class="nav-btn" data-s="standings" onclick="showScreen('standings')">Standings</button>
     <button class="nav-btn" data-s="schedule" onclick="showScreen('schedule')">Schedule</button>
+    <button class="nav-btn" data-s="playoffs" onclick="showScreen('playoffs')">Playoffs</button>
     <button class="nav-btn" data-s="finances" onclick="showScreen('finances')">Finances</button>
     <button class="nav-btn" data-s="trades" onclick="showScreen('trades')">Trades</button>
     <button class="nav-btn" data-s="draft" onclick="showScreen('draft')">Draft</button>
@@ -69,6 +71,41 @@
 
     <!-- CALENDAR HUB -->
     <div id="s-calendar" class="content-screen active"></div>
+
+    <!-- GAME DAY -->
+    <div id="s-gameday" class="content-screen">
+      <div class="gameday-container">
+        <div class="gameday-scoreboard">
+          <div class="scoreboard-header">
+            <span class="team-name away" id="gd-away-name"></span>
+            <span class="vs">@</span>
+            <span class="team-name home" id="gd-home-name"></span>
+          </div>
+          <div id="gd-linescore" class="linescore"></div>
+          <div id="gd-score-display" class="score-display"></div>
+        </div>
+
+        <div class="gameday-situation">
+          <div id="gd-situation-text" class="situation-text"></div>
+          <div id="gd-pitcher-info" class="pitcher-info"></div>
+          <div id="gd-batter-info" class="batter-info"></div>
+        </div>
+
+        <div class="gameday-controls">
+          <button class="btn btn-primary" onclick="startLiveGameSim()">Start Live Sim</button>
+          <button class="btn btn-secondary" onclick="skipToEnd()">Skip to End</button>
+          <div class="speed-control">
+            <label>Speed: <span id="speed-display">1.0x</span></label>
+            <input type="range" min="100" max="2000" value="500" step="100" onchange="updateSimSpeed(this.value)" id="speed-slider">
+          </div>
+        </div>
+
+        <div class="gameday-plays">
+          <div class="plays-header">Play-by-Play</div>
+          <div id="gd-plays-feed" class="plays-feed"></div>
+        </div>
+      </div>
+    </div>
 
     <!-- ROSTER -->
     <div id="s-roster" class="content-screen">
@@ -111,6 +148,7 @@
       <div class="section-bar">
         <span class="section-title">Lineup Management</span>
         <div>
+          <button class="btn btn-sm" onclick="autoGenerateLineup()">Auto-Generate</button>
           <button class="btn btn-primary btn-sm" onclick="saveLineup()">Save</button>
         </div>
       </div>
@@ -164,10 +202,21 @@
 
     <!-- STANDINGS -->
     <div id="s-standings" class="content-screen">
-      <div class="section-bar"><span class="section-title">League Standings</span></div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
-        <div id="stnd-al"></div>
-        <div id="stnd-nl"></div>
+      <div class="section-bar">
+        <span class="section-title">Standings & Awards</span>
+        <div style="display:flex;gap:8px">
+          <button class="tab-btn active" onclick="switchStandingsTab(event, 'standings')">Standings</button>
+          <button class="tab-btn" onclick="switchStandingsTab(event, 'awards')">Awards</button>
+        </div>
+      </div>
+      <div id="standings-tab-standings" class="standings-tab">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+          <div id="stnd-al"></div>
+          <div id="stnd-nl"></div>
+        </div>
+      </div>
+      <div id="standings-tab-awards" class="standings-tab" style="display:none">
+        <div id="awards-body"></div>
       </div>
     </div>
 
@@ -175,6 +224,12 @@
     <div id="s-schedule" class="content-screen">
       <div class="section-bar"><span class="section-title">Schedule</span></div>
       <div id="sched-body"></div>
+    </div>
+
+    <!-- PLAYOFFS -->
+    <div id="s-playoffs" class="content-screen">
+      <div class="section-bar"><span class="section-title">Playoffs</span></div>
+      <div id="playoffs-body"></div>
     </div>
 
     <!-- FINANCES -->
@@ -281,8 +336,15 @@
               <option value="SP">SP</option>
               <option value="RP">RP</option>
             </select>
-            <select class="search-box" id="draft-sort" onchange="filterDraftProspects()" style="flex: 0 1 120px;">
+            <select class="search-box" id="draft-sort" onchange="filterDraftProspects()" style="flex: 0 1 140px;">
               <option value="rank">Overall Rank</option>
+              <option value="overall">Overall Rating</option>
+              <option value="stuff">Stuff</option>
+              <option value="contact">Contact</option>
+              <option value="power">Power</option>
+              <option value="speed">Speed</option>
+              <option value="ceiling">Ceiling</option>
+              <option value="signability">Signability</option>
               <option value="age">Age</option>
               <option value="position">Position</option>
             </select>
@@ -415,18 +477,54 @@
           <button class="btn btn-primary btn-sm" onclick="openColumnPickerModal('pitching')" style="margin-top: 8px;">Edit Pitching Columns</button>
         </div>
 
-        <div style="margin-top: 24px; padding: 12px; border: 1px solid #c53030; border-radius: 4px; background: rgba(197, 48, 48, 0.1);">
-          <h3 style="margin: 0 0 8px 0; color: #fc8181;">Database</h3>
-          <p style="margin: 0 0 12px 0; font-size: 12px; color: var(--text-secondary);">
-            Fetch real MLB rosters from the Stats API and reseed the database. This replaces all current data.
-          </p>
-          <button class="btn btn-sm" id="reseed-btn" onclick="reseedDatabase(false)" style="background: #c53030; color: white;">
-            Reseed with Real MLB Data
-          </button>
-          <button class="btn btn-sm" id="refetch-btn" onclick="reseedDatabase(true)" style="background: #744210; color: white; margin-top: 8px;">
-            Force Re-fetch from API
-          </button>
-          <p id="reseed-status" style="margin: 8px 0 0 0; font-size: 11px; color: var(--text-secondary); display: none;"></p>
+        <div style="margin-top: 24px; padding: 12px; border: 1px solid var(--border); border-radius: 4px;">
+          <h3 style="margin: 0 0 8px 0;">Database Management</h3>
+
+          <div style="margin-bottom: 12px; padding: 10px; background: var(--bg-2); border-radius: 4px;">
+            <div style="font-weight: 600; font-size: 13px; margin-bottom: 4px;">Apply Schema Updates</div>
+            <p style="margin: 0 0 8px 0; font-size: 11px; color: var(--text-dim);">
+              Add new columns and tables without losing your save. Run this after pulling code updates.
+            </p>
+            <button class="btn btn-sm" id="migrate-btn" onclick="migrateDatabase()" style="background: var(--accent); color: white;">
+              Run Migrations
+            </button>
+          </div>
+
+          <div style="margin-bottom: 12px; padding: 10px; background: var(--bg-2); border-radius: 4px;">
+            <div style="font-weight: 600; font-size: 13px; margin-bottom: 4px;">Reseed with Real MLB Rosters</div>
+            <p style="margin: 0 0 8px 0; font-size: 11px; color: var(--text-dim);">
+              Deletes your current save and rebuilds the database with real player data from the MLB Stats API.
+            </p>
+            <div id="reseed-confirm" style="display:none; margin-bottom:8px; padding:8px; background:rgba(197,48,48,0.15); border:1px solid #c53030; border-radius:4px;">
+              <div style="font-size:12px; color:#fc8181; font-weight:600; margin-bottom:6px;">This will delete your current save. Are you sure?</div>
+              <div style="display:flex; gap:8px;">
+                <button class="btn btn-sm" onclick="executeReseed(false)" style="background:#c53030; color:white;">Yes, Reseed</button>
+                <button class="btn btn-sm" onclick="document.getElementById('reseed-confirm').style.display='none'">Cancel</button>
+              </div>
+            </div>
+            <button class="btn btn-sm" id="reseed-btn" onclick="document.getElementById('reseed-confirm').style.display='block'" style="background: #c53030; color: white;">
+              Reseed Database
+            </button>
+          </div>
+
+          <div style="margin-bottom: 12px; padding: 10px; background: var(--bg-2); border-radius: 4px;">
+            <div style="font-weight: 600; font-size: 13px; margin-bottom: 4px;">Force Re-fetch from MLB API</div>
+            <p style="margin: 0 0 8px 0; font-size: 11px; color: var(--text-dim);">
+              Re-downloads all player data from the MLB Stats API, then reseeds. Use if roster data seems stale or wrong.
+            </p>
+            <div id="refetch-confirm" style="display:none; margin-bottom:8px; padding:8px; background:rgba(116,66,16,0.15); border:1px solid #744210; border-radius:4px;">
+              <div style="font-size:12px; color:#fbd38d; font-weight:600; margin-bottom:6px;">This will delete your current save and re-download everything. Continue?</div>
+              <div style="display:flex; gap:8px;">
+                <button class="btn btn-sm" onclick="executeReseed(true)" style="background:#744210; color:white;">Yes, Re-fetch</button>
+                <button class="btn btn-sm" onclick="document.getElementById('refetch-confirm').style.display='none'">Cancel</button>
+              </div>
+            </div>
+            <button class="btn btn-sm" id="refetch-btn" onclick="document.getElementById('refetch-confirm').style.display='block'" style="background: #744210; color: white;">
+              Force Re-fetch
+            </button>
+          </div>
+
+          <div id="db-status" style="margin-top: 8px; font-size: 11px; color: var(--text-dim); display: none;"></div>
         </div>
       </div>
     </div>

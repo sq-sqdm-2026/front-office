@@ -53,8 +53,19 @@ if not db_file.exists():
         seed_database()
 else:
     # DB already exists -- just make sure schema is up to date
-    from src.database.db import init_db
+    from src.database.db import init_db, migrate_add_broadcast_stadium_columns
     init_db()
+    # Apply any pending migrations
+    migrate_add_broadcast_stadium_columns()
+
+# Ensure minimum free agents exist
+try:
+    from src.transactions.free_agency import ensure_minimum_free_agents
+    result = ensure_minimum_free_agents(min_count=50)
+    if result.get("action") == "generated":
+        print(f"\nFree agents: {result.get('new_count')} total ({result.get('generated_count')} newly generated)")
+except Exception as e:
+    print(f"Note: Could not verify free agents on startup: {e}")
 
 # Serve static files (frontend)
 static_dir = Path(__file__).parent.parent / "static"

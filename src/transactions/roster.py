@@ -38,17 +38,17 @@ def call_up_player(player_id: int, db_path: str = None) -> dict:
         limit_str = "28 (September expansion)" if is_september else "26"
         return {"error": f"Active roster is full ({limit_str} players). Option or DFA someone first."}
 
-    # Check 40-man roster limit
+    # Check 40-man roster limit (count: active + injured players only)
     forty_man_count = conn.execute("""
         SELECT COUNT(*) as c FROM players
-        WHERE team_id=? AND on_forty_man=1
+        WHERE team_id=? AND roster_status IN ('active', 'injured_dl')
     """, (player["team_id"],)).fetchone()["c"]
 
-    if not player["on_forty_man"] and forty_man_count >= 40:
+    if forty_man_count >= 40:
         conn.close()
         return {"error": "40-man roster is full (40 players). Remove someone from the 40-man first."}
 
-    # If player isn't on 40-man, add them
+    # Mark player as on 40-man (if not already)
     if not player["on_forty_man"]:
         conn.execute("UPDATE players SET on_forty_man=1 WHERE id=?", (player_id,))
 
@@ -145,9 +145,10 @@ def add_to_forty_man(player_id: int, db_path: str = None) -> dict:
         conn.close()
         return {"error": "Player is already on the 40-man roster"}
 
+    # Count actual 40-man roster spots (active + injured only)
     forty_man_count = conn.execute("""
         SELECT COUNT(*) as c FROM players
-        WHERE team_id=? AND on_forty_man=1
+        WHERE team_id=? AND roster_status IN ('active', 'injured_dl')
     """, (player["team_id"],)).fetchone()["c"]
 
     if forty_man_count >= 40:
@@ -238,9 +239,12 @@ def get_roster_summary(team_id: int, db_path: str = None) -> dict:
         WHERE p.team_id=? AND p.is_injured=1
     """, (team_id,), db_path=db_path)
 
+    # 40-man roster includes: active, injured players (10/15/60-day)
+    # Does NOT include: minor leaguers (minors_aaa, minors_aa, minors_low)
+    # Does NOT include: DFA/waivers, free agents, retired players
     forty_man = query("""
         SELECT COUNT(*) as c FROM players
-        WHERE team_id=? AND on_forty_man=1
+        WHERE team_id=? AND roster_status IN ('active', 'injured_dl')
     """, (team_id,), db_path=db_path)
     forty_man_count = forty_man[0]["c"] if forty_man else 0
 

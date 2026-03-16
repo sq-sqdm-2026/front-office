@@ -288,18 +288,30 @@ async def generate_scouting_report(player_id: int, scout_quality: int = 50,
         }
 
     # Calculate OFP (Overall Future Potential)
+    # Use the HIGHER of present or future grades (established stars shouldn't lose OFP)
     avg_future = sum(future_grades.values()) / len(future_grades)
-    # Adjust by makeup (ego affects ceiling)
-    makeup_adj = (50 - p["ego"]) / 100 * 5  # Higher ego slightly lowers ceiling
-    ofp = max(20, min(80, int(avg_future + makeup_adj)))
+    avg_present = sum(present_grades.values()) / len(present_grades)
+    best_avg = max(avg_future, avg_present)
+    # Adjust by makeup (ego affects ceiling, but only slightly)
+    makeup_adj = (50 - p["ego"]) / 100 * 2  # Reduced from *5 to *2
+    ofp = max(20, min(80, int(best_avg + makeup_adj)))
 
     # Generate ceiling and floor descriptions
-    if ofp >= 70:
-        ceiling = "Star/All-Star caliber player"
+    if ofp >= 75:
+        ceiling = "Generational talent / perennial MVP candidate"
+        floor = "All-Star caliber player"
+    elif ofp >= 70:
+        ceiling = "Perennial All-Star with MVP upside"
         floor = "Above-average regular"
+    elif ofp >= 65:
+        ceiling = "All-Star caliber player"
+        floor = "Solid everyday starter"
     elif ofp >= 60:
-        ceiling = "Above-average regular with potential for all-star seasons"
+        ceiling = "Above-average regular with All-Star potential"
         floor = "Solid starter/regular"
+    elif ofp >= 55:
+        ceiling = "Quality everyday player"
+        floor = "Platoon player or useful bench piece"
     elif ofp >= 50:
         ceiling = "Everyday player"
         floor = "Reserve/platoon player"
@@ -338,7 +350,7 @@ async def generate_scouting_report(player_id: int, scout_quality: int = 50,
                                                    ceiling, floor, is_pitcher, mlb_comp,
                                                    scout_quality, db_path)
 
-    return {
+    result = {
         "player_id": player_id,
         "player_name": f"{p['first_name']} {p['last_name']}",
         "position": p["position"],
@@ -368,6 +380,24 @@ async def generate_scouting_report(player_id: int, scout_quality: int = 50,
             "clutch": p["clutch"],
         },
     }
+
+    # Add pitch arsenal data for pitchers
+    if is_pitcher:
+        from .pitch_velocity import calculate_pitch_arsenal
+        pitch_arsenal = calculate_pitch_arsenal(p, uncertainty, scout_quality)
+        result["pitch_arsenal"] = pitch_arsenal
+
+    # Add exit velocity data for batters
+    else:
+        exit_velo = {
+            "avg_exit_velo": round(82 + (p["power_rating"] - 20) * 0.22, 1),
+            "max_exit_velo": round(82 + (p["power_rating"] - 20) * 0.22 + random.uniform(10, 15), 1),
+            "barrel_rate": round(3 + (p["power_rating"] - 20) * 0.20, 1),
+            "hard_hit_rate": round((3 + (p["power_rating"] - 20) * 0.20) * random.uniform(3.0, 4.0), 1),
+        }
+        result["exit_velo"] = exit_velo
+
+    return result
 
 
 async def _generate_scouting_narrative(player: dict, present_grades: dict,

@@ -4,6 +4,7 @@ Handles free agent market, signings, and contract negotiations.
 """
 import json
 import random
+from datetime import datetime
 from ..database.db import get_connection, query, execute
 
 
@@ -104,10 +105,10 @@ def sign_free_agent(player_id: int, team_id: int, salary: int, years: int,
         conn.close()
         return {"error": "Team not found"}
 
-    # Check 40-man roster limit
+    # Check 40-man roster limit (count: active + injured only)
     forty_man_count = conn.execute("""
         SELECT COUNT(*) as c FROM players
-        WHERE team_id=? AND on_forty_man=1
+        WHERE team_id=? AND roster_status IN ('active', 'injured_dl')
     """, (team_id,)).fetchone()["c"]
 
     if forty_man_count >= 40:
@@ -203,10 +204,10 @@ def process_free_agency_day(game_date: str, offseason_day: int = 0,
             if random.random() > 0.05:
                 continue
 
-            # Check 40-man space
+            # Check 40-man space (active + injured only)
             forty_man = conn.execute("""
                 SELECT COUNT(*) as c FROM players
-                WHERE team_id=? AND on_forty_man=1
+                WHERE team_id=? AND roster_status IN ('active', 'injured_dl')
             """, (team["id"],)).fetchone()["c"]
 
             if forty_man >= 40:
@@ -272,10 +273,10 @@ def process_free_agency_day(game_date: str, offseason_day: int = 0,
             # Execute the signing
             team_id = best["team_id"]
 
-            # Re-check 40-man
+            # Re-check 40-man (active + injured only)
             forty_man = conn.execute("""
                 SELECT COUNT(*) as c FROM players
-                WHERE team_id=? AND on_forty_man=1
+                WHERE team_id=? AND roster_status IN ('active', 'injured_dl')
             """, (team_id,)).fetchone()["c"]
 
             if forty_man >= 40:
@@ -316,3 +317,90 @@ def process_free_agency_day(game_date: str, offseason_day: int = 0,
     conn.commit()
     conn.close()
     return events
+
+
+def ensure_minimum_free_agents(min_count: int = 50, db_path: str = None) -> dict:
+    """
+    Check if there are fewer than min_count free agents.
+    If so, generate new ones to bring it back to min_count.
+    Returns info about actions taken.
+    """
+    from ..database.seed import POSITIONS_BATTING, POSITIONS_PITCHING, _generate_player, FIRST_NAMES, LAST_NAMES
+
+    conn = get_connection(db_path)
+
+    # Count current free agents
+    current_count = conn.execute(
+        "SELECT COUNT(*) as c FROM players WHERE roster_status = 'free_agent'"
+    ).fetchone()["c"]
+
+    if current_count >= min_count:
+        conn.close()
+        return {
+            "action": "none",
+            "current_free_agents": current_count,
+            "target_count": min_count,
+            "message": f"Sufficient free agents ({current_count}). No action needed."
+        }
+
+    # Need to generate more
+    needed = min_count - current_count
+    used_names = set()
+
+    # Collect all existing player names
+    existing = conn.execute("SELECT first_name, last_name FROM players").fetchall()
+    for p in existing:
+        used_names.add(f"{p['first_name']} {p['last_name']}")
+
+    generated = 0
+    for _ in range(needed):
+        position = random.choice(POSITIONS_BATTING + POSITIONS_PITCHING)
+        age = random.randint(28, 38)
+
+        if random.random() < 0.85:
+            tier = "bench"
+        else:
+            tier = "starter"
+
+        p = _generate_player(position, tier, used_names)
+        p["age"] = age
+
+        try:
+            conn.execute("""
+                INSERT INTO players (team_id, first_name, last_name, age, birth_country,
+                    bats, throws, position, contact_rating, power_rating, speed_rating,
+                    fielding_rating, arm_rating, stuff_rating, control_rating, stamina_rating,
+                    contact_potential, power_potential, speed_potential, fielding_potential,
+                    arm_potential, stuff_potential, control_potential, stamina_potential,
+                    ego, leadership, work_ethic, clutch, durability,
+                    roster_status, peak_age, development_rate, service_years,
+                    option_years_remaining)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (None, p["first_name"], p["last_name"], p["age"], p["birth_country"],
+                  p["bats"], p["throws"], p["position"],
+                  p["contact_rating"], p["power_rating"], p["speed_rating"],
+                  p["fielding_rating"], p["arm_rating"],
+                  p["stuff_rating"], p["control_rating"], p["stamina_rating"],
+                  p["contact_potential"], p["power_potential"], p["speed_potential"],
+                  p["fielding_potential"], p["arm_potential"],
+                  p["stuff_potential"], p["control_potential"], p["stamina_potential"],
+                  p["ego"], p["leadership"], p["work_ethic"], p["clutch"], p["durability"],
+                  "free_agent", p["peak_age"], p["development_rate"],
+                  p["service_years"], p["option_years_remaining"]))
+            generated += 1
+        except Exception as e:
+            print(f"Error generating free agent: {e}")
+            continue
+
+    conn.commit()
+    conn.close()
+
+    return {
+        "action": "generated",
+        "generated_count": generated,
+        "previous_count": current_count,
+        "new_count": current_count + generated,
+        "target_count": min_count,
+        "message": f"Generated {generated} free agents. Total now: {current_count + generated}"
+    }

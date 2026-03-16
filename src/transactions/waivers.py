@@ -74,10 +74,10 @@ def process_waivers(game_date: str, db_path: str = None) -> list:
                 # ~30% base claim chance, higher with need
                 claim_chance = 0.30 if has_need else 0.10
                 if random.random() < claim_chance:
-                    # Check 40-man space
+                    # Check 40-man space (active + injured only)
                     forty_man = conn.execute("""
                         SELECT COUNT(*) as c FROM players
-                        WHERE team_id=? AND on_forty_man=1
+                        WHERE team_id=? AND roster_status IN ('active', 'injured_dl')
                     """, (team_id,)).fetchone()["c"]
 
                     if forty_man < 40:

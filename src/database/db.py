@@ -26,6 +26,33 @@ def init_db(db_path: str = None):
     conn.close()
 
 
+def migrate_add_broadcast_stadium_columns(db_path: str = None):
+    """Add broadcast deal and stadium upgrade columns if they don't exist."""
+    conn = get_connection(db_path)
+    cursor = conn.cursor()
+
+    # Check if columns exist
+    cursor.execute("PRAGMA table_info(teams)")
+    columns = {row[1] for row in cursor.fetchall()}
+
+    migrations = [
+        ("broadcast_deal_type", "TEXT DEFAULT 'standard'"),
+        ("broadcast_deal_value", "INTEGER DEFAULT 0"),
+        ("broadcast_deal_years_remaining", "INTEGER DEFAULT 3"),
+        ("stadium_built_year", "INTEGER DEFAULT 2000"),
+        ("stadium_condition", "INTEGER DEFAULT 85"),
+        ("stadium_upgrades_json", "TEXT DEFAULT '{}'"),
+        ("stadium_revenue_boost", "INTEGER DEFAULT 0"),
+    ]
+
+    for col_name, col_type in migrations:
+        if col_name not in columns:
+            conn.execute(f"ALTER TABLE teams ADD COLUMN {col_name} {col_type}")
+
+    conn.commit()
+    conn.close()
+
+
 def query(sql: str, params: tuple = (), db_path: str = None) -> list[dict]:
     conn = get_connection(db_path)
     rows = conn.execute(sql, params).fetchall()

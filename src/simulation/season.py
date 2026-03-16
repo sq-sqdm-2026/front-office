@@ -150,10 +150,31 @@ def _load_team_lineup(team_id: int, db_path: str = None) -> tuple:
     starters = [p for p in pitchers_data if p["position"] == "SP"]
     relievers = [p for p in pitchers_data if p["position"] == "RP"]
 
+    # Select today's starter using the rotation system (enforces rest days)
+    starter_id = _rotate_starter(team_id, db_path)
+    starter_player = None
+    if starter_id:
+        starter_player = next((p for p in starters if p["id"] == starter_id), None)
+    # Fallback: if rotation returned an RP (bullpen day) or unknown ID, find them
+    if not starter_player and starter_id:
+        starter_player = next((p for p in pitchers_data if p["id"] == starter_id), None)
+    # Ultimate fallback: first available SP
+    if not starter_player and starters:
+        starter_player = starters[0]
+
     # Add starter
-    if starters:
-        p = starters[0]
-        pitch_types = [("FB", 70), ("SL", 60), ("CB", 55)]
+    if starter_player:
+        p = starter_player
+        # Load pitch repertoire from database instead of hardcoding
+        pitch_types = []
+        if p.get("pitch_repertoire_json"):
+            try:
+                repertoire = json.loads(p["pitch_repertoire_json"])
+                pitch_types = [(pitch["type"], pitch.get("rating", 50)) for pitch in repertoire]
+            except:
+                pass
+        if not pitch_types:
+            pitch_types = [("4SFB", max(50, p["stuff_rating"])), ("SL", max(40, p["control_rating"])), ("CB", max(35, p["control_rating"] - 5))]
         pitchers.append(PitcherStats(
             player_id=p["id"],
             name=f"{p['first_name']} {p['last_name']}",
@@ -190,7 +211,16 @@ def _load_team_lineup(team_id: int, db_path: str = None) -> tuple:
         selected_relievers.extend(fatigued_relievers[:remaining_slots])
 
     for p in selected_relievers:
-        pitch_types = [("FB", 70), ("SL", 60), ("CB", 55)]
+        # Load pitch repertoire from database instead of hardcoding
+        pitch_types = []
+        if p.get("pitch_repertoire_json"):
+            try:
+                repertoire = json.loads(p["pitch_repertoire_json"])
+                pitch_types = [(pitch["type"], pitch.get("rating", 50)) for pitch in repertoire]
+            except:
+                pass
+        if not pitch_types:
+            pitch_types = [("4SFB", max(50, p["stuff_rating"])), ("SL", max(40, p["control_rating"]))]
         pitchers.append(PitcherStats(
             player_id=p["id"],
             name=f"{p['first_name']} {p['last_name']}",
@@ -578,9 +608,6 @@ def sim_day(game_date: str = None, db_path: str = None) -> list:
             home_chemistry=home_chemistry, away_chemistry=away_chemistry
         )
 
-        # Update pitcher rest tracking
-        _update_pitcher_rest(game_date, db_path)
-
         # Save to database
         conn.execute("""
             UPDATE schedule SET is_played=1, home_score=?, away_score=?
@@ -696,6 +723,9 @@ def sim_day(game_date: str = None, db_path: str = None) -> list:
     conn.commit()
     conn.close()
 
+    # Update pitcher fatigue AFTER pitching_lines are committed to the database
+    _update_pitcher_rest(game_date, db_path)
+
     # Update morale for both teams after game (after closing main connection)
     for result_item in results:
         update_player_morale(result_item["home_team_id"], db_path)
@@ -734,6 +764,9 @@ def advance_date(days: int = 1, db_path: str = None) -> dict:
     waiver_outcomes = []
     ai_trade_events = []
     offseason_events = []
+    playoff_results = []
+
+    last_phase = _determine_phase(current, season)
 
     for d in range(days):
         game_date_obj = current + timedelta(days=d)
@@ -743,10 +776,33 @@ def advance_date(days: int = 1, db_path: str = None) -> dict:
         execute("UPDATE game_state SET phase=? WHERE id=1",
                 (phase,), db_path=db_path)
 
+        # Detect transition from regular season to postseason
+        if last_phase == "regular_season" and phase == "postseason":
+            # Calculate season awards at the end of regular season
+            from .awards import calculate_season_awards
+            try:
+                calculate_season_awards(season, db_path)
+                offseason_events.append({"type": "awards_calculated", "season": season})
+            except Exception as e:
+                offseason_events.append({"type": "awards_error", "error": str(e)})
+
         if phase == "offseason":
             from .offseason import process_offseason_day
             off_result = process_offseason_day(game_date, season, db_path)
             offseason_events.append(off_result)
+        elif phase == "postseason":
+            # Handle playoff advancement
+            from .playoffs import advance_playoff_round, get_playoff_bracket, generate_playoff_bracket
+
+            # Check if bracket exists; if not, generate it
+            existing_bracket = query("SELECT COUNT(*) as cnt FROM playoff_bracket WHERE season=?",
+                                    (season,), db_path=db_path)
+            if existing_bracket[0]["cnt"] == 0:
+                # First day of postseason, generate bracket
+                generate_playoff_bracket(season, db_path)
+
+            playoff_round_result = advance_playoff_round(season, db_path)
+            playoff_results.append(playoff_round_result)
         else:
             day_results = sim_day(game_date, db_path)
             all_results.extend(day_results)
@@ -767,6 +823,8 @@ def advance_date(days: int = 1, db_path: str = None) -> dict:
                 if trading_offers:
                     ai_trade_events.extend([{"type": "trading_block_offer", "offer": o} for o in trading_offers])
 
+        last_phase = phase
+
     new_date = (current + timedelta(days=days)).isoformat()
     new_date_obj = current + timedelta(days=days)
     final_phase = _determine_phase(new_date_obj, season)
@@ -786,6 +844,8 @@ def advance_date(days: int = 1, db_path: str = None) -> dict:
         result["ai_trades"] = ai_trade_events
     if offseason_events:
         result["offseason"] = offseason_events
+    if playoff_results:
+        result["playoffs"] = playoff_results
 
     return result
 

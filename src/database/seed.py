@@ -597,6 +597,50 @@ def seed_database(db_path: str = None):
             VALUES (?, ?, ?, ?, ?)
         """, (g["season"], g["game_date"], g["home_team_id"], g["away_team_id"], g["game_number"]))
 
+    # Generate and insert free agents
+    print("Generating free agents...")
+    free_agent_count = random.randint(100, 150)
+    for _ in range(free_agent_count):
+        # Random position
+        position = random.choice(POSITIONS_BATTING + POSITIONS_PITCHING)
+        # Older players (free agents in real life)
+        age = random.randint(28, 38)
+        # Lower to mid ratings
+        if random.random() < 0.85:
+            tier = "bench"
+        else:
+            tier = "starter"
+
+        p = _generate_player(position, tier, used_names)
+        p["age"] = age  # Override age to be older
+
+        cursor = conn.execute("""
+            INSERT INTO players (team_id, first_name, last_name, age, birth_country,
+                bats, throws, position, contact_rating, power_rating, speed_rating,
+                fielding_rating, arm_rating, stuff_rating, control_rating, stamina_rating,
+                contact_potential, power_potential, speed_potential, fielding_potential,
+                arm_potential, stuff_potential, control_potential, stamina_potential,
+                ego, leadership, work_ethic, clutch, durability,
+                roster_status, peak_age, development_rate, service_years,
+                option_years_remaining)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (None, p["first_name"], p["last_name"], p["age"], p["birth_country"],
+              p["bats"], p["throws"], p["position"],
+              p["contact_rating"], p["power_rating"], p["speed_rating"],
+              p["fielding_rating"], p["arm_rating"],
+              p["stuff_rating"], p["control_rating"], p["stamina_rating"],
+              p["contact_potential"], p["power_potential"], p["speed_potential"],
+              p["fielding_potential"], p["arm_potential"],
+              p["stuff_potential"], p["control_potential"], p["stamina_potential"],
+              p["ego"], p["leadership"], p["work_ethic"], p["clutch"], p["durability"],
+              "free_agent", p["peak_age"], p["development_rate"],
+              p["service_years"], p["option_years_remaining"]))
+
+        total_players += 1
+
+    print(f"  Generated {free_agent_count} free agents")
+
     # Initialize game state — just before spring training 2026
     conn.execute("""
         INSERT OR REPLACE INTO game_state (id, current_date, season, phase, difficulty)

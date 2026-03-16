@@ -173,6 +173,56 @@ def seed_real_database(db_path: str = None):
               random.randint(20, 80), random.randint(10, 70),
               json.dumps(objectives), json.dumps({"net_worth_billions": round(random.uniform(1.5, 15.0), 1)})))
 
+    # Generate free agents from MLB data
+    print("Generating free agents...")
+    from .seed import POSITIONS_BATTING, POSITIONS_PITCHING, _generate_player, FIRST_NAMES, LAST_NAMES
+
+    free_agent_count = random.randint(100, 150)
+    used_names = set()
+
+    # Collect all player names already used in rosters
+    existing = conn.execute("SELECT first_name, last_name FROM players").fetchall()
+    for p in existing:
+        used_names.add(f"{p['first_name']} {p['last_name']}")
+
+    for _ in range(free_agent_count):
+        position = random.choice(POSITIONS_BATTING + POSITIONS_PITCHING)
+        age = random.randint(28, 38)
+
+        if random.random() < 0.85:
+            tier = "bench"
+        else:
+            tier = "starter"
+
+        p = _generate_player(position, tier, used_names)
+        p["age"] = age
+
+        cursor = conn.execute("""
+            INSERT INTO players (team_id, first_name, last_name, age, birth_country,
+                bats, throws, position, contact_rating, power_rating, speed_rating,
+                fielding_rating, arm_rating, stuff_rating, control_rating, stamina_rating,
+                contact_potential, power_potential, speed_potential, fielding_potential,
+                arm_potential, stuff_potential, control_potential, stamina_potential,
+                ego, leadership, work_ethic, clutch, durability,
+                roster_status, peak_age, development_rate, service_years,
+                option_years_remaining)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (None, p["first_name"], p["last_name"], p["age"], p["birth_country"],
+              p["bats"], p["throws"], p["position"],
+              p["contact_rating"], p["power_rating"], p["speed_rating"],
+              p["fielding_rating"], p["arm_rating"],
+              p["stuff_rating"], p["control_rating"], p["stamina_rating"],
+              p["contact_potential"], p["power_potential"], p["speed_potential"],
+              p["fielding_potential"], p["arm_potential"],
+              p["stuff_potential"], p["control_potential"], p["stamina_potential"],
+              p["ego"], p["leadership"], p["work_ethic"], p["clutch"], p["durability"],
+              "free_agent", p["peak_age"], p["development_rate"],
+              p["service_years"], p["option_years_remaining"]))
+        total_players += 1
+
+    print(f"  Generated {free_agent_count} free agents")
+
     conn.commit()
 
     # Generate schedule

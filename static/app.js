@@ -21,6 +21,13 @@ const STATE = {
   _rotationData: null,
   sortStates: {},
   teams: [],
+  statsPage: {
+    type: 'batters',
+    sort: 'hr',
+    order: 'desc',
+    page: 1,
+    minPA: 0
+  }
 };
 
 // ============================================================
@@ -344,8 +351,9 @@ function showScreen(name) {
   if (btn) btn.classList.add('active');
   const loaders = {
     calendar: loadCalendar, roster: loadRoster, transactions: loadTransactions, lineup: loadLineup, depthchart: loadDepthChart, standings: loadStandings,
-    schedule: loadSchedule, finances: loadFinances, trades: loadTrades, draft: loadDraft,
+    schedule: loadSchedule, playoffs: loadPlayoffs, finances: loadFinances, trades: loadTrades, draft: loadDraft,
     freeagents: loadFA, findplayers: loadFindPlayers, leaders: loadLeaders, messages: loadMessages,
+    gameday: loadGameDay,
   };
   if (loaders[name]) loaders[name]();
 }
@@ -764,33 +772,78 @@ async function renderBattingLineup() {
     STATE._lineupData[config] = { batting_order: [] };
   }
   const order = STATE._lineupData[config]?.batting_order || [];
+  const hitters = roster.active.filter(p => p.position !== 'SP' && p.position !== 'RP');
 
-  let html = '<div class="lineup-container"><div class="lineup-table">';
-  html += `<div style="display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: var(--bg-2); border-bottom: 1px solid var(--border); font-size: 11px; text-transform: uppercase; color: var(--text-muted);">Lineup: ${config.replace('_', ' ')} | Drag to reorder</div>`;
+  let html = `
+    <div style="display: grid; grid-template-columns: 1fr 250px; gap: 12px; padding: 12px;">
+      <div>
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(100%, 1fr)); gap: 0; border: 1px solid var(--border); border-radius: 4px; overflow: hidden;">
+          <table style="width: 100%; border-collapse: collapse;">
+            <thead style="background: var(--bg-2); border-bottom: 2px solid var(--border);">
+              <tr style="font-size: 11px; text-transform: uppercase; color: var(--text-muted); font-weight: 600;">
+                <th style="width: 30px; padding: 8px; text-align: center; border-right: 1px solid var(--border);">#</th>
+                <th style="width: 30px; padding: 8px; text-align: center; border-right: 1px solid var(--border);">Pos</th>
+                <th style="padding: 8px; text-align: left; border-right: 1px solid var(--border);">Player Name</th>
+                <th style="width: 35px; padding: 8px; text-align: center; border-right: 1px solid var(--border);">B/T</th>
+                <th style="width: 40px; padding: 8px; text-align: center; border-right: 1px solid var(--border);">Con</th>
+                <th style="width: 40px; padding: 8px; text-align: center; border-right: 1px solid var(--border);">Pow</th>
+                <th style="width: 40px; padding: 8px; text-align: center;">Spd</th>
+              </tr>
+            </thead>
+            <tbody>`;
 
   if (order.length) {
     order.forEach((pid, idx) => {
-      const p = roster.active.find(x => x.id === pid);
+      const p = hitters.find(x => x.id === pid);
       if (p) {
-        html += `<div class="lineup-slot" draggable="true" data-idx="${idx}" ondragstart="dragStart(event, ${idx})" ondragover="dragOver(event)" ondragleave="dragLeave(event)" ondrop="dragDrop(event, ${idx})">
-          <div class="lineup-num">${idx + 1}</div>
-          <div class="lineup-pos">${p.position}</div>
-          <div class="lineup-name">${p.first_name} ${p.last_name}</div>
-          <div class="lineup-stats">${p.contact_rating}/${p.power_rating}/${p.speed_rating}</div>
-        </div>`;
+        const con = p.contact_rating || 50;
+        const pow = p.power_rating || 50;
+        const spd = p.speed_rating || 50;
+        html += `
+          <tr draggable="true" data-idx="${idx}" ondragstart="dragStart(event, ${idx})" ondragover="dragOver(event)" ondragleave="dragLeave(event)" ondrop="dragDrop(event, ${idx})"
+              style="border-bottom: 1px solid var(--border); cursor: move; font-size: 12px; background: var(--bg-1);">
+            <td style="padding: 8px; text-align: center; border-right: 1px solid var(--border); font-weight: 600; color: var(--accent);">${idx + 1}</td>
+            <td style="padding: 8px; text-align: center; border-right: 1px solid var(--border); font-size: 11px;">${p.position}</td>
+            <td style="padding: 8px; border-right: 1px solid var(--border); cursor: pointer; text-decoration: underline; text-decoration-color: transparent;" onclick="showPlayer(${p.id})">${p.first_name} ${p.last_name}</td>
+            <td style="padding: 8px; text-align: center; border-right: 1px solid var(--border); font-size: 11px;">${p.bats || '?'}/${p.throws || '?'}</td>
+            <td style="padding: 8px; text-align: center; border-right: 1px solid var(--border);">${gradeHtml(con)}</td>
+            <td style="padding: 8px; text-align: center; border-right: 1px solid var(--border);">${gradeHtml(pow)}</td>
+            <td style="padding: 8px; text-align: center;">${gradeHtml(spd)}</td>
+          </tr>`;
       }
     });
   } else {
-    html += '<div class="empty-state" style="padding: 20px;">No lineup configured. Drag players to set order.</div>';
+    html += `<tr><td colspan="7" style="padding: 20px; text-align: center; color: var(--text-dim);">No lineup configured. Click Auto-Generate or add players from Bench.</td></tr>`;
   }
 
-  html += '</div><div class="lineup-preview"><h3>Available Hitters</h3>';
-  const hitters = roster.active.filter(p => p.position !== 'SP' && p.position !== 'RP');
-  hitters.forEach(p => {
-    const inLineup = order.includes(p.id);
-    html += `<div style="padding: 4px 0; font-size: 11px; cursor: pointer; border-bottom: 1px solid var(--border); opacity: ${inLineup ? 0.5 : 1};" onclick="addToLineup(${p.id})">${p.first_name} ${p.last_name} (${p.position})${inLineup ? ' ✓' : ''}</div>`;
-  });
-  html += '</div></div>';
+  html += `
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div style="border: 1px solid var(--border); border-radius: 4px; padding: 12px; background: var(--bg-1); max-height: 400px; overflow-y: auto;">
+        <div style="font-size: 11px; text-transform: uppercase; color: var(--text-muted); margin-bottom: 8px; font-weight: 600;">Bench</div>`;
+
+  const inLineup = new Set(order);
+  const bench = hitters.filter(p => !inLineup.has(p.id));
+
+  if (bench.length) {
+    bench.forEach(p => {
+      const con = p.contact_rating || 50;
+      const pow = p.power_rating || 50;
+      html += `
+        <div style="padding: 6px; margin-bottom: 4px; background: var(--bg-2); border-radius: 2px; font-size: 11px; cursor: pointer; border: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center;" onclick="addToLineup(${p.id})">
+          <span onclick="event.stopPropagation(); showPlayer(${p.id}); event.stopPropagation();" style="text-decoration: underline; text-decoration-color: transparent; flex: 1;">${p.first_name.charAt(0)} ${p.last_name}</span>
+          <span style="font-size: 10px; color: var(--text-dim);">${p.position}</span>
+        </div>`;
+    });
+  } else {
+    html += `<div style="font-size: 11px; color: var(--text-dim); text-align: center;">All hitters in lineup</div>`;
+  }
+
+  html += `
+      </div>
+    </div>`;
 
   el.innerHTML = html;
 }
@@ -814,31 +867,75 @@ async function renderRotation() {
   if (!roster) return;
 
   const rotation = STATE._rotationData?.rotation || [];
-  let html = '<div style="background: var(--bg-1); border: 1px solid var(--border); padding: 12px;">';
-  html += '<div style="font-size: 11px; text-transform: uppercase; color: var(--text-muted); margin-bottom: 8px;">Starting Pitchers</div>';
+  const starters = roster.active.filter(p => p.position === 'SP');
 
-  rotation.forEach((pid, idx) => {
-    const p = roster.active.find(x => x.id === pid);
-    if (p) {
-      html += `<div style="display: flex; align-items: center; padding: 6px; margin-bottom: 4px; background: var(--bg-2); border-radius: 2px;">
-        <div style="width: 24px; font-weight: 600; color: var(--accent);">${idx + 1}</div>
-        <div style="flex: 1;">${p.first_name} ${p.last_name}</div>
-        <div style="font-size: 10px; color: var(--text-dim);">${p.stuff_rating}/${p.control_rating}/${p.stamina_rating}</div>
-      </div>`;
-    }
-  });
+  let html = `
+    <div style="display: grid; grid-template-columns: 1fr 250px; gap: 12px; padding: 12px;">
+      <div>
+        <div style="border: 1px solid var(--border); border-radius: 4px; overflow: hidden;">
+          <div style="background: var(--bg-2); padding: 12px; border-bottom: 1px solid var(--border); font-size: 12px; text-transform: uppercase; color: var(--text-muted); font-weight: 600;">Starting Rotation</div>
+          <table style="width: 100%; border-collapse: collapse;">
+            <thead style="background: var(--bg-1); border-bottom: 1px solid var(--border);">
+              <tr style="font-size: 11px; text-transform: uppercase; color: var(--text-muted);">
+                <th style="width: 50px; padding: 8px; text-align: center; border-right: 1px solid var(--border);">Role</th>
+                <th style="padding: 8px; text-align: left; border-right: 1px solid var(--border);">Pitcher</th>
+                <th style="width: 40px; padding: 8px; text-align: center; border-right: 1px solid var(--border);">Stuff</th>
+                <th style="width: 40px; padding: 8px; text-align: center; border-right: 1px solid var(--border);">Ctrl</th>
+                <th style="width: 40px; padding: 8px; text-align: center;">Stm</th>
+              </tr>
+            </thead>
+            <tbody>`;
 
-  if (!rotation.length) {
-    html += '<div class="empty-state">No rotation configured</div>';
+  if (rotation.length) {
+    rotation.forEach((entry, idx) => {
+      const pid = entry.player_id || entry;
+      const p = starters.find(x => x.id === pid);
+      if (p) {
+        const stuff = p.stuff_rating || 20;
+        const ctrl = p.control_rating || 20;
+        const stm = p.stamina_rating || 20;
+        const roleDisplay = entry.role || `#${idx + 1}`;
+        html += `
+          <tr style="border-bottom: 1px solid var(--border); font-size: 12px; background: var(--bg-1);">
+            <td style="padding: 8px; text-align: center; border-right: 1px solid var(--border); font-weight: 600; color: var(--accent);">${roleDisplay}</td>
+            <td style="padding: 8px; border-right: 1px solid var(--border); cursor: pointer; text-decoration: underline; text-decoration-color: transparent;" onclick="showPlayer(${p.id})">${p.first_name} ${p.last_name}</td>
+            <td style="padding: 8px; text-align: center; border-right: 1px solid var(--border);">${gradeHtml(stuff)}</td>
+            <td style="padding: 8px; text-align: center; border-right: 1px solid var(--border);">${gradeHtml(ctrl)}</td>
+            <td style="padding: 8px; text-align: center;">${gradeHtml(stm)}</td>
+          </tr>`;
+      }
+    });
+  } else {
+    html += `<tr><td colspan="5" style="padding: 20px; text-align: center; color: var(--text-dim);">No rotation configured. Click Auto-Generate or add starters from Available.</td></tr>`;
   }
 
-  html += '</div><div style="background: var(--bg-1); border: 1px solid var(--border); padding: 12px; margin-top: 12px;">';
-  html += '<div style="font-size: 11px; text-transform: uppercase; color: var(--text-muted); margin-bottom: 8px;">Available Starters</div>';
-  const pitchers = roster.active.filter(p => p.position === 'SP');
-  pitchers.forEach(p => {
-    html += `<div style="padding: 4px 0; font-size: 11px; cursor: pointer; border-bottom: 1px solid var(--border);" onclick="addToRotation(${p.id})">${p.first_name} ${p.last_name} (STF:${p.stuff_rating})</div>`;
-  });
-  html += '</div>';
+  html += `
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div style="border: 1px solid var(--border); border-radius: 4px; padding: 12px; background: var(--bg-1); max-height: 400px; overflow-y: auto;">
+        <div style="font-size: 11px; text-transform: uppercase; color: var(--text-muted); margin-bottom: 8px; font-weight: 600;">Available Starters</div>`;
+
+  const inRotation = new Set(rotation.map(r => r.player_id || r));
+  const available = starters.filter(p => !inRotation.has(p.id));
+
+  if (available.length) {
+    available.forEach(p => {
+      const stuff = p.stuff_rating || 20;
+      html += `
+        <div style="padding: 6px; margin-bottom: 4px; background: var(--bg-2); border-radius: 2px; font-size: 11px; cursor: pointer; border: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center;" onclick="addToRotation(${p.id})">
+          <span onclick="event.stopPropagation(); showPlayer(${p.id});" style="text-decoration: underline; text-decoration-color: transparent; flex: 1;">${p.first_name} ${p.last_name}</span>
+          <span style="font-size: 10px; color: var(--text-dim);">${gradeHtml(stuff)}</span>
+        </div>`;
+    });
+  } else {
+    html += `<div style="font-size: 11px; color: var(--text-dim); text-align: center;">No available starters</div>`;
+  }
+
+  html += `
+      </div>
+    </div>`;
 
   el.innerHTML = html;
 }
@@ -858,27 +955,78 @@ async function renderBullpen() {
   if (!roster) return;
 
   const bullpen = STATE._rotationData?.bullpen || [];
-  let html = '<div style="background: var(--bg-1); border: 1px solid var(--border); padding: 12px;">';
-  html += '<div style="font-size: 11px; text-transform: uppercase; color: var(--text-muted); margin-bottom: 8px;">Relief Pitchers</div>';
+  const relievers = roster.active.filter(p => p.position === 'RP');
 
-  bullpen.forEach((p, idx) => {
-    html += `<div style="display: flex; align-items: center; padding: 6px; margin-bottom: 4px; background: var(--bg-2); border-radius: 2px;">
-      <div style="flex: 1;">${p.name || 'Unknown'}</div>
-      <div style="font-size: 10px; color: var(--text-dim);">${p.role || 'RP'}</div>
-    </div>`;
-  });
+  let html = `
+    <div style="display: grid; grid-template-columns: 1fr 250px; gap: 12px; padding: 12px;">
+      <div>
+        <div style="border: 1px solid var(--border); border-radius: 4px; overflow: hidden;">
+          <div style="background: var(--bg-2); padding: 12px; border-bottom: 1px solid var(--border); font-size: 12px; text-transform: uppercase; color: var(--text-muted); font-weight: 600;">Bullpen</div>
+          <table style="width: 100%; border-collapse: collapse;">
+            <thead style="background: var(--bg-1); border-bottom: 1px solid var(--border);">
+              <tr style="font-size: 11px; text-transform: uppercase; color: var(--text-muted);">
+                <th style="width: 50px; padding: 8px; text-align: center; border-right: 1px solid var(--border);">Role</th>
+                <th style="padding: 8px; text-align: left; border-right: 1px solid var(--border);">Reliever</th>
+                <th style="width: 40px; padding: 8px; text-align: center; border-right: 1px solid var(--border);">Stuff</th>
+                <th style="width: 40px; padding: 8px; text-align: center; border-right: 1px solid var(--border);">Ctrl</th>
+                <th style="width: 50px; padding: 8px; text-align: center;">OVR</th>
+              </tr>
+            </thead>
+            <tbody>`;
 
-  if (!bullpen.length) {
-    html += '<div class="empty-state">No bullpen configured</div>';
+  if (bullpen.length) {
+    bullpen.forEach((entry) => {
+      const pid = entry.player_id || entry.id;
+      const p = relievers.find(x => x.id === pid);
+      if (p) {
+        const stuff = p.stuff_rating || 20;
+        const ctrl = p.control_rating || 20;
+        const ovr = Math.round((stuff + ctrl) / 2);
+        const roleDisplay = entry.role || 'RP';
+        const roleColor = roleDisplay === 'CL' ? '#ff6b6b' : roleDisplay === 'SU' ? '#ffd43b' : 'inherit';
+        html += `
+          <tr style="border-bottom: 1px solid var(--border); font-size: 12px; background: var(--bg-1);">
+            <td style="padding: 8px; text-align: center; border-right: 1px solid var(--border); font-weight: 600; color: ${roleColor};">${roleDisplay}</td>
+            <td style="padding: 8px; border-right: 1px solid var(--border); cursor: pointer; text-decoration: underline; text-decoration-color: transparent;" onclick="showPlayer(${p.id})">${p.first_name} ${p.last_name}</td>
+            <td style="padding: 8px; text-align: center; border-right: 1px solid var(--border);">${gradeHtml(stuff)}</td>
+            <td style="padding: 8px; text-align: center; border-right: 1px solid var(--border);">${gradeHtml(ctrl)}</td>
+            <td style="padding: 8px; text-align: center;">${gradeHtml(ovr)}</td>
+          </tr>`;
+      }
+    });
+  } else {
+    html += `<tr><td colspan="5" style="padding: 20px; text-align: center; color: var(--text-dim);">No bullpen configured. Click Auto-Generate or add relievers from Available.</td></tr>`;
   }
 
-  html += '</div><div style="background: var(--bg-1); border: 1px solid var(--border); padding: 12px; margin-top: 12px;">';
-  html += '<div style="font-size: 11px; text-transform: uppercase; color: var(--text-muted); margin-bottom: 8px;">Available Relievers</div>';
-  const relievers = roster.active.filter(p => p.position === 'RP');
-  relievers.forEach(p => {
-    html += `<div style="padding: 4px 0; font-size: 11px; cursor: pointer; border-bottom: 1px solid var(--border);" onclick="addToBullpen(${p.id}, '${p.first_name} ${p.last_name}')">${p.first_name} ${p.last_name} (CTL:${p.control_rating})</div>`;
-  });
-  html += '</div>';
+  html += `
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div style="border: 1px solid var(--border); border-radius: 4px; padding: 12px; background: var(--bg-1); max-height: 400px; overflow-y: auto;">
+        <div style="font-size: 11px; text-transform: uppercase; color: var(--text-muted); margin-bottom: 8px; font-weight: 600;">Available Relievers</div>`;
+
+  const inBullpen = new Set(bullpen.map(b => b.player_id || b.id));
+  const available = relievers.filter(p => !inBullpen.has(p.id));
+
+  if (available.length) {
+    available.forEach(p => {
+      const stuff = p.stuff_rating || 20;
+      const ctrl = p.control_rating || 20;
+      const ovr = Math.round((stuff + ctrl) / 2);
+      html += `
+        <div style="padding: 6px; margin-bottom: 4px; background: var(--bg-2); border-radius: 2px; font-size: 11px; cursor: pointer; border: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center;" onclick="addToBullpen(${p.id}, '${p.first_name} ${p.last_name}')">
+          <span onclick="event.stopPropagation(); showPlayer(${p.id});" style="text-decoration: underline; text-decoration-color: transparent; flex: 1;">${p.first_name} ${p.last_name}</span>
+          <span style="font-size: 10px; color: var(--text-dim);">${gradeHtml(ovr)}</span>
+        </div>`;
+    });
+  } else {
+    html += `<div style="font-size: 11px; color: var(--text-dim); text-align: center;">No available relievers</div>`;
+  }
+
+  html += `
+      </div>
+    </div>`;
 
   el.innerHTML = html;
 }
@@ -896,6 +1044,31 @@ async function saveLineup() {
   await post(`/roster/${STATE.userTeamId}/lineup`, STATE._lineupData);
   await post(`/roster/${STATE.userTeamId}/rotation`, STATE._rotationData);
   showToast('Lineup saved successfully', 'success');
+}
+
+async function autoGenerateLineup() {
+  if (!STATE.userTeamId) return;
+  showToast('Generating optimal lineup...', 'info');
+  const result = await post(`/roster/${STATE.userTeamId}/auto-lineup`, {});
+  if (result?.success) {
+    // Update local state with generated data
+    STATE._lineupData = result.lineup_data;
+    STATE._rotationData = result.rotation_data;
+    showToast('Lineup generated! Review and save.', 'success');
+    // Re-render all tabs
+    const currentTab = document.querySelector('#s-lineup .section-tabs:nth-of-type(2) .tab-btn.active');
+    if (currentTab?.dataset?.tab === 'batting') {
+      renderBattingLineup();
+    } else if (currentTab?.dataset?.tab === 'rotation') {
+      renderRotation();
+    } else if (currentTab?.dataset?.tab === 'bullpen') {
+      renderBullpen();
+    } else {
+      renderBattingLineup();
+    }
+  } else {
+    showToast(result?.error || 'Error generating lineup', 'error');
+  }
 }
 
 let draggedIdx = null;
@@ -939,6 +1112,22 @@ async function loadFindPlayers() {
     teamSel.innerHTML = '<option value="">All Teams</option>' +
       (STATE.teams || []).map(t => `<option value="${t.id}">${t.abbreviation}</option>`).join('');
   }
+
+  // Add stats filters UI below the search bar
+  const resultsContainer = document.getElementById('find-results');
+  if (resultsContainer && resultsContainer.innerHTML === '') {
+    resultsContainer.innerHTML = `
+      <div style="margin: 12px 0; padding: 12px; background: var(--bg-secondary); border-radius: 4px;">
+        <div style="font-size: 12px; color: var(--text-secondary); margin-bottom: 8px;">
+          <label style="margin-right: 16px;">
+            Min PA/IP: <input type="number" id="find-min-pa" value="0" min="0" max="500" style="width: 50px;" onchange="searchPlayers()">
+          </label>
+        </div>
+        <div style="font-size: 12px; color: var(--text-secondary);">Enter search terms above or select position/team to browse stats.</div>
+      </div>
+      <div class="empty-state">Search for players by name, position, or team</div>
+    `;
+  }
 }
 
 let _searchTimeout = null;
@@ -946,56 +1135,231 @@ async function searchPlayers() {
   clearTimeout(_searchTimeout);
   _searchTimeout = setTimeout(_doSearchPlayers, 250);
 }
+
 async function _doSearchPlayers() {
   const q = document.getElementById('find-search')?.value || '';
   const pos = document.getElementById('find-pos')?.value || '';
   const teamId = document.getElementById('find-team')?.value || '';
+  const minPA = parseInt(document.getElementById('find-min-pa')?.value || '0');
   const results = document.getElementById('find-results');
 
-  if (!q && !pos && !teamId) {
-    results.innerHTML = '<div class="empty-state">Search for players by name, position, or team</div>';
+  // If text search, use the search endpoint
+  if (q) {
+    results.innerHTML = '<div class="loading"><span class="spinner"></span> Searching...</div>';
+    let params = new URLSearchParams();
+    params.set('q', q);
+    if (pos) params.set('position', pos);
+    if (teamId) params.set('team_id', teamId);
+    params.set('limit', '50');
+
+    const matches = await api('/players/search?' + params.toString());
+    if (!matches?.length) {
+      results.innerHTML = '<div class="empty-state">No players found</div>';
+      return;
+    }
+
+    let html = `<div class="table-wrap"><table id="find-table">
+      <thead><tr>
+        <th class="text-col sortable">Name</th><th class="c sortable">Pos</th>
+        <th class="r sortable">Age</th><th class="c">B/T</th>
+        <th class="r sortable">OVR</th><th class="text-col">Team</th>
+        <th class="r sortable">Salary</th><th class="c">Status</th>
+      </tr></thead><tbody>`;
+    matches.forEach(p => {
+      const isPit = p.position === 'SP' || p.position === 'RP';
+      const ovr = isPit
+        ? Math.round((p.stuff_rating + p.control_rating + p.stamina_rating) / 3)
+        : Math.round((p.contact_rating + p.power_rating + p.fielding_rating) / 3);
+      html += `<tr onclick="showPlayer(${p.id})" style="cursor:pointer;">
+        <td class="text-col">${p.first_name} ${p.last_name}</td>
+        <td class="c">${p.position}</td><td class="r">${p.age}</td><td class="c">${p.bats}/${p.throws}</td>
+        <td class="r">${gradeHtml(ovr)}</td>
+        <td class="text-col">${p.abbreviation || 'FA'}</td>
+        <td class="r mono">${p.annual_salary ? fmt$(p.annual_salary) : 'min'}</td>
+        <td class="c" style="font-size:10px">${p.roster_status || ''}</td>
+      </tr>`;
+    });
+    html += '</tbody></table></div>';
+    results.innerHTML = html;
+    makeSortable('find-table');
     return;
   }
 
-  results.innerHTML = '<div class="loading"><span class="spinner"></span> Searching...</div>';
+  // If position/team selected, browse stats
+  if (pos || teamId || minPA > 0) {
+    STATE.statsPage.minPA = minPA;
+    STATE.statsPage.sort = 'hr';
+    STATE.statsPage.order = 'desc';
+    STATE.statsPage.type = (pos === 'SP' || pos === 'RP') ? 'pitchers' : 'batters';
+    await displayStatsBrowser(pos || undefined, teamId || undefined, minPA);
+    return;
+  }
+
+  results.innerHTML = '<div class="empty-state">Search for players by name, position, or team</div>';
+}
+
+async function displayStatsBrowser(position, teamId, minPA) {
+  const results = document.getElementById('find-results');
+  results.innerHTML = '<div class="loading"><span class="spinner"></span> Loading stats...</div>';
+
+  const isBatter = !position || (position !== 'SP' && position !== 'RP');
+  const endpoint = isBatter ? '/stats/all-batters' : '/stats/all-pitchers';
 
   let params = new URLSearchParams();
-  if (q) params.set('q', q);
-  if (pos) params.set('position', pos);
+  params.set('season', '2026');
+  params.set('sort', STATE.statsPage.sort);
+  params.set('order', STATE.statsPage.order);
+  params.set('limit', '100');
+  if (minPA > 0) params.set(isBatter ? 'min_pa' : 'min_ip', minPA.toString());
+  if (position) params.set('position', position);
   if (teamId) params.set('team_id', teamId);
-  params.set('limit', '50');
 
-  const matches = await api('/players/search?' + params.toString());
+  const stats = await api(endpoint + '?' + params.toString());
 
-  if (!matches?.length) {
-    results.innerHTML = '<div class="empty-state">No players found</div>';
+  if (!stats?.length) {
+    results.innerHTML = '<div class="empty-state">No stats found</div>';
     return;
   }
 
-  let html = `<div class="table-wrap"><table id="find-table">
+  if (isBatter) {
+    displayBatterStats(stats);
+  } else {
+    displayPitcherStats(stats);
+  }
+}
+
+function displayBatterStats(stats) {
+  const results = document.getElementById('find-results');
+
+  let html = `<div class="table-wrap"><table id="stats-table" style="font-size: 12px;">
     <thead><tr>
-      <th class="text-col sortable">Name</th><th class="c sortable">Pos</th>
-      <th class="r sortable">Age</th><th class="c">B/T</th>
-      <th class="r sortable">OVR</th><th class="text-col">Team</th>
-      <th class="r sortable">Salary</th><th class="c">Status</th>
+      <th class="text-col" onclick="reloadStats('batters', 'first_name')" style="cursor:pointer;">Name</th>
+      <th class="c" onclick="reloadStats('batters', 'position')" style="cursor:pointer;">Pos</th>
+      <th class="r" onclick="reloadStats('batters', 'games')" style="cursor:pointer;">G</th>
+      <th class="r" onclick="reloadStats('batters', 'ab')" style="cursor:pointer;">AB</th>
+      <th class="r" onclick="reloadStats('batters', 'runs')" style="cursor:pointer;">R</th>
+      <th class="r" onclick="reloadStats('batters', 'hits')" style="cursor:pointer;">H</th>
+      <th class="r" onclick="reloadStats('batters', 'doubles')" style="cursor:pointer;">2B</th>
+      <th class="r" onclick="reloadStats('batters', 'triples')" style="cursor:pointer;">3B</th>
+      <th class="r" onclick="reloadStats('batters', 'hr')" style="cursor:pointer;">HR</th>
+      <th class="r" onclick="reloadStats('batters', 'rbi')" style="cursor:pointer;">RBI</th>
+      <th class="r" onclick="reloadStats('batters', 'bb')" style="cursor:pointer;">BB</th>
+      <th class="r" onclick="reloadStats('batters', 'so')" style="cursor:pointer;">SO</th>
+      <th class="r" onclick="reloadStats('batters', 'sb')" style="cursor:pointer;">SB</th>
+      <th class="r" onclick="reloadStats('batters', 'avg')" style="cursor:pointer;">AVG</th>
+      <th class="r" onclick="reloadStats('batters', 'obp')" style="cursor:pointer;">OBP</th>
+      <th class="r" onclick="reloadStats('batters', 'slg')" style="cursor:pointer;">SLG</th>
+      <th class="r" onclick="reloadStats('batters', 'ops')" style="cursor:pointer;">OPS</th>
+      <th class="c" onclick="reloadStats('batters', 'contact_rating')" style="cursor:pointer;">CON</th>
+      <th class="c" onclick="reloadStats('batters', 'power_rating')" style="cursor:pointer;">POW</th>
+      <th class="c" onclick="reloadStats('batters', 'speed_rating')" style="cursor:pointer;">SPD</th>
+      <th class="text-col">Team</th>
     </tr></thead><tbody>`;
-  matches.forEach(p => {
-    const isPit = p.position === 'SP' || p.position === 'RP';
-    const ovr = isPit
-      ? Math.round((p.stuff_rating + p.control_rating + p.stamina_rating) / 3)
-      : Math.round((p.contact_rating + p.power_rating + p.fielding_rating) / 3);
-    html += `<tr onclick="showPlayer(${p.id})" style="cursor:pointer;">
-      <td class="text-col">${p.first_name} ${p.last_name}</td>
-      <td class="c">${p.position}</td><td class="r">${p.age}</td><td class="c">${p.bats}/${p.throws}</td>
-      <td class="r">${gradeHtml(ovr)}</td>
-      <td class="text-col">${p.abbreviation || 'FA'}</td>
-      <td class="r mono">${p.annual_salary ? fmt$(p.annual_salary) : 'min'}</td>
-      <td class="c" style="font-size:10px">${p.roster_status || ''}</td>
+
+  stats.forEach(s => {
+    const ops = (parseFloat(s.obp) + parseFloat(s.slg)).toFixed(3);
+    html += `<tr onclick="showPlayer(${s.id})" style="cursor:pointer;">
+      <td class="text-col">${s.first_name} ${s.last_name}</td>
+      <td class="c">${s.position}</td>
+      <td class="r">${s.games}</td>
+      <td class="r">${s.ab}</td>
+      <td class="r">${s.runs}</td>
+      <td class="r">${s.hits}</td>
+      <td class="r">${s.doubles}</td>
+      <td class="r">${s.triples}</td>
+      <td class="r">${s.hr}</td>
+      <td class="r">${s.rbi}</td>
+      <td class="r">${s.bb}</td>
+      <td class="r">${s.so}</td>
+      <td class="r">${s.sb}</td>
+      <td class="r mono">${(s.avg || 0).toFixed(3).replace(/^0/, '')}</td>
+      <td class="r mono">${(s.obp || 0).toFixed(3).replace(/^0/, '')}</td>
+      <td class="r mono">${(s.slg || 0).toFixed(3).replace(/^0/, '')}</td>
+      <td class="r mono">${ops.replace(/^0/, '')}</td>
+      <td class="c">${gradeHtml(s.contact_rating)}</td>
+      <td class="c">${gradeHtml(s.power_rating)}</td>
+      <td class="c">${gradeHtml(s.speed_rating)}</td>
+      <td class="text-col">${s.abbreviation}</td>
     </tr>`;
   });
   html += '</tbody></table></div>';
   results.innerHTML = html;
-  makeSortable('find-table');
+}
+
+function displayPitcherStats(stats) {
+  const results = document.getElementById('find-results');
+
+  let html = `<div class="table-wrap"><table id="stats-table" style="font-size: 12px;">
+    <thead><tr>
+      <th class="text-col" onclick="reloadStats('pitchers', 'first_name')" style="cursor:pointer;">Name</th>
+      <th class="c" onclick="reloadStats('pitchers', 'position')" style="cursor:pointer;">Pos</th>
+      <th class="r" onclick="reloadStats('pitchers', 'games')" style="cursor:pointer;">G</th>
+      <th class="r" onclick="reloadStats('pitchers', 'games_started')" style="cursor:pointer;">GS</th>
+      <th class="r" onclick="reloadStats('pitchers', 'wins')" style="cursor:pointer;">W</th>
+      <th class="r" onclick="reloadStats('pitchers', 'losses')" style="cursor:pointer;">L</th>
+      <th class="r" onclick="reloadStats('pitchers', 'saves')" style="cursor:pointer;">SV</th>
+      <th class="r" onclick="reloadStats('pitchers', 'ip_outs')" style="cursor:pointer;">IP</th>
+      <th class="r" onclick="reloadStats('pitchers', 'hits_allowed')" style="cursor:pointer;">H</th>
+      <th class="r" onclick="reloadStats('pitchers', 'er')" style="cursor:pointer;">ER</th>
+      <th class="r" onclick="reloadStats('pitchers', 'bb')" style="cursor:pointer;">BB</th>
+      <th class="r" onclick="reloadStats('pitchers', 'so')" style="cursor:pointer;">SO</th>
+      <th class="r" onclick="reloadStats('pitchers', 'hr_allowed')" style="cursor:pointer;">HR</th>
+      <th class="r" onclick="reloadStats('pitchers', 'era')" style="cursor:pointer;">ERA</th>
+      <th class="r" onclick="reloadStats('pitchers', 'whip')" style="cursor:pointer;">WHIP</th>
+      <th class="r" onclick="reloadStats('pitchers', 'k9')" style="cursor:pointer;">K/9</th>
+      <th class="r" onclick="reloadStats('pitchers', 'bb9')" style="cursor:pointer;">BB/9</th>
+      <th class="r" onclick="reloadStats('pitchers', 'k_bb')" style="cursor:pointer;">K/BB</th>
+      <th class="c" onclick="reloadStats('pitchers', 'stuff_rating')" style="cursor:pointer;">STF</th>
+      <th class="c" onclick="reloadStats('pitchers', 'control_rating')" style="cursor:pointer;">CTL</th>
+      <th class="c" onclick="reloadStats('pitchers', 'stamina_rating')" style="cursor:pointer;">STA</th>
+      <th class="text-col">Team</th>
+    </tr></thead><tbody>`;
+
+  stats.forEach(s => {
+    const ip = Math.floor(s.ip_outs / 3) + '.' + (s.ip_outs % 3);
+    html += `<tr onclick="showPlayer(${s.id})" style="cursor:pointer;">
+      <td class="text-col">${s.first_name} ${s.last_name}</td>
+      <td class="c">${s.position}</td>
+      <td class="r">${s.games}</td>
+      <td class="r">${s.games_started}</td>
+      <td class="r">${s.wins}</td>
+      <td class="r">${s.losses}</td>
+      <td class="r">${s.saves}</td>
+      <td class="r mono">${ip}</td>
+      <td class="r">${s.hits_allowed}</td>
+      <td class="r">${s.er}</td>
+      <td class="r">${s.bb}</td>
+      <td class="r">${s.so}</td>
+      <td class="r">${s.hr_allowed}</td>
+      <td class="r mono">${(s.era || 0).toFixed(2)}</td>
+      <td class="r mono">${(s.whip || 0).toFixed(2)}</td>
+      <td class="r mono">${(s.k9 || 0).toFixed(2)}</td>
+      <td class="r mono">${(s.bb9 || 0).toFixed(2)}</td>
+      <td class="r mono">${(s.k_bb || 0).toFixed(2)}</td>
+      <td class="c">${gradeHtml(s.stuff_rating)}</td>
+      <td class="c">${gradeHtml(s.control_rating)}</td>
+      <td class="c">${gradeHtml(s.stamina_rating)}</td>
+      <td class="text-col">${s.abbreviation}</td>
+    </tr>`;
+  });
+  html += '</tbody></table></div>';
+  results.innerHTML = html;
+}
+
+async function reloadStats(type, sortField) {
+  const pos = document.getElementById('find-pos')?.value || '';
+  const teamId = document.getElementById('find-team')?.value || '';
+  const minPA = parseInt(document.getElementById('find-min-pa')?.value || '0');
+
+  // Toggle sort direction if same field
+  if (STATE.statsPage.sort === sortField) {
+    STATE.statsPage.order = STATE.statsPage.order === 'asc' ? 'desc' : 'asc';
+  } else {
+    STATE.statsPage.sort = sortField;
+    STATE.statsPage.order = 'desc';
+  }
+
+  await displayStatsBrowser(pos || undefined, teamId || undefined, minPA);
 }
 
 // ============================================================
@@ -1030,33 +1394,39 @@ async function showPlayer(pid) {
 
   let statsHtml = '';
   if (d.batting_stats?.length) {
-    const s = d.batting_stats[0];
-    statsHtml += `<div class="section-title" style="margin:12px 0 4px">${STATE.season} Stats</div>
-    <div class="table-wrap"><table>
-      <tr><th class="r">G</th><th class="r">AB</th><th class="r">R</th><th class="r">H</th><th class="r">2B</th>
+    statsHtml += `<div class="section-title" style="margin:12px 0 4px">Batting Stats</div>`;
+    statsHtml += `<div class="table-wrap"><table>
+      <tr><th>Season</th><th class="r">G</th><th class="r">AB</th><th class="r">R</th><th class="r">H</th><th class="r">2B</th>
       <th class="r">3B</th><th class="r">HR</th><th class="r">RBI</th><th class="r">BB</th><th class="r">SO</th>
-      <th class="r">SB</th><th class="r">AVG</th><th class="r">OBP</th><th class="r">SLG</th></tr>
-      <tr><td class="r">${s.games}</td><td class="r">${s.ab}</td><td class="r">${s.runs}</td><td class="r">${s.hits}</td>
+      <th class="r">SB</th><th class="r">AVG</th><th class="r">OBP</th><th class="r">SLG</th></tr>`;
+    d.batting_stats.forEach(s => {
+      const obp = s.ab > 0 ? ((s.hits+s.bb+(s.hbp||0))/(s.ab+s.bb+(s.hbp||0)+(s.sf||0))).toFixed(3).replace(/^0/,'') : '.000';
+      const slg = s.ab > 0 ? ((s.hits+s.doubles+s.triples*2+s.hr*3)/s.ab).toFixed(3).replace(/^0/,'') : '.000';
+      statsHtml += `<tr><td>${s.season}</td><td class="r">${s.games}</td><td class="r">${s.ab}</td><td class="r">${s.runs}</td><td class="r">${s.hits}</td>
       <td class="r">${s.doubles}</td><td class="r">${s.triples}</td><td class="r">${s.hr}</td><td class="r">${s.rbi}</td>
       <td class="r">${s.bb}</td><td class="r">${s.so}</td><td class="r">${s.sb}</td>
       <td class="r">${fmtAvg(s.hits, s.ab)}</td>
-      <td class="r">${s.ab > 0 ? ((s.hits+s.bb+(s.hbp||0))/(s.ab+s.bb+(s.hbp||0)+(s.sf||0))).toFixed(3).replace(/^0/,'') : '.000'}</td>
-      <td class="r">${s.ab > 0 ? ((s.hits+s.doubles+s.triples*2+s.hr*3)/s.ab).toFixed(3).replace(/^0/,'') : '.000'}</td></tr>
-    </table></div>`;
+      <td class="r">${obp}</td>
+      <td class="r">${slg}</td></tr>`;
+    });
+    statsHtml += `</table></div>`;
   }
   if (d.pitching_stats?.length) {
-    const s = d.pitching_stats[0];
-    statsHtml += `<div class="section-title" style="margin:12px 0 4px">${STATE.season} Pitching</div>
-    <div class="table-wrap"><table>
-      <tr><th class="r">G</th><th class="r">GS</th><th class="r">W</th><th class="r">L</th><th class="r">SV</th>
+    statsHtml += `<div class="section-title" style="margin:12px 0 4px">Pitching Stats</div>`;
+    statsHtml += `<div class="table-wrap"><table>
+      <tr><th>Season</th><th class="r">G</th><th class="r">GS</th><th class="r">W</th><th class="r">L</th><th class="r">SV</th>
       <th class="r">IP</th><th class="r">H</th><th class="r">ER</th><th class="r">BB</th><th class="r">SO</th>
-      <th class="r">HR</th><th class="r">ERA</th><th class="r">WHIP</th></tr>
-      <tr><td class="r">${s.games}</td><td class="r">${s.games_started}</td><td class="r">${s.wins}</td><td class="r">${s.losses}</td>
+      <th class="r">HR</th><th class="r">ERA</th><th class="r">WHIP</th></tr>`;
+    d.pitching_stats.forEach(s => {
+      const era = fmtEra(s.er, s.ip_outs);
+      const whip = s.ip_outs > 0 ? ((s.hits_allowed+s.bb)/(s.ip_outs/3)).toFixed(2) : '0.00';
+      statsHtml += `<tr><td>${s.season}</td><td class="r">${s.games}</td><td class="r">${s.games_started}</td><td class="r">${s.wins}</td><td class="r">${s.losses}</td>
       <td class="r">${s.saves}</td><td class="r">${fmtIp(s.ip_outs)}</td><td class="r">${s.hits_allowed}</td>
       <td class="r">${s.er}</td><td class="r">${s.bb}</td><td class="r">${s.so}</td><td class="r">${s.hr_allowed}</td>
-      <td class="r">${fmtEra(s.er, s.ip_outs)}</td>
-      <td class="r">${s.ip_outs > 0 ? ((s.hits_allowed+s.bb)/(s.ip_outs/3)).toFixed(2) : '0.00'}</td></tr>
-    </table></div>`;
+      <td class="r">${era}</td>
+      <td class="r">${whip}</td></tr>`;
+    });
+    statsHtml += `</table></div>`;
   }
 
   // Determine which action buttons to show
@@ -1150,30 +1520,55 @@ function switchPlayerTab(e, tab) {
 // ============================================================
 // PLAYER ACTION BUTTONS
 // ============================================================
-async function confirmDFA(pid) {
-  if (confirm('Designate this player for assignment?')) {
-    const r = await api(`/roster/dfa/${pid}`, { method: 'POST' });
-    if (r?.success) {
-      showToast('Player designated for assignment', 'success');
-      closeModal();
-      loadRoster();
-    } else {
-      showToast(r?.error || 'Error designating player', 'error');
-    }
+function confirmDFA(pid) {
+  document.getElementById('action-confirm-panel')?.remove();
+
+  const bar = document.querySelector('.player-action-bar');
+  if (!bar) return;
+
+  const panel = document.createElement('div');
+  panel.id = 'action-confirm-panel';
+  panel.style.cssText = 'background:var(--bg-2);border:1px solid var(--border);border-radius:4px;padding:12px;margin-top:8px';
+  panel.innerHTML = `
+    <div style="font-size:11px;color:var(--text-muted);margin-bottom:8px">Designate this player for assignment?</div>
+    <div style="display:flex;gap:8px">
+      <button class="btn btn-sm" style="background:var(--red);color:white" onclick="execDFA(${pid})">Confirm DFA</button>
+      <button class="btn btn-sm" onclick="document.getElementById('action-confirm-panel').remove()">Cancel</button>
+    </div>
+  `;
+  bar.after(panel);
+}
+
+async function execDFA(pid) {
+  const r = await api(`/roster/dfa/${pid}`, { method: 'POST' });
+  if (r?.success) {
+    showToast('Player designated for assignment', 'success');
+    closeModal();
+    loadRoster();
+  } else {
+    showToast(r?.error || 'Error designating player', 'error');
   }
 }
 
 function showOptionMenu(pid) {
-  const levels = [
-    { val: 'minors_aaa', label: 'AAA' },
-    { val: 'minors_aa', label: 'AA' },
-    { val: 'minors_low', label: 'Low-A' }
-  ];
-  const opts = levels.map(l => `<option value="${l.val}">${l.label}</option>`).join('');
-  const choice = prompt(`Option player to which level?\n\nAAA\nAA\nLow-A`, 'minors_aaa');
-  if (choice) {
-    optionPlayer(pid, choice);
-  }
+  document.getElementById('action-confirm-panel')?.remove();
+
+  const bar = document.querySelector('.player-action-bar');
+  if (!bar) return;
+
+  const panel = document.createElement('div');
+  panel.id = 'action-confirm-panel';
+  panel.style.cssText = 'background:var(--bg-2);border:1px solid var(--border);border-radius:4px;padding:12px;margin-top:8px';
+  panel.innerHTML = `
+    <div style="font-size:11px;color:var(--text-muted);margin-bottom:8px">Select assignment level:</div>
+    <div style="display:flex;gap:8px">
+      <button class="btn btn-sm" onclick="optionPlayer(${pid}, 'minors_aaa'); document.getElementById('action-confirm-panel').remove()">AAA</button>
+      <button class="btn btn-sm" onclick="optionPlayer(${pid}, 'minors_aa'); document.getElementById('action-confirm-panel').remove()">AA</button>
+      <button class="btn btn-sm" onclick="optionPlayer(${pid}, 'minors_low'); document.getElementById('action-confirm-panel').remove()">Low-A</button>
+      <button class="btn btn-sm" onclick="document.getElementById('action-confirm-panel').remove()">Cancel</button>
+    </div>
+  `;
+  bar.after(panel);
 }
 
 async function optionPlayer(pid, level) {
@@ -1188,18 +1583,24 @@ async function optionPlayer(pid, level) {
 }
 
 function showILMenu(pid) {
-  const tiers = ['10', '15', '60'];
-  let html = '<div style="position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:var(--bg-1);border:1px solid var(--border);border-radius:4px;padding:16px;z-index:10000;min-width:250px">';
-  html += '<div style="font-weight:700;margin-bottom:12px">Place on Injured List</div>';
-  tiers.forEach(tier => {
-    html += `<button class="btn btn-sm" style="width:100%;margin-bottom:8px" onclick="placeOnIL(${pid}, '${tier}'); this.closest('[style*=position]').parentElement.removeChild(this.closest('[style*=position]'))">${tier}-Day IL</button>`;
-  });
-  html += '</div>';
-  const overlay = document.createElement('div');
-  overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:9999';
-  overlay.onclick = () => overlay.parentElement.removeChild(overlay);
-  document.body.appendChild(overlay);
-  overlay.innerHTML = html;
+  document.getElementById('action-confirm-panel')?.remove();
+
+  const bar = document.querySelector('.player-action-bar');
+  if (!bar) return;
+
+  const panel = document.createElement('div');
+  panel.id = 'action-confirm-panel';
+  panel.style.cssText = 'background:var(--bg-2);border:1px solid var(--border);border-radius:4px;padding:12px;margin-top:8px';
+  panel.innerHTML = `
+    <div style="font-size:11px;color:var(--text-muted);margin-bottom:8px">Select IL tier:</div>
+    <div style="display:flex;gap:8px">
+      <button class="btn btn-sm" onclick="placeOnIL(${pid}, '10'); document.getElementById('action-confirm-panel').remove()">10-Day IL</button>
+      <button class="btn btn-sm" onclick="placeOnIL(${pid}, '15'); document.getElementById('action-confirm-panel').remove()">15-Day IL</button>
+      <button class="btn btn-sm" onclick="placeOnIL(${pid}, '60'); document.getElementById('action-confirm-panel').remove()">60-Day IL</button>
+      <button class="btn btn-sm" onclick="document.getElementById('action-confirm-panel').remove()">Cancel</button>
+    </div>
+  `;
+  bar.after(panel);
 }
 
 async function placeOnIL(pid, tier) {
@@ -1217,59 +1618,127 @@ async function placeOnIL(pid, tier) {
   }
 }
 
-async function confirmRelease(pid) {
-  if (confirm('Release this player? They will become a free agent.')) {
-    const r = await api(`/roster/release/${pid}`, { method: 'POST' });
-    if (r?.success) {
-      showToast('Player released', 'success');
-      closeModal();
-      loadRoster();
-    } else {
-      showToast(r?.error || 'Error releasing player', 'error');
-    }
+function confirmRelease(pid) {
+  document.getElementById('action-confirm-panel')?.remove();
+
+  const bar = document.querySelector('.player-action-bar');
+  if (!bar) return;
+
+  const panel = document.createElement('div');
+  panel.id = 'action-confirm-panel';
+  panel.style.cssText = 'background:var(--bg-2);border:1px solid var(--border);border-radius:4px;padding:12px;margin-top:8px';
+  panel.innerHTML = `
+    <div style="font-size:11px;color:var(--text-muted);margin-bottom:8px">Release this player? They will become a free agent.</div>
+    <div style="display:flex;gap:8px">
+      <button class="btn btn-sm" style="background:var(--red);color:white" onclick="execRelease(${pid})">Confirm Release</button>
+      <button class="btn btn-sm" onclick="document.getElementById('action-confirm-panel').remove()">Cancel</button>
+    </div>
+  `;
+  bar.after(panel);
+}
+
+async function execRelease(pid) {
+  const r = await api(`/roster/release/${pid}`, { method: 'POST' });
+  if (r?.success) {
+    showToast('Player released', 'success');
+    closeModal();
+    loadRoster();
+  } else {
+    showToast(r?.error || 'Error releasing player', 'error');
   }
 }
 
-async function confirmCallUp(pid) {
-  if (confirm('Call up this player to the active roster?')) {
-    const r = await api(`/roster/call-up/${pid}`, { method: 'POST' });
-    if (r?.success) {
-      showToast('Player called up', 'success');
-      closeModal();
-      loadRoster();
-    } else {
-      showToast(r?.error || 'Error calling up player', 'error');
-    }
+function confirmCallUp(pid) {
+  document.getElementById('action-confirm-panel')?.remove();
+
+  const bar = document.querySelector('.player-action-bar');
+  if (!bar) return;
+
+  const panel = document.createElement('div');
+  panel.id = 'action-confirm-panel';
+  panel.style.cssText = 'background:var(--bg-2);border:1px solid var(--border);border-radius:4px;padding:12px;margin-top:8px';
+  panel.innerHTML = `
+    <div style="font-size:11px;color:var(--text-muted);margin-bottom:8px">Call up this player to the active roster?</div>
+    <div style="display:flex;gap:8px">
+      <button class="btn btn-sm" style="background:var(--green);color:white" onclick="execCallUp(${pid})">Confirm Call Up</button>
+      <button class="btn btn-sm" onclick="document.getElementById('action-confirm-panel').remove()">Cancel</button>
+    </div>
+  `;
+  bar.after(panel);
+}
+
+async function execCallUp(pid) {
+  const r = await api(`/roster/call-up/${pid}`, { method: 'POST' });
+  if (r?.success) {
+    showToast('Player called up', 'success');
+    closeModal();
+    loadRoster();
+  } else {
+    showToast(r?.error || 'Error calling up player', 'error');
   }
 }
 
-async function confirmActivateFromIL(pid) {
-  if (confirm('Activate this player from the injured list?')) {
-    const r = await api(`/roster/${STATE.userTeamId}/activate`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ player_id: pid })
-    });
-    if (r?.success) {
-      showToast('Player activated from IL', 'success');
-      closeModal();
-      loadRoster();
-    } else {
-      showToast(r?.error || 'Error activating player', 'error');
-    }
+function confirmActivateFromIL(pid) {
+  document.getElementById('action-confirm-panel')?.remove();
+
+  const bar = document.querySelector('.player-action-bar');
+  if (!bar) return;
+
+  const panel = document.createElement('div');
+  panel.id = 'action-confirm-panel';
+  panel.style.cssText = 'background:var(--bg-2);border:1px solid var(--border);border-radius:4px;padding:12px;margin-top:8px';
+  panel.innerHTML = `
+    <div style="font-size:11px;color:var(--text-muted);margin-bottom:8px">Activate this player from the injured list?</div>
+    <div style="display:flex;gap:8px">
+      <button class="btn btn-sm" style="background:var(--green);color:white" onclick="execActivateFromIL(${pid})">Confirm Activation</button>
+      <button class="btn btn-sm" onclick="document.getElementById('action-confirm-panel').remove()">Cancel</button>
+    </div>
+  `;
+  bar.after(panel);
+}
+
+async function execActivateFromIL(pid) {
+  const r = await api(`/roster/${STATE.userTeamId}/activate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ player_id: pid })
+  });
+  if (r?.success) {
+    showToast('Player activated from IL', 'success');
+    closeModal();
+    loadRoster();
+  } else {
+    showToast(r?.error || 'Error activating player', 'error');
   }
 }
 
-async function confirmAddToFortyMan(pid) {
-  if (confirm('Add this player to the 40-man roster?')) {
-    const r = await api(`/roster/forty-man/add/${pid}`, { method: 'POST' });
-    if (r?.success) {
-      showToast('Player added to 40-man roster', 'success');
-      closeModal();
-      loadRoster();
-    } else {
-      showToast(r?.error || 'Error adding player to 40-man', 'error');
-    }
+function confirmAddToFortyMan(pid) {
+  document.getElementById('action-confirm-panel')?.remove();
+
+  const bar = document.querySelector('.player-action-bar');
+  if (!bar) return;
+
+  const panel = document.createElement('div');
+  panel.id = 'action-confirm-panel';
+  panel.style.cssText = 'background:var(--bg-2);border:1px solid var(--border);border-radius:4px;padding:12px;margin-top:8px';
+  panel.innerHTML = `
+    <div style="font-size:11px;color:var(--text-muted);margin-bottom:8px">Add this player to the 40-man roster?</div>
+    <div style="display:flex;gap:8px">
+      <button class="btn btn-sm" style="background:var(--blue);color:white" onclick="execAddToFortyMan(${pid})">Confirm Add</button>
+      <button class="btn btn-sm" onclick="document.getElementById('action-confirm-panel').remove()">Cancel</button>
+    </div>
+  `;
+  bar.after(panel);
+}
+
+async function execAddToFortyMan(pid) {
+  const r = await api(`/roster/forty-man/add/${pid}`, { method: 'POST' });
+  if (r?.success) {
+    showToast('Player added to 40-man roster', 'success');
+    closeModal();
+    loadRoster();
+  } else {
+    showToast(r?.error || 'Error adding player to 40-man', 'error');
   }
 }
 
@@ -1355,7 +1824,10 @@ function showExtendModal(pid) {
         <label style="font-size:12px;color:var(--text-muted);text-transform:uppercase">Annual Salary</label>
         <div style="display:flex;gap:8px;margin-top:4px">
           <input type="range" id="extend-salary-slider" min="500000" max="30000000" step="100000" value="5000000" style="flex:1;cursor:pointer" onchange="updateExtendSalaryDisplay()">
-          <input type="number" id="extend-salary" min="500000" max="30000000" step="100000" value="5000000" style="width:130px;padding:6px;background:var(--bg-2);border:1px solid var(--border);color:var(--text);border-radius:2px" onchange="updateExtendSalarySlider()">
+          <div style="display:flex;flex-direction:column;justify-content:center;align-items:flex-end;min-width:130px">
+            <input type="number" id="extend-salary" min="500000" max="30000000" step="100000" value="5000000" style="width:100%;padding:6px;background:var(--bg-2);border:1px solid var(--border);color:var(--text);border-radius:2px" onchange="updateExtendSalarySlider()">
+            <div id="extend-salary-display" style="font-size:11px;color:var(--accent);font-weight:600;margin-top:4px">$5.0M</div>
+          </div>
         </div>
       </div>
 
@@ -1388,13 +1860,17 @@ function showExtendModal(pid) {
 function updateExtendSalaryDisplay() {
   const slider = document.getElementById('extend-salary-slider');
   const input = document.getElementById('extend-salary');
+  const display = document.getElementById('extend-salary-display');
   input.value = slider.value;
+  if (display) display.textContent = fmt$(parseInt(slider.value));
 }
 
 function updateExtendSalarySlider() {
   const slider = document.getElementById('extend-salary-slider');
   const input = document.getElementById('extend-salary');
+  const display = document.getElementById('extend-salary-display');
   slider.value = input.value;
+  if (display) display.textContent = fmt$(parseInt(input.value));
 }
 
 async function loadExtendData(pid) {
@@ -1416,6 +1892,8 @@ async function loadExtendData(pid) {
     document.getElementById('extend-market').textContent = fmt$(marketValue);
     document.getElementById('extend-salary').value = marketValue;
     document.getElementById('extend-salary-slider').value = marketValue;
+    const display = document.getElementById('extend-salary-display');
+    if (display) display.textContent = fmt$(marketValue);
   }
 }
 
@@ -1508,16 +1986,33 @@ function declineExtension() {
   document.getElementById('extend-modal').remove();
 }
 
-async function confirmAddToBlock(pid) {
-  if (confirm('Add this player to the trading block?')) {
-    const r = await api(`/trading-block/add/${pid}`, { method: 'POST' });
-    if (r?.success) {
-      showToast('Player added to trading block', 'success');
-      closeModal();
-      loadTradingBlock();
-    } else {
-      showToast(r?.error || 'Error adding to trading block', 'error');
-    }
+function confirmAddToBlock(pid) {
+  document.getElementById('action-confirm-panel')?.remove();
+
+  const bar = document.querySelector('.player-action-bar');
+  if (!bar) return;
+
+  const panel = document.createElement('div');
+  panel.id = 'action-confirm-panel';
+  panel.style.cssText = 'background:var(--bg-2);border:1px solid var(--border);border-radius:4px;padding:12px;margin-top:8px';
+  panel.innerHTML = `
+    <div style="font-size:11px;color:var(--text-muted);margin-bottom:8px">Add this player to the trading block?</div>
+    <div style="display:flex;gap:8px">
+      <button class="btn btn-sm" style="background:var(--orange);color:white" onclick="execAddToBlock(${pid})">Confirm Add</button>
+      <button class="btn btn-sm" onclick="document.getElementById('action-confirm-panel').remove()">Cancel</button>
+    </div>
+  `;
+  bar.after(panel);
+}
+
+async function execAddToBlock(pid) {
+  const r = await api(`/trading-block/add/${pid}`, { method: 'POST' });
+  if (r?.success) {
+    showToast('Player added to trading block', 'success');
+    closeModal();
+    loadTradingBlock();
+  } else {
+    showToast(r?.error || 'Error adding to trading block', 'error');
   }
 }
 
@@ -1645,12 +2140,67 @@ async function genScout(pid) {
     </div>`;
   }
 
+  // Pitch Arsenal (for pitchers)
+  let arsenalHtml = '';
+  if (r.pitch_arsenal && Array.isArray(r.pitch_arsenal)) {
+    arsenalHtml = `<div style="background:var(--bg-2);border:1px solid var(--border);padding:10px;margin:12px 0;border-radius:2px">
+      <div style="font-size:9px;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;padding-bottom:8px;border-bottom:1px solid var(--accent)">Pitch Arsenal</div>
+      <table style="width:100%;font-size:11px;border-collapse:collapse">
+        <thead>
+          <tr style="border-bottom:1px solid var(--border)">
+            <th style="text-align:left;padding:4px;color:var(--text-dim)">Pitch</th>
+            <th style="text-align:right;padding:4px;color:var(--text-dim)">Avg Velo</th>
+            <th style="text-align:right;padding:4px;color:var(--text-dim)">Top Velo</th>
+            <th style="text-align:right;padding:4px;color:var(--text-dim)">Grade</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${r.pitch_arsenal.map(p => `
+            <tr style="border-bottom:1px solid var(--border-light)">
+              <td style="padding:4px;color:var(--text)">${p.label || p.type}</td>
+              <td style="text-align:right;padding:4px;color:var(--text)">${p.avg_velocity} mph</td>
+              <td style="text-align:right;padding:4px;color:var(--text)">${p.top_velocity} mph</td>
+              <td style="text-align:right;padding:4px"><span class="grade ${gradeClass(p.rating)}" style="font-weight:700">${p.rating}</span></td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    </div>`;
+  }
+
+  // Exit Velocity (for batters)
+  let exitVeloHtml = '';
+  if (r.exit_velo) {
+    const ev = r.exit_velo;
+    exitVeloHtml = `<div style="background:var(--bg-2);border:1px solid var(--border);padding:10px;margin:12px 0;border-radius:2px">
+      <div style="font-size:9px;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;padding-bottom:8px;border-bottom:1px solid var(--accent)">Exit Velocity</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:11px">
+        <div style="display:flex;justify-content:space-between">
+          <span style="color:var(--text-dim)">Avg Exit Velo</span>
+          <span style="color:var(--text);font-weight:600">${ev.avg_exit_velo} mph</span>
+        </div>
+        <div style="display:flex;justify-content:space-between">
+          <span style="color:var(--text-dim)">Max Exit Velo</span>
+          <span style="color:var(--text);font-weight:600">${ev.max_exit_velo} mph</span>
+        </div>
+        <div style="display:flex;justify-content:space-between">
+          <span style="color:var(--text-dim)">Barrel Rate</span>
+          <span style="color:var(--text);font-weight:600">${ev.barrel_rate}%</span>
+        </div>
+        <div style="display:flex;justify-content:space-between">
+          <span style="color:var(--text-dim)">Hard Hit Rate</span>
+          <span style="color:var(--text);font-weight:600">${ev.hard_hit_rate}%</span>
+        </div>
+      </div>
+    </div>`;
+  }
+
   // Narrative
   const narrativeHtml = r.narrative
     ? `<div class="scouting-report" style="font-style:italic">"${r.narrative}"</div>`
     : '';
 
-  el.innerHTML = gradesHtml + compHtml + makeupHtml + narrativeHtml +
+  el.innerHTML = gradesHtml + compHtml + makeupHtml + arsenalHtml + exitVeloHtml + narrativeHtml +
     `<div style="font-size:9px;color:var(--text-muted);margin-top:8px;text-align:right">Scout confidence: ${r.scout_quality || 'N/A'}/100 | Margin: +/-${margin}</div>`;
 }
 
@@ -1837,6 +2387,157 @@ async function loadStandings() {
   }
 }
 
+function switchStandingsTab(e, tab) {
+  document.querySelectorAll('.tab-btn').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('[id^="standings-tab-"]').forEach(t => t.style.display = 'none');
+  e.target.classList.add('active');
+  document.getElementById(`standings-tab-${tab}`).style.display = 'block';
+
+  if (tab === 'awards') {
+    loadAwards();
+  }
+}
+
+async function loadAwards() {
+  const season = STATE.season || 2026;
+  const el = document.getElementById('awards-body');
+  el.innerHTML = '<div class="loading"><span class="spinner"></span> Loading awards...</div>';
+
+  const awards = await api(`/awards/${season}`);
+  if (!awards) {
+    el.innerHTML = '<div class="empty-state">No awards data available</div>';
+    return;
+  }
+
+  let html = '';
+
+  // MVP
+  html += `<div style="margin-bottom:24px">
+    <div class="section-title">Most Valuable Player</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+      <div>
+        <div class="subsection-title">American League</div>
+        <div class="table-wrap"><table style="font-size:12px">
+          <thead><tr><th class="text-col">Player</th><th class="r">Points</th></tr></thead>
+          <tbody>
+          ${(awards.mvp_al || []).map((p, i) => `<tr class="${i === 0 ? 'winner' : ''}">
+            <td class="text-col clickable" onclick="showPlayer(${p.player_id})">${p.name}</td>
+            <td class="r">${p.points.toFixed(1)}</td>
+          </tr>`).join('')}
+          </tbody>
+        </table></div>
+      </div>
+      <div>
+        <div class="subsection-title">National League</div>
+        <div class="table-wrap"><table style="font-size:12px">
+          <thead><tr><th class="text-col">Player</th><th class="r">Points</th></tr></thead>
+          <tbody>
+          ${(awards.mvp_nl || []).map((p, i) => `<tr class="${i === 0 ? 'winner' : ''}">
+            <td class="text-col clickable" onclick="showPlayer(${p.player_id})">${p.name}</td>
+            <td class="r">${p.points.toFixed(1)}</td>
+          </tr>`).join('')}
+          </tbody>
+        </table></div>
+      </div>
+    </div>
+  </div>`;
+
+  // Cy Young
+  html += `<div style="margin-bottom:24px">
+    <div class="section-title">Cy Young Award</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+      <div>
+        <div class="subsection-title">American League</div>
+        <div class="table-wrap"><table style="font-size:12px">
+          <thead><tr><th class="text-col">Pitcher</th><th class="r">Points</th></tr></thead>
+          <tbody>
+          ${(awards.cy_young_al || []).map((p, i) => `<tr class="${i === 0 ? 'winner' : ''}">
+            <td class="text-col clickable" onclick="showPlayer(${p.player_id})">${p.name}</td>
+            <td class="r">${p.points.toFixed(1)}</td>
+          </tr>`).join('')}
+          </tbody>
+        </table></div>
+      </div>
+      <div>
+        <div class="subsection-title">National League</div>
+        <div class="table-wrap"><table style="font-size:12px">
+          <thead><tr><th class="text-col">Pitcher</th><th class="r">Points</th></tr></thead>
+          <tbody>
+          ${(awards.cy_young_nl || []).map((p, i) => `<tr class="${i === 0 ? 'winner' : ''}">
+            <td class="text-col clickable" onclick="showPlayer(${p.player_id})">${p.name}</td>
+            <td class="r">${p.points.toFixed(1)}</td>
+          </tr>`).join('')}
+          </tbody>
+        </table></div>
+      </div>
+    </div>
+  </div>`;
+
+  // ROY
+  html += `<div style="margin-bottom:24px">
+    <div class="section-title">Rookie of the Year</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+      <div>
+        <div class="subsection-title">American League</div>
+        <div class="table-wrap"><table style="font-size:12px">
+          <thead><tr><th class="text-col">Rookie</th><th class="r">Points</th></tr></thead>
+          <tbody>
+          ${(awards.roy_al || []).map((p, i) => `<tr class="${i === 0 ? 'winner' : ''}">
+            <td class="text-col clickable" onclick="showPlayer(${p.player_id})">${p.name}</td>
+            <td class="r">${p.points.toFixed(1)}</td>
+          </tr>`).join('')}
+          </tbody>
+        </table></div>
+      </div>
+      <div>
+        <div class="subsection-title">National League</div>
+        <div class="table-wrap"><table style="font-size:12px">
+          <thead><tr><th class="text-col">Rookie</th><th class="r">Points</th></tr></thead>
+          <tbody>
+          ${(awards.roy_nl || []).map((p, i) => `<tr class="${i === 0 ? 'winner' : ''}">
+            <td class="text-col clickable" onclick="showPlayer(${p.player_id})">${p.name}</td>
+            <td class="r">${p.points.toFixed(1)}</td>
+          </tr>`).join('')}
+          </tbody>
+        </table></div>
+      </div>
+    </div>
+  </div>`;
+
+  // Gold Glove
+  html += `<div style="margin-bottom:24px">
+    <div class="section-title">Gold Glove Awards</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+      <div>
+        <div class="subsection-title">American League</div>
+        <div class="table-wrap"><table style="font-size:12px">
+          <thead><tr><th class="text-col">Position</th><th class="text-col">Player</th></tr></thead>
+          <tbody>
+          ${Object.entries(awards.gold_glove?.AL || {}).map(([pos, p]) => `<tr>
+            <td class="text-col" style="font-weight:600">${pos}</td>
+            <td class="text-col clickable" onclick="showPlayer(${p.player_id})">${p.name}</td>
+          </tr>`).join('')}
+          </tbody>
+        </table></div>
+      </div>
+      <div>
+        <div class="subsection-title">National League</div>
+        <div class="table-wrap"><table style="font-size:12px">
+          <thead><tr><th class="text-col">Position</th><th class="text-col">Player</th></tr></thead>
+          <tbody>
+          ${Object.entries(awards.gold_glove?.NL || {}).map(([pos, p]) => `<tr>
+            <td class="text-col" style="font-weight:600">${pos}</td>
+            <td class="text-col clickable" onclick="showPlayer(${p.player_id})">${p.name}</td>
+          </tr>`).join('')}
+          </tbody>
+        </table></div>
+      </div>
+    </div>
+  </div>`;
+
+  el.innerHTML = html;
+}
+
 // ============================================================
 // SCHEDULE
 // ============================================================
@@ -1867,9 +2568,11 @@ async function loadFinances() {
   if (!STATE.userTeamId) return;
   const el = document.getElementById('fin-body');
   el.innerHTML = '<div class="loading"><span class="spinner"></span></div>';
-  const [fin, team] = await Promise.all([
+  const [fin, team, broadcast, stadium] = await Promise.all([
     api('/finances/' + STATE.userTeamId + '/details'),
     api('/finances/' + STATE.userTeamId),
+    api('/finances/' + STATE.userTeamId + '/broadcast-status').catch(() => null),
+    api('/finances/' + STATE.userTeamId + '/stadium').catch(() => null),
   ]);
   if (!fin) { el.innerHTML = '<div class="empty-state">Financial data unavailable</div>'; return; }
 
@@ -1899,17 +2602,17 @@ async function loadFinances() {
     <div class="card"><h3>Budget Allocations</h3>
       <div class="slider-group">
         <label class="slider-label">Farm System</label>
-        <input type="range" min="0" max="5000000" step="100000" value="${team?.farm_budget || 0}" oninput="updateBudgetDisplay(event)" onchange="updateBudget('farm', this.value)">
+        <input type="range" min="0" max="50000000" step="500000" value="${team?.farm_budget || 0}" oninput="updateBudgetDisplay(event)" onchange="updateBudget('farm', this.value)">
         <span class="slider-value">${fmt$(team?.farm_budget || 0)}</span>
       </div>
       <div class="slider-group">
         <label class="slider-label">Medical Staff</label>
-        <input type="range" min="0" max="5000000" step="100000" value="${team?.medical_budget || 0}" oninput="updateBudgetDisplay(event)" onchange="updateBudget('medical', this.value)">
+        <input type="range" min="0" max="50000000" step="500000" value="${team?.medical_budget || 0}" oninput="updateBudgetDisplay(event)" onchange="updateBudget('medical', this.value)">
         <span class="slider-value">${fmt$(team?.medical_budget || 0)}</span>
       </div>
       <div class="slider-group">
         <label class="slider-label">Scouting</label>
-        <input type="range" min="0" max="5000000" step="100000" value="${team?.scouting_budget || 0}" oninput="updateBudgetDisplay(event)" onchange="updateBudget('scouting', this.value)">
+        <input type="range" min="0" max="50000000" step="500000" value="${team?.scouting_budget || 0}" oninput="updateBudgetDisplay(event)" onchange="updateBudget('scouting', this.value)">
         <span class="slider-value">${fmt$(team?.scouting_budget || 0)}</span>
       </div>
     </div>
@@ -1924,6 +2627,42 @@ async function loadFinances() {
         <input type="range" min="50" max="200" step="5" value="${team?.concession_price_pct || 100}" oninput="updatePricingDisplay(event)" onchange="updateBudget('concession_price', this.value)">
         <span class="slider-value">${team?.concession_price_pct || 100}%</span>
       </div>
+    </div>
+    <div class="card"><h3>Broadcast Rights</h3>
+      ${broadcast ? `
+        <div class="fin-line"><span>Current Deal</span><span>${broadcast.current_deal_name}</span></div>
+        <div class="fin-line"><span>Annual Value</span><span class="positive">${fmt$(broadcast.current_deal_value)}</span></div>
+        <div class="fin-line"><span>Years Remaining</span><span>${broadcast.years_remaining}</span></div>
+        <div style="margin-top:12px;border-top:1px solid var(--border);padding-top:8px">
+          <div class="subsection-title">Available Deals</div>
+          ${broadcast.available_deals.map(deal => `
+            <div style="padding:6px 0;font-size:11px;display:flex;justify-content:space-between">
+              <span>${deal.name} (${deal.years}yr) ${fmt$(deal.estimated_value)}</span>
+              <button class="btn btn-sm" onclick="negotiateBroadcastDeal('${deal.type}')" style="padding:2px 6px;font-size:10px">${deal.type === broadcast.current_deal_type ? 'Current' : 'Negotiate'}</button>
+            </div>
+          `).join('')}
+        </div>
+      ` : '<div style="color:var(--text-dim)">Loading broadcast data...</div>'}
+    </div>
+    <div class="card"><h3>Stadium Management</h3>
+      ${stadium ? `
+        <div class="fin-line"><span>${stadium.stadium_name}</span><span>${stadium.built_year}</span></div>
+        <div class="fin-line"><span>Capacity</span><span>${stadium.capacity.toLocaleString()}</span></div>
+        <div class="fin-line"><span>Condition</span><span>${stadium.condition}/100</span></div>
+        ${stadium.annual_upgrade_revenue > 0 ? `<div class="fin-line"><span>Annual Upgrade Revenue</span><span class="positive">${fmt$(stadium.annual_upgrade_revenue)}</span></div>` : ''}
+        <div style="margin-top:12px;border-top:1px solid var(--border);padding-top:8px">
+          <div class="subsection-title">Available Upgrades</div>
+          ${stadium.available_upgrades.map(upgrade => `
+            <div style="padding:6px 0;font-size:10px;display:flex;justify-content:space-between;align-items:center">
+              <div>
+                <div style="font-weight:600">${upgrade.name}</div>
+                <div style="color:var(--text-dim);font-size:9px">${fmt$(upgrade.cost)} | +${fmt$(upgrade.annual_revenue)}/yr</div>
+              </div>
+              <button class="btn btn-sm" onclick="purchaseStadiumUpgrade('${upgrade.key}')" style="padding:2px 6px;font-size:10px" ${upgrade.purchased ? 'disabled' : ''}>${upgrade.purchased ? 'Owned' : 'Buy'}</button>
+            </div>
+          `).join('')}
+        </div>
+      ` : '<div style="color:var(--text-dim)">Loading stadium data...</div>'}
     </div>
   </div>`;
 }
@@ -1964,6 +2703,43 @@ async function updateBudget(type, value) {
     }
   } catch (err) {
     showToast('Error updating', 'error');
+  }
+}
+
+// ============================================================
+// BROADCAST RIGHTS & STADIUM MANAGEMENT
+// ============================================================
+async function negotiateBroadcastDeal(dealType) {
+  if (!STATE.userTeamId) return;
+  try {
+    const result = await post(`/finances/${STATE.userTeamId}/broadcast-deal`, {
+      deal_type: dealType
+    });
+    if (result.success) {
+      showToast(result.message || 'Deal negotiated successfully', 'success');
+      loadFinances();
+    } else {
+      showToast(result.error || 'Failed to negotiate deal', 'error');
+    }
+  } catch (err) {
+    showToast('Error negotiating broadcast deal', 'error');
+  }
+}
+
+async function purchaseStadiumUpgrade(upgradeKey) {
+  if (!STATE.userTeamId) return;
+  try {
+    const result = await post(`/finances/${STATE.userTeamId}/stadium-upgrade`, {
+      upgrade_key: upgradeKey
+    });
+    if (result.success) {
+      showToast(result.message || 'Upgrade purchased', 'success');
+      loadFinances();
+    } else {
+      showToast(result.error || 'Failed to purchase upgrade', 'error');
+    }
+  } catch (err) {
+    showToast('Error purchasing stadium upgrade', 'error');
   }
 }
 
@@ -2206,7 +2982,10 @@ async function openFANegotiationModal(pid) {
         <label style="font-size:12px;color:var(--text-muted);text-transform:uppercase">Annual Salary</label>
         <div style="display:flex;gap:8px;margin-top:4px">
           <input type="range" id="fa-salary-slider" min="500000" max="20000000" step="100000" value="${askingSalary}" style="flex:1;cursor:pointer" onchange="updateFASalaryDisplay()">
-          <input type="number" id="fa-salary-input" min="500000" max="20000000" step="100000" value="${askingSalary}" style="width:120px;padding:6px;background:var(--bg-2);border:1px solid var(--border);color:var(--text);border-radius:2px" onchange="updateFASalarySlider()">
+          <div style="display:flex;flex-direction:column;justify-content:center;align-items:flex-end;min-width:120px">
+            <input type="number" id="fa-salary-input" min="500000" max="20000000" step="100000" value="${askingSalary}" style="width:100%;padding:6px;background:var(--bg-2);border:1px solid var(--border);color:var(--text);border-radius:2px" onchange="updateFASalarySlider()">
+            <div id="fa-salary-display" style="font-size:11px;color:var(--accent);font-weight:600;margin-top:4px">${fmt$(askingSalary)}</div>
+          </div>
         </div>
         <div style="font-size:10px;color:var(--text-muted);margin-top:4px" id="fa-salary-pct">100% of asking</div>
       </div>
@@ -2236,22 +3015,26 @@ function updateFASalaryDisplay() {
   const slider = document.getElementById('fa-salary-slider');
   const input = document.getElementById('fa-salary-input');
   const pctDiv = document.getElementById('fa-salary-pct');
+  const display = document.getElementById('fa-salary-display');
 
   input.value = slider.value;
 
   const pct = (slider.value / window._faAskingSalary * 100).toFixed(0);
   pctDiv.textContent = pct + '% of asking';
+  if (display) display.textContent = fmt$(parseInt(slider.value));
 }
 
 function updateFASalarySlider() {
   const slider = document.getElementById('fa-salary-slider');
   const input = document.getElementById('fa-salary-input');
   const pctDiv = document.getElementById('fa-salary-pct');
+  const display = document.getElementById('fa-salary-display');
 
   slider.value = input.value;
 
   const pct = (input.value / window._faAskingSalary * 100).toFixed(0);
   pctDiv.textContent = pct + '% of asking';
+  if (display) display.textContent = fmt$(parseInt(input.value));
 }
 
 async function submitFANegotiation(pid) {
@@ -2410,58 +3193,99 @@ async function loadDepthChart() {
     return;
   }
 
-  // Create position group container
-  let html = '<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 24px;">';
+  // Create a comprehensive table-based depth chart
+  let html = `
+    <div style="margin-bottom: 24px;">
+      <h4 style="margin-top: 0; margin-bottom: 12px;">Position Players</h4>
+      <div class="table-wrap">
+        <table id="depth-pos-table" style="font-size: 13px;">
+          <thead><tr>
+            <th class="text-col">Position</th>
+            <th class="text-col">Starter</th>
+            <th class="r" style="width: 80px;">Rating</th>
+            <th class="text-col">Backup 1</th>
+            <th class="r" style="width: 80px;">Rating</th>
+            <th class="text-col">Backup 2</th>
+            <th class="r" style="width: 80px;">Rating</th>
+          </tr></thead>
+          <tbody>`;
 
-  // Infield
-  html += '<div style="grid-column: 1/2;"><h3 style="margin-top: 0;">Infield</h3>';
-  const infield = ['C', '1B', '2B', '3B', 'SS'];
-  for (const pos of infield) {
-    html += renderDepthPosition(pos, data[pos] || []);
-  }
-  html += '</div>';
+  const positions = ['C', '1B', '2B', '3B', 'SS', 'LF', 'CF', 'RF', 'DH'];
+  positions.forEach(pos => {
+    const players = data[pos] || [];
+    const starter = players.find(p => p.status === 'starter');
+    const backups = players.filter(p => p.status !== 'starter');
 
-  // Outfield & DH
-  html += '<div style="grid-column: 2/3;"><h3 style="margin-top: 0;">Outfield / DH</h3>';
-  const outfield = ['LF', 'CF', 'RF', 'DH'];
-  for (const pos of outfield) {
-    html += renderDepthPosition(pos, data[pos] || []);
-  }
-  html += '</div>';
+    html += `<tr>
+      <td class="text-col"><strong>${pos}</strong></td>
+      <td class="text-col" onclick="showPlayer(${starter?.player_id})" style="cursor:pointer;">${starter ? starter.name : '—'}</td>
+      <td class="r">${starter ? `<span class="grade ${gradeClass(starter.overall)}">${toGrade(starter.overall)}</span> <span class="mono" style="font-size:10px">(${starter.overall})</span>` : '—'}</td>
+      <td class="text-col" onclick="${backups[0] ? `showPlayer(${backups[0].player_id})` : ''}" style="${backups[0] ? 'cursor:pointer;' : ''}">${backups[0] ? backups[0].name : '—'}</td>
+      <td class="r">${backups[0] ? `<span class="grade ${gradeClass(backups[0].overall)}">${toGrade(backups[0].overall)}</span> <span class="mono" style="font-size:10px">(${backups[0].overall})</span>` : '—'}</td>
+      <td class="text-col" onclick="${backups[1] ? `showPlayer(${backups[1].player_id})` : ''}" style="${backups[1] ? 'cursor:pointer;' : ''}">${backups[1] ? backups[1].name : '—'}</td>
+      <td class="r">${backups[1] ? `<span class="grade ${gradeClass(backups[1].overall)}">${toGrade(backups[1].overall)}</span> <span class="mono" style="font-size:10px">(${backups[1].overall})</span>` : '—'}</td>
+    </tr>`;
+  });
+  html += '</tbody></table></div></div>';
 
-  html += '</div>';
+  // Pitching staff
+  html += `
+    <div>
+      <h4 style="margin-top: 24px; margin-bottom: 12px;">Pitching Staff</h4>
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 24px;">
+        <div>
+          <h5 style="margin-top: 0;">Starting Rotation</h5>
+          <div class="table-wrap">
+            <table id="depth-sp-table" style="font-size: 13px;">
+              <thead><tr>
+                <th class="text-col" style="width: 40px;">SP#</th>
+                <th class="text-col">Pitcher</th>
+                <th class="r" style="width: 80px;">Rating</th>
+              </tr></thead>
+              <tbody>`;
 
-  // Pitching
-  html += '<div style="margin-top: 24px;"><h3>Pitching</h3>';
-  html += '<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 24px;">';
-  html += '<div><h4>Starters</h4>' + renderDepthPosition('SP', data['SP'] || []) + '</div>';
-  html += '<div><h4>Relievers</h4>' + renderDepthPosition('RP', data['RP'] || []) + '</div>';
-  html += '</div></div>';
+  const starters = (data['SP'] || []).slice(0, 5);
+  starters.forEach((p, i) => {
+    html += `<tr>
+      <td class="text-col" style="font-weight:bold;">${i+1}</td>
+      <td class="text-col" onclick="showPlayer(${p.player_id})" style="cursor:pointer;">${p.name}</td>
+      <td class="r"><span class="grade ${gradeClass(p.overall)}">${toGrade(p.overall)}</span> <span class="mono" style="font-size:10px">(${p.overall})</span></td>
+    </tr>`;
+  });
+  html += '</tbody></table></div></div>';
+
+  html += `
+        <div>
+          <h5 style="margin-top: 0;">Relief Corps</h5>
+          <div class="table-wrap">
+            <table id="depth-rp-table" style="font-size: 13px;">
+              <thead><tr>
+                <th class="text-col">Role</th>
+                <th class="text-col">Pitcher</th>
+                <th class="r" style="width: 80px;">Rating</th>
+              </tr></thead>
+              <tbody>`;
+
+  // Categorize relievers
+  const relieverRoles = [
+    { label: 'CL', find: (name) => name && (name.includes('Closer') || name.includes('Save')) },
+    { label: 'SU', find: (name) => name && (name.includes('Setup') || name.includes('Relief')) },
+    { label: 'MR', find: (name) => name && (name.includes('Middle') || name.includes('Long')) },
+    { label: 'LR', find: (name) => true }  // Catch-all
+  ];
+
+  const relievers = (data['RP'] || []).slice(0, 8);
+  relievers.forEach((p, i) => {
+    const role = i === 0 ? 'CL' : i === 1 ? 'SU' : i < 4 ? 'MR' : 'LR';
+    html += `<tr>
+      <td class="text-col"><strong>${role}</strong></td>
+      <td class="text-col" onclick="showPlayer(${p.player_id})" style="cursor:pointer;">${p.name}</td>
+      <td class="r"><span class="grade ${gradeClass(p.overall)}">${toGrade(p.overall)}</span> <span class="mono" style="font-size:10px">(${p.overall})</span></td>
+    </tr>`;
+  });
+  html += '</tbody></table></div></div></div></div>';
 
   document.getElementById('depthchart-body').innerHTML = html;
-}
-
-function renderDepthPosition(pos, players) {
-  let html = `<div style="margin-bottom: 16px; padding: 12px; border-left: 3px solid #666; background: var(--bg-secondary);">`;
-  html += `<div style="font-weight: bold; margin-bottom: 8px; font-size: 14px;">${pos}</div>`;
-
-  if (players.length === 0) {
-    html += '<div style="font-size: 12px; color: var(--text-secondary);">No players</div>';
-  } else {
-    for (let i = 0; i < players.length; i++) {
-      const p = players[i];
-      const statusLabel = p.status === 'starter' ? '★' : p.status === 'backup' ? '▲' : '◆';
-      const ratingClass = p.overall >= 65 ? 'grade-elite' : p.overall >= 50 ? 'grade-good' : 'grade-avg';
-      html += `
-        <div style="display: flex; justify-content: space-between; align-items: center; font-size: 13px; margin-bottom: 6px; padding: 4px 0; border-bottom: 1px solid var(--border);">
-          <span style="flex: 1; cursor: pointer;" onclick="showPlayerModal(${p.player_id})">${statusLabel} ${p.name}</span>
-          <span class="grade ${ratingClass}" style="font-size: 11px;">${p.overall}</span>
-        </div>
-      `;
-    }
-  }
-  html += '</div>';
-  return html;
 }
 
 
@@ -2647,16 +3471,42 @@ function closeSettingsModal() {
   document.getElementById('settings-modal').style.display = 'none';
 }
 
-async function reseedDatabase(forceFetch) {
+async function migrateDatabase() {
+  const statusEl = document.getElementById('db-status');
+  const btn = document.getElementById('migrate-btn');
+  statusEl.style.display = 'block';
+  statusEl.textContent = 'Running schema migrations...';
+  btn.disabled = true;
+
+  try {
+    const resp = await fetch('/admin/migrate', { method: 'POST' });
+    const data = await resp.json();
+    if (data.success) {
+      statusEl.textContent = 'Migrations complete: ' + (data.changes || []).join(', ');
+      showToast('Schema updated successfully!', 'success');
+    } else {
+      statusEl.textContent = 'Migration error: ' + data.error;
+      showToast('Migration failed: ' + data.error, 'error');
+    }
+  } catch (e) {
+    statusEl.textContent = 'Error: ' + e.message;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function executeReseed(forceFetch) {
   const endpoint = forceFetch ? '/admin/refetch' : '/admin/reseed';
-  const statusEl = document.getElementById('reseed-status');
+  const statusEl = document.getElementById('db-status');
   const reseedBtn = document.getElementById('reseed-btn');
   const refetchBtn = document.getElementById('refetch-btn');
 
-  if (!confirm('This will DELETE your current save and reseed with real MLB rosters. Continue?')) return;
+  // Hide confirmation panels
+  document.getElementById('reseed-confirm').style.display = 'none';
+  document.getElementById('refetch-confirm').style.display = 'none';
 
   statusEl.style.display = 'block';
-  statusEl.textContent = 'Working... fetching MLB data (this takes 3-5 minutes)...';
+  statusEl.textContent = 'Working... this takes 3-5 minutes if fetching from the MLB API...';
   reseedBtn.disabled = true;
   refetchBtn.disabled = true;
 
@@ -2830,6 +3680,58 @@ function filterDraftProspects() {
   // Sort
   if (sort === 'rank') {
     filtered.sort((a, b) => a.overall_rank - b.overall_rank);
+  } else if (sort === 'overall') {
+    // Calculate overall rating as average of all ceiling ratings
+    filtered.sort((a, b) => {
+      const avgA = (a.contact_ceiling + a.power_ceiling + a.speed_ceiling + a.fielding_ceiling + a.arm_ceiling + a.stuff_ceiling + a.control_ceiling) / 7;
+      const avgB = (b.contact_ceiling + b.power_ceiling + b.speed_ceiling + b.fielding_ceiling + b.arm_ceiling + b.stuff_ceiling + b.control_ceiling) / 7;
+      return avgB - avgA;
+    });
+  } else if (sort === 'stuff') {
+    // Pitchers by stuff ceiling to top
+    filtered.sort((a, b) => {
+      const isPitcherA = a.position === 'SP' || a.position === 'RP';
+      const isPitcherB = b.position === 'SP' || b.position === 'RP';
+      if (isPitcherA && !isPitcherB) return -1;
+      if (!isPitcherA && isPitcherB) return 1;
+      return b.stuff_ceiling - a.stuff_ceiling;
+    });
+  } else if (sort === 'contact') {
+    // Hitters by contact ceiling to top
+    filtered.sort((a, b) => {
+      const isPitcherA = a.position === 'SP' || a.position === 'RP';
+      const isPitcherB = b.position === 'SP' || b.position === 'RP';
+      if (!isPitcherA && isPitcherB) return -1;
+      if (isPitcherA && !isPitcherB) return 1;
+      return b.contact_ceiling - a.contact_ceiling;
+    });
+  } else if (sort === 'power') {
+    // Hitters by power ceiling to top
+    filtered.sort((a, b) => {
+      const isPitcherA = a.position === 'SP' || a.position === 'RP';
+      const isPitcherB = b.position === 'SP' || b.position === 'RP';
+      if (!isPitcherA && isPitcherB) return -1;
+      if (isPitcherA && !isPitcherB) return 1;
+      return b.power_ceiling - a.power_ceiling;
+    });
+  } else if (sort === 'speed') {
+    filtered.sort((a, b) => b.speed_ceiling - a.speed_ceiling);
+  } else if (sort === 'ceiling') {
+    // Max of all ceiling values
+    filtered.sort((a, b) => {
+      const maxA = Math.max(a.contact_ceiling, a.power_ceiling, a.speed_ceiling, a.fielding_ceiling, a.arm_ceiling, a.stuff_ceiling, a.control_ceiling);
+      const maxB = Math.max(b.contact_ceiling, b.power_ceiling, b.speed_ceiling, b.fielding_ceiling, b.arm_ceiling, b.stuff_ceiling, b.control_ceiling);
+      return maxB - maxA;
+    });
+  } else if (sort === 'signability') {
+    // Signability: combination of age (younger = easier) and overall ceiling
+    filtered.sort((a, b) => {
+      const avgA = (a.contact_ceiling + a.power_ceiling + a.speed_ceiling + a.fielding_ceiling + a.arm_ceiling + a.stuff_ceiling + a.control_ceiling) / 7;
+      const avgB = (b.contact_ceiling + b.power_ceiling + b.speed_ceiling + b.fielding_ceiling + b.arm_ceiling + b.stuff_ceiling + b.control_ceiling) / 7;
+      const scoreA = avgA + (25 - a.age) * 0.5;
+      const scoreB = avgB + (25 - b.age) * 0.5;
+      return scoreB - scoreA;
+    });
   } else if (sort === 'age') {
     filtered.sort((a, b) => a.age - b.age);
   } else if (sort === 'position') {
@@ -2849,18 +3751,46 @@ function renderDraftProspectsList(prospects) {
   let html = '<div style="display: flex; flex-direction: column;">';
   prospects.forEach(p => {
     const isPitcher = p.position === 'SP' || p.position === 'RP';
-    const mainRating = isPitcher ? (Math.round((p.stuff_floor + p.stuff_ceiling) / 2)) : (Math.round((p.contact_floor + p.contact_ceiling) / 2));
+    const avgOverall = (p.contact_ceiling + p.power_ceiling + p.speed_ceiling + p.fielding_ceiling + p.arm_ceiling + p.stuff_ceiling + p.control_ceiling) / 7;
+
+    // Get top ratings to display as badges
+    let topRatings = [];
+    if (isPitcher) {
+      topRatings = [
+        { label: 'STF', value: p.stuff_ceiling },
+        { label: 'CTL', value: p.control_ceiling }
+      ];
+    } else {
+      // Hitters - get top 3 tools
+      const ratings = [
+        { label: 'CON', value: p.contact_ceiling },
+        { label: 'POW', value: p.power_ceiling },
+        { label: 'SPD', value: p.speed_ceiling },
+        { label: 'FLD', value: p.fielding_ceiling },
+        { label: 'ARM', value: p.arm_ceiling }
+      ];
+      topRatings = ratings.sort((a, b) => b.value - a.value).slice(0, 3);
+    }
+
+    const badgesHtml = topRatings.map(r => `<span style="display: inline-block; margin-right: 4px; padding: 2px 6px; background: var(--bg-3); border-radius: 2px; font-size: 10px; color: var(--accent); font-weight: 600;">${r.label} ${r.value}</span>`).join('');
+
     html += `
-      <div class="draft-prospect-item" onclick="selectProspect(${p.id})" style="padding: 8px 12px; border-bottom: 1px solid var(--border); cursor: pointer; transition: background 0.2s; ${_selectedProspect?.id === p.id ? 'background: var(--bg-selected);' : 'background: var(--bg-1);'} hover {background: var(--bg-3);}">
-        <div style="display: flex; justify-content: space-between; align-items: center;">
+      <div class="draft-prospect-item" onclick="selectProspect(${p.id})" style="padding: 10px 12px; border-bottom: 1px solid var(--border); cursor: pointer; transition: background 0.2s; ${_selectedProspect?.id === p.id ? 'background: var(--bg-selected);' : 'background: var(--bg-1);'} hover {background: var(--bg-3);}">
+        <div style="display: flex; justify-content: space-between; align-items: flex-start;">
           <div style="flex: 1;">
             <div style="font-weight: 600;">${p.first_name} ${p.last_name}</div>
-            <div style="font-size: 11px; color: var(--text-dim);">
+            <div style="font-size: 10px; color: var(--text-dim); margin: 4px 0;">
               <span class="badge">${p.position}</span>
               Age ${p.age} | Rank ${p.overall_rank}
             </div>
+            <div style="font-size: 11px; margin-top: 4px;">
+              ${badgesHtml}
+            </div>
           </div>
-          <div style="text-align: right; font-weight: 600; color: var(--accent);">${mainRating}</div>
+          <div style="text-align: right; margin-left: 8px;">
+            <div style="font-size: 14px; font-weight: 700; color: var(--accent);">${Math.round(avgOverall)}</div>
+            <div style="font-size: 10px; color: var(--text-dim);">OVR</div>
+          </div>
         </div>
       </div>
     `;
@@ -2911,15 +3841,21 @@ function selectProspect(prospectId) {
     `;
   }
 
+  html += `
+    <div style="margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border);">
+      <button class="btn btn-secondary" style="width: 100%; margin-bottom: 12px; font-size: 12px;" onclick="genProspectScout(${_selectedProspect.id})">Generate Scout Report</button>
+  `;
+
   if (_selectedProspect.scouting_report) {
     html += `
       <div style="margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); font-size: 11px; line-height: 1.6;">
-        <div style="color: var(--text-muted); margin-bottom: 4px;">Scouting Report</div>
+        <div style="color: var(--text-muted); margin-bottom: 4px;">Quick Notes</div>
         <div style="font-style: italic; color: var(--text-dim);">${_selectedProspect.scouting_report}</div>
       </div>
     `;
   }
 
+  html += '</div><div id="prospect-scout-report" style="margin-top: 12px;"></div>';
   html += '</div>';
   preview.innerHTML = html;
 
@@ -2928,6 +3864,129 @@ function selectProspect(prospectId) {
 
   // Update list selection
   filterDraftProspects();
+}
+
+async function genProspectScout(prospectId) {
+  const el = document.getElementById('prospect-scout-report');
+  el.innerHTML = '<span class="spinner" style="display: inline-block; width: 12px; height: 12px; border: 2px solid var(--accent); border-radius: 50%; border-right-color: transparent; animation: spin 0.6s linear infinite;"></span> Generating scout report...';
+
+  const r = await api(`/draft/prospect/${prospectId}/scouting-report`);
+  if (!r || r.error) {
+    el.innerHTML = '<div style="color: var(--red); font-size: 12px;">Scout report unavailable.</div>';
+    return;
+  }
+
+  const pg = r.present_grades || {};
+  const fg = r.future_grades || {};
+  const margin = r.uncertainty_margin || 0;
+
+  function gradePair(label, pres, fut) {
+    const pCls = gradeClass(pres);
+    const fCls = gradeClass(fut);
+    return `<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border);font-size:11px">
+      <span style="width:70px;color:var(--text-dim)">${label}</span>
+      <span class="grade-pair"><span class="${pCls}" style="font-weight:700">${pres}</span><span style="color:var(--text-muted)">/</span><span class="${fCls}" style="font-weight:700">${fut}</span></span>
+      <span style="color:var(--text-muted);font-size:9px">+/-${margin}</span>
+    </div>`;
+  }
+
+  let gradesHtml = '<div class="scouting-grid"><div>';
+  gradesHtml += '<div style="font-size:9px;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:4px;padding-bottom:4px;border-bottom:1px solid var(--accent)">Floor / Ceiling Grades (20-80)</div>';
+  for (const [key, val] of Object.entries(pg)) {
+    gradesHtml += gradePair(key.charAt(0).toUpperCase() + key.slice(1), val, fg[key] || val);
+  }
+  gradesHtml += '</div><div>';
+
+  // OFP, ceiling, floor, risk
+  gradesHtml += `<div class="card" style="padding:10px">
+    <div style="text-align:center;margin-bottom:8px">
+      <div style="font-size:9px;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px">Overall Future Potential</div>
+      <div class="grade ${gradeClass(r.ofp)}" style="font-size:28px;width:auto">${r.ofp}</div>
+    </div>
+    <div style="font-size:11px;margin-top:8px">
+      <div style="display:flex;justify-content:space-between;margin-bottom:3px"><span style="color:var(--green)">Ceiling</span><span>${r.ceiling || 'N/A'}</span></div>
+      <div style="display:flex;justify-content:space-between;margin-bottom:3px"><span style="color:var(--red)">Floor</span><span>${r.floor || 'N/A'}</span></div>
+      <div style="display:flex;justify-content:space-between;margin-bottom:3px"><span style="color:var(--text-dim)">Risk</span><span style="text-transform:capitalize">${r.risk_level || 'N/A'}</span></div>
+      <div style="display:flex;justify-content:space-between"><span style="color:var(--text-dim)">ETA</span><span>${r.eta || 'N/A'}</span></div>
+    </div>
+  </div>`;
+  gradesHtml += '</div></div>';
+
+  // MLB comp
+  let compHtml = '';
+  if (r.mlb_comp) {
+    const c = r.mlb_comp;
+    compHtml = `<div style="background:var(--bg-2);border:1px solid var(--border);padding:10px;margin:12px 0;border-radius:2px">
+      <div style="font-size:9px;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px">MLB Comparison</div>
+      <div style="font-size:14px;font-weight:700;color:var(--accent)">${c.name}</div>
+      <div style="font-size:11px;color:var(--text-dim)">${c.position} | ${c.years}</div>
+      <div style="font-size:11px;color:var(--text-dim);margin-top:2px">${c.peak_stats || ''}</div>
+      <div style="font-size:12px;margin-top:6px;color:var(--text);line-height:1.5">${c.description || c.reasoning || ''}</div>
+    </div>`;
+  }
+
+  // Pitch Arsenal (for pitchers)
+  let arsenalHtml = '';
+  if (r.pitch_arsenal && Array.isArray(r.pitch_arsenal)) {
+    arsenalHtml = `<div style="background:var(--bg-2);border:1px solid var(--border);padding:10px;margin:12px 0;border-radius:2px">
+      <div style="font-size:9px;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;padding-bottom:8px;border-bottom:1px solid var(--accent)">Pitch Arsenal</div>
+      <table style="width:100%;font-size:11px;border-collapse:collapse">
+        <thead>
+          <tr style="border-bottom:1px solid var(--border)">
+            <th style="text-align:left;padding:4px;color:var(--text-dim)">Pitch</th>
+            <th style="text-align:right;padding:4px;color:var(--text-dim)">Avg Velo</th>
+            <th style="text-align:right;padding:4px;color:var(--text-dim)">Top Velo</th>
+            <th style="text-align:right;padding:4px;color:var(--text-dim)">Grade</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${r.pitch_arsenal.map(p => `
+            <tr style="border-bottom:1px solid var(--border-light)">
+              <td style="padding:4px;color:var(--text)">${p.label || p.type}</td>
+              <td style="text-align:right;padding:4px;color:var(--text)">${p.avg_velocity} mph</td>
+              <td style="text-align:right;padding:4px;color:var(--text)">${p.top_velocity} mph</td>
+              <td style="text-align:right;padding:4px"><span class="grade ${gradeClass(p.rating)}" style="font-weight:700">${p.rating}</span></td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    </div>`;
+  }
+
+  // Exit Velocity (for batters)
+  let exitVeloHtml = '';
+  if (r.exit_velo) {
+    const ev = r.exit_velo;
+    exitVeloHtml = `<div style="background:var(--bg-2);border:1px solid var(--border);padding:10px;margin:12px 0;border-radius:2px">
+      <div style="font-size:9px;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;padding-bottom:8px;border-bottom:1px solid var(--accent)">Exit Velocity Projection</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:11px">
+        <div style="display:flex;justify-content:space-between">
+          <span style="color:var(--text-dim)">Avg Exit Velo</span>
+          <span style="color:var(--text);font-weight:600">${ev.avg_exit_velo} mph</span>
+        </div>
+        <div style="display:flex;justify-content:space-between">
+          <span style="color:var(--text-dim)">Max Exit Velo</span>
+          <span style="color:var(--text);font-weight:600">${ev.max_exit_velo} mph</span>
+        </div>
+        <div style="display:flex;justify-content:space-between">
+          <span style="color:var(--text-dim)">Barrel Rate</span>
+          <span style="color:var(--text);font-weight:600">${ev.barrel_rate}%</span>
+        </div>
+        <div style="display:flex;justify-content:space-between">
+          <span style="color:var(--text-dim)">Hard Hit Rate</span>
+          <span style="color:var(--text);font-weight:600">${ev.hard_hit_rate}%</span>
+        </div>
+      </div>
+    </div>`;
+  }
+
+  // Narrative
+  const narrativeHtml = r.narrative
+    ? `<div class="scouting-report" style="font-style:italic;margin:12px 0;padding:10px;background:var(--bg-2);border-left:3px solid var(--accent)">"${r.narrative}"</div>`
+    : '';
+
+  el.innerHTML = gradesHtml + compHtml + arsenalHtml + exitVeloHtml + narrativeHtml +
+    `<div style="font-size:9px;color:var(--text-muted);margin-top:8px;text-align:right">Scout confidence: ${r.scout_quality || 'N/A'}/100 | Margin: +/-${margin}</div>`;
 }
 
 async function draftSelectedProspect() {
@@ -2976,6 +4035,154 @@ function renderDraftedPlayers(drafted) {
   });
   html += '</tbody></table></div>';
   el.innerHTML = html;
+}
+
+// ============================================================
+// GAME DAY
+// ============================================================
+let _gameDayData = null;
+let _gameDayPlays = [];
+let _gameDayPlayIndex = 0;
+let _gameDayAnimating = false;
+let _gameDayPlaySpeed = 500;  // ms per play
+
+async function loadGameDay() {
+  const el = document.getElementById('s-gameday');
+  if (!el) return;
+
+  // Check if user has a team
+  const state = await fetch('/game-state').then(r => r.json());
+  if (!state.user_team_id) {
+    el.innerHTML = '<div style="padding: 2rem;"><p>No user team selected. Please select a team first.</p><button class="btn btn-primary" onclick="showScreen(\'calendar\')">Back to Calendar</button></div>';
+    return;
+  }
+
+  // Try to load today's game
+  const response = await fetch('/sim/game-live', { method: 'POST' });
+  const data = await response.json();
+
+  if (data.error) {
+    el.innerHTML = `
+      <div style="padding: 2rem; text-align: center;">
+        <h3>No Game Today</h3>
+        <p>${data.error}</p>
+        <button class="btn btn-primary" onclick="simDays(1)">Advance to Next Day</button>
+      </div>
+    `;
+    return;
+  }
+
+  _gameDayData = data;
+  _gameDayPlays = data.plays || [];
+  _gameDayPlayIndex = 0;
+
+  renderGameDayUI();
+  initGameDayDisplay();
+}
+
+function renderGameDayUI() {
+  const d = _gameDayData;
+  const el = document.getElementById('s-gameday');
+  if (!el) return;
+
+  // Update team names
+  document.getElementById('gd-away-name').textContent = `${d.away_team.abbr}`;
+  document.getElementById('gd-home-name').textContent = `${d.home_team.abbr}`;
+
+  // Update score
+  document.getElementById('gd-score-display').innerHTML = `
+    <div>${d.away_team.abbr}: ${d.final_score[1]}</div>
+    <div>${d.home_team.abbr}: ${d.final_score[0]}</div>
+  `;
+
+  // Build linescore placeholder
+  const linescore = `
+    <div class="linescore-team">${d.away_team.abbr}</div>
+    <div class="linescore-inning">1</div>
+    <div class="linescore-inning">2</div>
+    <div class="linescore-inning">3</div>
+    <div class="linescore-inning">4</div>
+    <div class="linescore-inning">5</div>
+    <div class="linescore-inning">6</div>
+    <div class="linescore-inning">7</div>
+    <div class="linescore-inning">8</div>
+    <div class="linescore-inning">9</div>
+    <div class="linescore-rhe" style="grid-column: 11 / 13;">
+      <span>R: ${d.final_score[1]}</span>
+      <span>H: 0</span>
+      <span>E: 0</span>
+    </div>
+  `;
+  document.getElementById('gd-linescore').innerHTML = linescore;
+
+  // Situation display
+  document.getElementById('gd-situation-text').textContent = 'Game Complete';
+
+  // Clear plays feed
+  document.getElementById('gd-plays-feed').innerHTML = '';
+  _gameDayPlays.forEach(play => {
+    addPlayToFeed(play);
+  });
+}
+
+function initGameDayDisplay() {
+  // Reset animation
+  _gameDayPlayIndex = 0;
+  _gameDayAnimating = false;
+  document.getElementById('gd-plays-feed').innerHTML = '';
+}
+
+function addPlayToFeed(play) {
+  const feed = document.getElementById('gd-plays-feed');
+  if (!feed) return;
+
+  const playEl = document.createElement('div');
+  playEl.className = `play-item ${play.half}`;
+  playEl.innerHTML = `
+    <span class="play-time">I${play.inning}${play.half === 'top' ? 'T' : 'B'}:</span>
+    <span class="play-text">${play.description}</span>
+  `;
+  feed.appendChild(playEl);
+}
+
+function startLiveGameSim() {
+  if (_gameDayAnimating || !_gameDayPlays.length) return;
+
+  _gameDayAnimating = true;
+  _gameDayPlayIndex = 0;
+
+  document.getElementById('gd-plays-feed').innerHTML = '';
+  animateNextPlay();
+}
+
+function animateNextPlay() {
+  if (_gameDayPlayIndex >= _gameDayPlays.length) {
+    _gameDayAnimating = false;
+    return;
+  }
+
+  const play = _gameDayPlays[_gameDayPlayIndex];
+  addPlayToFeed(play);
+  _gameDayPlayIndex++;
+
+  if (_gameDayAnimating) {
+    setTimeout(animateNextPlay, _gameDayPlaySpeed);
+  }
+}
+
+function skipToEnd() {
+  _gameDayAnimating = false;
+  _gameDayPlayIndex = _gameDayPlays.length;
+  document.getElementById('gd-plays-feed').innerHTML = '';
+  _gameDayPlays.forEach(play => addPlayToFeed(play));
+}
+
+function updateSimSpeed(value) {
+  _gameDayPlaySpeed = parseInt(value);
+  const speeds = {
+    100: '4.0x', 250: '2.0x', 500: '1.0x', 1000: '0.5x', 2000: '0.25x'
+  };
+  document.getElementById('speed-display').textContent = speeds[value] || '1.0x';
 }
 
 // ============================================================
@@ -3071,27 +4278,6 @@ function renderTransactionsList(tab, search = '', pos = '') {
   el.innerHTML = html;
 }
 
-function showTransactionConfirm(action, playerId) {
-  const player = _transactionsData?.active?.find(p => p.id === playerId);
-  if (!player) return;
-
-  const messages = {
-    'il': `Place ${player.first_name} ${player.last_name} on IL?`,
-    'dfa': `Designate ${player.first_name} ${player.last_name} for assignment?`,
-    'option': `Option ${player.first_name} ${player.last_name} to minors?`
-  };
-
-  if (confirm(messages[action])) {
-    if (action === 'il') {
-      placeOnIL(playerId);
-    } else if (action === 'dfa') {
-      dfaPlayer(playerId);
-    } else if (action === 'option') {
-      optionPlayer(playerId);
-    }
-  }
-}
-
 async function callUpPlayer(playerId) {
   const btn = event.target;
   btn.disabled = true;
@@ -3107,24 +4293,6 @@ async function callUpPlayer(playerId) {
     loadTransactions();
   } else {
     showToast(result?.error || 'Call-up failed', 'error');
-  }
-}
-
-async function optionPlayer(playerId) {
-  const btn = event.target;
-  btn.disabled = true;
-  btn.textContent = '...';
-
-  const result = await post(`/roster/option/${playerId}`, { level: 'minors_aaa' });
-
-  btn.disabled = false;
-  btn.textContent = 'Option';
-
-  if (result?.success) {
-    showToast(`Optioned ${result.name}`, 'success');
-    loadTransactions();
-  } else {
-    showToast(result?.error || 'Option failed', 'error');
   }
 }
 
@@ -3149,17 +4317,6 @@ async function dfaPlayer(playerId) {
   }
 }
 
-async function placeOnIL(playerId) {
-  const result = await post(`/roster/${STATE.userTeamId}/place-il`, { player_id: playerId, tier: '60' });
-
-  if (result?.success) {
-    showToast('Placed on IL', 'success');
-    loadTransactions();
-  } else {
-    showToast(result?.error || 'IL placement failed', 'error');
-  }
-}
-
 async function activateFromIL(playerId) {
   const result = await post(`/roster/${STATE.userTeamId}/activate`, { player_id: playerId });
 
@@ -3169,6 +4326,88 @@ async function activateFromIL(playerId) {
   } else {
     showToast(result?.error || 'Activation failed', 'error');
   }
+}
+
+// ============================================================
+// PLAYOFFS
+// ============================================================
+async function loadPlayoffs() {
+  const el = document.getElementById('playoffs-body');
+
+  if (STATE.phase !== 'postseason') {
+    el.innerHTML = '<div class="msg-note">Playoffs begin in October during postseason.</div>';
+    return;
+  }
+
+  const bracket = await api('/playoffs/bracket');
+  if (!bracket || !bracket.by_round) {
+    el.innerHTML = '<div class="msg-note">No playoff bracket data available.</div>';
+    return;
+  }
+
+  let html = '<div class="playoff-container">';
+
+  // Build HTML for each round
+  const rounds = ['wild_card', 'division_series', 'championship_series', 'world_series'];
+  const roundNames = {
+    'wild_card': 'Wild Card',
+    'division_series': 'Division Series',
+    'championship_series': 'Championship Series',
+    'world_series': 'World Series'
+  };
+
+  for (const round of rounds) {
+    const series = bracket.by_round[round] || [];
+    if (series.length === 0) continue;
+
+    html += `<div class="playoff-round">
+      <div class="playoff-round-name">${roundNames[round]}</div>
+      <div class="playoff-series-list">`;
+
+    for (const s of series) {
+      const higher = s.higher_seed;
+      const lower = s.lower_seed;
+      const winner = s.winner;
+      const isComplete = s.is_complete;
+
+      const higherWins = s.higher_seed.wins || 0;
+      const lowerWins = s.lower_seed.wins || 0;
+
+      let winCondition = 2; // WC is best-of-3
+      if (round !== 'wild_card') winCondition = 4; // DS, CS, WS are best-of-7
+
+      const higherStatus = higherWins >= winCondition ? 'series-winner' : 'series-team';
+      const lowerStatus = lowerWins >= winCondition ? 'series-winner' : 'series-team';
+
+      html += `<div class="playoff-matchup">
+        <div class="series-id">${s.series_id.toUpperCase()}</div>
+        <div class="playoff-team ${higherStatus}">
+          <div class="team-info">
+            <span class="team-abbr">${higher.abbr || 'TBD'}</span>
+            <span class="team-name">${higher.name || 'TBD'}</span>
+          </div>
+          <div class="series-score">${higherWins}</div>
+        </div>
+        <div class="playoff-team ${lowerStatus}">
+          <div class="team-info">
+            <span class="team-abbr">${lower.abbr || 'TBD'}</span>
+            <span class="team-name">${lower.name || 'TBD'}</span>
+          </div>
+          <div class="series-score">${lowerWins}</div>
+        </div>`;
+
+      if (isComplete && winner) {
+        html += `<div class="series-winner">🏆 ${winner.abbr}</div>`;
+      }
+
+      html += `</div>`;
+    }
+
+    html += `</div></div>`;
+  }
+
+  html += '</div>';
+  el.innerHTML = html;
 }
 
 // ============================================================

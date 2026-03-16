@@ -14,6 +14,7 @@ from ..transactions.contracts import (
 from ..transactions.free_agency import process_free_agency_day
 from ..transactions.international_fa import generate_international_prospects, process_international_signings
 from ..financial.economics import save_season_finances
+from ..financial.broadcast_stadium import apply_broadcast_deal_decrement, apply_broadcast_loyalty_penalties
 from ..simulation.player_development import process_offseason_development
 
 
@@ -226,6 +227,9 @@ def process_offseason_day(game_date: str, season: int, db_path: str = None) -> d
             for team in teams:
                 team_id = team["id"]
                 save_season_finances(team_id, season, db_path)
+                # Apply broadcast deal year decrement and loyalty penalties
+                apply_broadcast_deal_decrement(team_id, db_path)
+                apply_broadcast_loyalty_penalties(team_id, db_path)
             events["events"].append({
                 "type": "season_finances_calculated",
                 "teams": len(teams),

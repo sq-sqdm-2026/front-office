@@ -323,51 +323,51 @@ def _pitch_characteristics(pitch_type: str) -> dict:
     characteristics = {
         "4SFB": {
             "contact": 0.95, "strikeout": 1.0, "hr": 1.10, "contact_quality": 0.90,
-            "gb_rate_mod": 0.95, "babip_mod": 1.0, "usage": 0.35
+            "gb_rate_mod": 0.95, "babip_mod": 1.0, "usage": 0.35, "base_velocity": 94.0
         },
         "2SFB": {
             "contact": 0.90, "strikeout": 0.95, "hr": 0.95, "contact_quality": 0.85,
-            "gb_rate_mod": 1.15, "babip_mod": 0.98, "usage": 0.15
+            "gb_rate_mod": 1.15, "babip_mod": 0.98, "usage": 0.15, "base_velocity": 93.0
         },
         "CUT": {
             "contact": 0.88, "strikeout": 1.05, "hr": 0.85, "contact_quality": 0.92,
-            "gb_rate_mod": 1.05, "babip_mod": 0.95, "usage": 0.12
+            "gb_rate_mod": 1.05, "babip_mod": 0.95, "usage": 0.12, "base_velocity": 89.0
         },
         "SI": {
             "contact": 0.85, "strikeout": 0.92, "hr": 0.80, "contact_quality": 0.80,
-            "gb_rate_mod": 1.20, "babip_mod": 0.93, "usage": 0.12
+            "gb_rate_mod": 1.20, "babip_mod": 0.93, "usage": 0.12, "base_velocity": 93.0
         },
         "SL": {
             "contact": 0.80, "strikeout": 1.20, "hr": 0.75, "contact_quality": 0.95,
-            "gb_rate_mod": 0.90, "babip_mod": 1.0, "usage": 0.15
+            "gb_rate_mod": 0.90, "babip_mod": 1.0, "usage": 0.15, "base_velocity": 85.0
         },
         "CB": {
             "contact": 0.78, "strikeout": 1.15, "hr": 0.70, "contact_quality": 0.95,
-            "gb_rate_mod": 0.95, "babip_mod": 1.02, "usage": 0.10
+            "gb_rate_mod": 0.95, "babip_mod": 1.02, "usage": 0.10, "base_velocity": 79.0
         },
         "CH": {
             "contact": 0.88, "strikeout": 1.08, "hr": 0.82, "contact_quality": 0.88,
-            "gb_rate_mod": 1.05, "babip_mod": 0.97, "usage": 0.08
+            "gb_rate_mod": 1.05, "babip_mod": 0.97, "usage": 0.08, "base_velocity": 85.0
         },
         "SPL": {
             "contact": 0.75, "strikeout": 1.12, "hr": 0.65, "contact_quality": 0.93,
-            "gb_rate_mod": 1.00, "babip_mod": 0.98, "usage": 0.06
+            "gb_rate_mod": 1.00, "babip_mod": 0.98, "usage": 0.06, "base_velocity": 86.0
         },
         "KC": {
             "contact": 0.82, "strikeout": 1.18, "hr": 0.72, "contact_quality": 0.94,
-            "gb_rate_mod": 0.98, "babip_mod": 1.0, "usage": 0.04
+            "gb_rate_mod": 0.98, "babip_mod": 1.0, "usage": 0.04, "base_velocity": 78.0
         },
         "SW": {
             "contact": 0.80, "strikeout": 1.08, "hr": 0.78, "contact_quality": 0.92,
-            "gb_rate_mod": 0.92, "babip_mod": 1.0, "usage": 0.03
+            "gb_rate_mod": 0.92, "babip_mod": 1.0, "usage": 0.03, "base_velocity": 82.0
         },
         "SC": {
             "contact": 0.79, "strikeout": 1.10, "hr": 0.75, "contact_quality": 0.94,
-            "gb_rate_mod": 0.95, "babip_mod": 1.01, "usage": 0.02
+            "gb_rate_mod": 0.95, "babip_mod": 1.01, "usage": 0.02, "base_velocity": 80.0
         },
         "KN": {
             "contact": 0.85, "strikeout": 1.25, "hr": 0.90, "contact_quality": 0.85,
-            "gb_rate_mod": 1.10, "babip_mod": 1.05, "usage": 0.02
+            "gb_rate_mod": 1.10, "babip_mod": 1.05, "usage": 0.02, "base_velocity": 78.0
         },
     }
     return characteristics.get(pitch_type, characteristics["4SFB"])
@@ -618,6 +618,8 @@ def _resolve_at_bat_with_count(batter: BatterStats, pitcher: PitcherStats,
         # Resolve this pitch
         result = _resolve_pitch(batter, pitcher, count, park, leverage, weather, pitcher_team_chemistry)
         pitches_thrown.append(result)
+        # Count EVERY pitch toward fatigue (including terminal pitches)
+        pitcher.pitches += 1
 
         if result == "ball":
             count[0] += 1
@@ -642,9 +644,6 @@ def _resolve_at_bat_with_count(batter: BatterStats, pitcher: PitcherStats,
             # Resolve batted ball outcome
             outcome = _resolve_batted_ball(batter, pitcher, park, count, runners_on, outs, leverage, weather)
             return outcome, pitches_thrown
-
-        # Add pitches for fatigue tracking
-        pitcher.pitches += 1
 
 
 @dataclass
@@ -1020,7 +1019,8 @@ def simulate_game(home_lineup: list[BatterStats], away_lineup: list[BatterStats]
                   park: ParkFactors, home_team_id: int = 0, away_team_id: int = 0,
                   home_strategy: dict = None, away_strategy: dict = None,
                   weather: dict = None, game_month: int = None,
-                  home_chemistry: int = 50, away_chemistry: int = 50) -> dict:
+                  home_chemistry: int = 50, away_chemistry: int = 50,
+                  detailed_log: bool = False) -> dict:
     """
     Simulate a full baseball game.
     Returns dict with full box score data and play-by-play.
@@ -1055,6 +1055,7 @@ def simulate_game(home_lineup: list[BatterStats], away_lineup: list[BatterStats]
 
     # Play-by-play tracking
     play_by_play = []
+    detailed_plays = []  # For live game simulation
 
     # Set up pitchers
     home_pitcher_idx = 0
@@ -1074,7 +1075,7 @@ def simulate_game(home_lineup: list[BatterStats], away_lineup: list[BatterStats]
             max_pitches = min(strategy.get("pitch_count_limit", 100), stamina_max)
             if p.pitches >= max_pitches:
                 return True
-            max_innings = 5 + (p.stamina - 30) * 0.04
+            max_innings = 5 + (p.stamina - 30) * 0.06
             pitcher_innings = p.ip_outs / 3
             if pitcher_innings >= max_innings:
                 return True
@@ -1083,50 +1084,58 @@ def simulate_game(home_lineup: list[BatterStats], away_lineup: list[BatterStats]
             if p.pitches > 60 and p.er >= 5:
                 return True
         else:
-            max_pitches = 20 + p.stamina * 0.3
+            max_pitches = 25 + (p.stamina - 30) * 0.4
             if p.pitches >= max_pitches:
                 return True
-            if p.er >= 3:
+            if p.er >= 3 and p.pitches >= 20:
                 return True
+            if p.er >= 2 and p.pitches < 20:
+                return False
         return False
 
     def _select_reliever(pitchers: list, current_idx: int, inning: int,
                          score_diff: int, pitch_order: int) -> tuple:
         """Select the right reliever based on game situation."""
+        # Consider all relievers not just those with higher index (allow reuse)
         available = [(i, p) for i, p in enumerate(pitchers)
-                     if i > current_idx and p.pitches == 0]
+                     if i != current_idx and p.pitches == 0]
         if not available:
             available = [(i, p) for i, p in enumerate(pitchers)
-                         if i > current_idx and p.ip_outs < 9]
+                         if i != current_idx and p.ip_outs < 9]
         if not available:
             return current_idx, pitchers[current_idx]
 
         closer_idx = len(pitchers) - 1
         setup_idx = len(pitchers) - 2 if len(pitchers) > 2 else closer_idx
 
+        # Mop-up guy in blowouts (score diff > 6)
         if abs(score_diff) > 6:
             pick = min(available, key=lambda x: x[1].stuff)
             pick[1].pitch_order = pitch_order
             return pick
 
+        # Closer only in save situations (9th inning, leading by 1-3)
         if inning >= 9 and 0 < score_diff <= 3:
             for idx, p in available:
                 if idx == closer_idx:
                     p.pitch_order = pitch_order
                     return idx, p
 
+        # Setup man in 8th inning
         if inning == 8:
             for idx, p in available:
                 if idx == setup_idx:
                     p.pitch_order = pitch_order
                     return idx, p
 
+        # Middle relievers in 6th-7th
         if inning == 7:
             for idx, p in available:
                 if idx == setup_idx or idx == setup_idx - 1:
                     p.pitch_order = pitch_order
                     return idx, p
 
+        # Long reliever if starter pulled early (innings 1-5)
         if inning <= 6:
             for idx, p in available:
                 p.pitch_order = pitch_order
@@ -1683,3 +1692,52 @@ def _assign_decisions(home_pitchers: list, away_pitchers: list,
             margin = abs(home_score - away_score)
             if margin <= 3 or closer.ip_outs >= 9:
                 closer.decision = "S"
+
+
+def _describe_play(batter_name: str, pitcher_name: str, outcome: str,
+                   runners_on: str, runs_scored: int, bases: dict = None,
+                   is_pitcher_change: bool = False) -> str:
+    """Generate natural baseball play-by-play description text."""
+    if is_pitcher_change:
+        return f"Pitching change: {pitcher_name} takes over"
+
+    descriptions = {
+        "1B": [f"{batter_name} singled to left field",
+               f"{batter_name} singled to center field",
+               f"{batter_name} singled through the hole",
+               f"{batter_name} singled to right field"],
+        "2B": [f"{batter_name} doubled to left field",
+               f"{batter_name} doubled down the line",
+               f"{batter_name} doubled to center field"],
+        "3B": [f"{batter_name} tripled to the wall",
+               f"{batter_name} tripled to right-center"],
+        "HR": [f"{batter_name} hit a solo home run to center field",
+               f"{batter_name} hit a home run to left field",
+               f"{batter_name} hit a home run to right field"],
+        "SO": [f"{batter_name} struck out swinging",
+               f"{batter_name} struck out looking",
+               f"{batter_name} struck out"],
+        "BB": [f"{batter_name} walked"],
+        "HBP": [f"{batter_name} hit by pitch"],
+        "GO": [f"{batter_name} grounded out to short",
+               f"{batter_name} grounded out to second",
+               f"{batter_name} grounded into a double play"],
+        "FO": [f"{batter_name} flied out to left field",
+               f"{batter_name} flied out to center field",
+               f"{batter_name} flied out to right field"],
+        "SF": [f"{batter_name} hit a sacrifice fly"],
+        "E": [f"{batter_name} reached on an error"],
+    }
+
+    text = random.choice(descriptions.get(outcome, [f"{batter_name} {outcome}"]))
+
+    if runs_scored > 0:
+        if runs_scored == 1:
+            text += " (1 run)"
+        else:
+            text += f" ({runs_scored} runs)"
+
+    if outcome == "HR" and runs_scored > 1:
+        text = text.replace("solo home run", f"{runs_scored}-run home run")
+
+    return text
