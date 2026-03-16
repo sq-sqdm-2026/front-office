@@ -28,6 +28,25 @@ Evaluate this trade proposal and respond with JSON:
 }}"""
 
 
+def _get_team_needs(team_id: int, db_path: str = None) -> dict:
+    """Calculate positional WAR-proxy and identify weak spots."""
+    positions = ['C', '1B', '2B', '3B', 'SS', 'LF', 'CF', 'RF', 'DH', 'SP', 'RP']
+    needs = {}
+    for pos in positions:
+        best = query("""
+            SELECT MAX(
+                CASE WHEN position IN ('SP','RP')
+                    THEN stuff_rating + control_rating + stamina_rating
+                    ELSE contact_rating + power_rating + speed_rating + fielding_rating
+                END
+            ) as best
+            FROM players
+            WHERE team_id=? AND position=? AND roster_status='active'
+        """, (team_id, pos), db_path=db_path)
+        needs[pos] = best[0]['best'] if best and best[0]['best'] else 0
+    return needs
+
+
 async def evaluate_trade(proposing_team_id: int, receiving_team_id: int,
                          players_offered: list, players_requested: list,
                          cash_included: int = 0, db_path: str = None) -> dict:
@@ -117,13 +136,20 @@ How's your job security?"""
         pass
 
     # Tier 1 fallback: algorithmic evaluation
-    return _algorithmic_trade_eval(gm, offered_details, requested_details, cash_included)
+    return _algorithmic_trade_eval(gm, offered_details, requested_details,
+                                   cash_included, receiving_team_id, db_path)
 
 
 def _algorithmic_trade_eval(gm: dict, offered: list, requested: list,
-                            cash: int = 0) -> dict:
+                            cash: int = 0, team_id: int = None,
+                            db_path: str = None) -> dict:
     """Fallback trade evaluation using math when LLM is unavailable."""
-    def _player_value(p: dict) -> float:
+    # Get team needs for roster-aware evaluation
+    needs = {}
+    if team_id:
+        needs = _get_team_needs(team_id, db_path)
+
+    def _player_value(p: dict, for_team: bool = False) -> float:
         if p["position"] in ("SP", "RP"):
             raw = (p["stuff_rating"] * 2 + p["control_rating"] * 1.5 +
                    p["stamina_rating"] * 0.5)
@@ -135,10 +161,25 @@ def _algorithmic_trade_eval(gm: dict, offered: list, requested: list,
         # Contract value (cheap good players are more valuable)
         salary = p.get("annual_salary", 750000) or 750000
         salary_mod = max(0.5, 1.5 - salary / 30000000)
-        return (raw - age_penalty) * salary_mod
+        base_value = (raw - age_penalty) * salary_mod
 
-    offered_value = sum(_player_value(p) for p in offered) + cash / 1000000
-    requested_value = sum(_player_value(p) for p in requested)
+        # Roster-aware adjustments for incoming players
+        if for_team and needs:
+            pos = p["position"]
+            pos_strength = needs.get(pos, 0)
+            if pos_strength < 150:
+                # Weak spot - player fills a need, increase value by 25%
+                base_value *= 1.25
+            elif pos_strength >= 200:
+                # Already strong position - decrease value by 15%
+                base_value *= 0.85
+
+        return base_value
+
+    # Offered players are incoming TO the evaluating team (roster-aware)
+    offered_value = sum(_player_value(p, for_team=True) for p in offered) + cash / 1000000
+    # Requested players are going OUT (no roster adjustment)
+    requested_value = sum(_player_value(p, for_team=False) for p in requested)
 
     ratio = offered_value / max(1, requested_value)
 

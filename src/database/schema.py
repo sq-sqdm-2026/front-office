@@ -53,7 +53,10 @@ CREATE TABLE IF NOT EXISTS teams (
     concession_price_pct INTEGER NOT NULL DEFAULT 100,
     farm_system_budget INTEGER NOT NULL DEFAULT 10000000,
     medical_staff_budget INTEGER NOT NULL DEFAULT 10000000,
-    scouting_staff_budget INTEGER NOT NULL DEFAULT 10000000
+    scouting_staff_budget INTEGER NOT NULL DEFAULT 10000000,
+    team_strategy_json TEXT NOT NULL DEFAULT '{}',
+    lineup_json TEXT DEFAULT NULL,
+    rotation_json TEXT DEFAULT NULL
 );
 
 -- ============================================================
@@ -101,6 +104,7 @@ CREATE TABLE IF NOT EXISTS players (
     is_injured INTEGER NOT NULL DEFAULT 0,
     injury_type TEXT DEFAULT NULL,
     injury_days_remaining INTEGER DEFAULT 0,
+    on_forty_man INTEGER NOT NULL DEFAULT 1,
     option_years_remaining INTEGER NOT NULL DEFAULT 3,
     service_years REAL NOT NULL DEFAULT 0.0,
     -- Development
@@ -430,6 +434,20 @@ CREATE TABLE IF NOT EXISTS financial_history (
 );
 
 -- ============================================================
+-- WAIVER CLAIMS
+-- ============================================================
+CREATE TABLE IF NOT EXISTS waiver_claims (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    player_id INTEGER NOT NULL,
+    original_team_id INTEGER,
+    dfa_date TEXT NOT NULL,
+    expiry_date TEXT NOT NULL,
+    claiming_team_id INTEGER,
+    status TEXT NOT NULL DEFAULT 'pending', -- pending, claimed, cleared
+    FOREIGN KEY (player_id) REFERENCES players(id)
+);
+
+-- ============================================================
 -- INDEXES
 -- ============================================================
 CREATE INDEX IF NOT EXISTS idx_players_team ON players(team_id);
@@ -443,4 +461,5 @@ CREATE INDEX IF NOT EXISTS idx_pitching_stats_player ON pitching_stats(player_id
 CREATE INDEX IF NOT EXISTS idx_contracts_player ON contracts(player_id);
 CREATE INDEX IF NOT EXISTS idx_messages_date ON messages(game_date);
 CREATE INDEX IF NOT EXISTS idx_transactions_date ON transactions(transaction_date);
+CREATE INDEX IF NOT EXISTS idx_waiver_claims_status ON waiver_claims(status, expiry_date);
 """

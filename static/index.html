@@ -8,13 +8,13 @@
 </head>
 <body>
 
-<!-- ============ INTRO SCREEN ============ -->
+<!-- INTRO -->
 <div id="intro-screen" class="screen active">
   <div class="intro-container">
     <div class="intro-logo">⚾</div>
     <h1 class="intro-title">FRONT OFFICE</h1>
     <p class="intro-subtitle">A Baseball Universe Simulation</p>
-    <div class="intro-narrative" id="intro-narrative"></div>
+    <div id="intro-narrative" class="intro-narrative"></div>
     <div id="intro-choices" class="intro-choices" style="display:none"></div>
     <div id="intro-start" style="display:none">
       <button class="btn btn-primary btn-large" onclick="startGame()">TAKE THE JOB</button>
@@ -22,175 +22,136 @@
   </div>
 </div>
 
-<!-- ============ MAIN APP ============ -->
+<!-- MAIN APP -->
 <div id="app" class="screen">
+
   <!-- Top Bar -->
   <header id="top-bar">
     <div class="top-bar-left">
       <span class="logo-small">⚾</span>
       <span class="app-title">FRONT OFFICE</span>
-      <span class="team-name" id="header-team-name"></span>
+      <span class="team-name" id="hdr-team"></span>
     </div>
     <div class="top-bar-center">
-      <span id="header-date" class="header-date"></span>
-      <span id="header-record" class="header-record"></span>
+      <span class="header-date" id="hdr-date"></span>
+      <span class="header-record mono" id="hdr-record"></span>
+      <span class="header-phase" id="hdr-phase"></span>
     </div>
     <div class="top-bar-right">
-      <button class="btn btn-sim" onclick="simDay(1)">▶ Sim Day</button>
-      <button class="btn btn-sim" onclick="simDay(7)">▶▶ Sim Week</button>
-      <span id="msg-badge" class="msg-badge" onclick="showScreen('messages')" style="display:none">💬</span>
+      <button class="btn btn-sim" onclick="simDays(1)">▶ Day</button>
+      <button class="btn btn-sim" onclick="simDays(7)">▶▶ Week</button>
     </div>
   </header>
 
-  <!-- Navigation -->
+  <!-- Nav -->
   <nav id="main-nav">
-    <button class="nav-btn active" data-screen="dashboard" onclick="showScreen('dashboard')">Dashboard</button>
-    <button class="nav-btn" data-screen="roster" onclick="showScreen('roster')">Roster</button>
-    <button class="nav-btn" data-screen="standings" onclick="showScreen('standings')">Standings</button>
-    <button class="nav-btn" data-screen="schedule" onclick="showScreen('schedule')">Schedule</button>
-    <button class="nav-btn" data-screen="finances" onclick="showScreen('finances')">Finances</button>
-    <button class="nav-btn" data-screen="trades" onclick="showScreen('trades')">Trade Center</button>
-    <button class="nav-btn" data-screen="free-agents" onclick="showScreen('free-agents')">Free Agents</button>
-    <button class="nav-btn" data-screen="leaders" onclick="showScreen('leaders')">Leaders</button>
-    <button class="nav-btn" data-screen="messages" onclick="showScreen('messages')">Messages</button>
+    <button class="nav-btn active" data-s="calendar" onclick="showScreen('calendar')">Calendar</button>
+    <button class="nav-btn" data-s="roster" onclick="showScreen('roster')">Roster</button>
+    <button class="nav-btn" data-s="standings" onclick="showScreen('standings')">Standings</button>
+    <button class="nav-btn" data-s="schedule" onclick="showScreen('schedule')">Schedule</button>
+    <button class="nav-btn" data-s="finances" onclick="showScreen('finances')">Finances</button>
+    <button class="nav-btn" data-s="trades" onclick="showScreen('trades')">Trades</button>
+    <button class="nav-btn" data-s="freeagents" onclick="showScreen('freeagents')">Free Agents</button>
+    <button class="nav-btn" data-s="leaders" onclick="showScreen('leaders')">Leaders</button>
+    <button class="nav-btn" data-s="messages" onclick="showScreen('messages')">Messages</button>
   </nav>
 
-  <!-- Content Screens -->
   <main id="content">
-    <!-- DASHBOARD -->
-    <div id="screen-dashboard" class="content-screen active">
-      <div class="dashboard-grid">
-        <div class="dash-card dash-standings">
-          <h2>Division Standings</h2>
-          <div id="dash-standings"></div>
-        </div>
-        <div class="dash-card dash-scores">
-          <h2>Recent Scores</h2>
-          <div id="dash-scores"></div>
-        </div>
-        <div class="dash-card dash-roster-glance">
-          <h2>Roster Snapshot</h2>
-          <div id="dash-roster"></div>
-        </div>
-        <div class="dash-card dash-news">
-          <h2>Front Office Wire</h2>
-          <div id="dash-news"></div>
-        </div>
-      </div>
-    </div>
+
+    <!-- CALENDAR HUB -->
+    <div id="s-calendar" class="content-screen active"></div>
 
     <!-- ROSTER -->
-    <div id="screen-roster" class="content-screen">
-      <div class="screen-header">
-        <h2>Roster</h2>
-        <div class="roster-tabs">
-          <button class="tab-btn active" onclick="showRosterTab('active')">Active (26)</button>
-          <button class="tab-btn" onclick="showRosterTab('minors')">Minors</button>
-          <button class="tab-btn" onclick="showRosterTab('injured')">Injured</button>
+    <div id="s-roster" class="content-screen">
+      <div class="section-bar">
+        <span class="section-title">Roster</span>
+        <div class="section-tabs">
+          <button class="tab-btn active" data-tab="active" onclick="renderRosterTab('active')">Active</button>
+          <button class="tab-btn" data-tab="minors" onclick="renderRosterTab('minors')">Minors</button>
+          <button class="tab-btn" data-tab="injured" onclick="renderRosterTab('injured')">Injured</button>
         </div>
       </div>
-      <div id="roster-content"></div>
+      <div id="roster-body"></div>
     </div>
 
     <!-- STANDINGS -->
-    <div id="screen-standings" class="content-screen">
-      <h2>League Standings</h2>
-      <div class="standings-container">
-        <div id="standings-al" class="standings-league">
-          <h3>American League</h3>
-        </div>
-        <div id="standings-nl" class="standings-league">
-          <h3>National League</h3>
-        </div>
+    <div id="s-standings" class="content-screen">
+      <div class="section-bar"><span class="section-title">League Standings</span></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+        <div id="stnd-al"></div>
+        <div id="stnd-nl"></div>
       </div>
     </div>
 
     <!-- SCHEDULE -->
-    <div id="screen-schedule" class="content-screen">
-      <h2>Schedule</h2>
-      <div id="schedule-content"></div>
+    <div id="s-schedule" class="content-screen">
+      <div class="section-bar"><span class="section-title">Schedule</span></div>
+      <div id="sched-body"></div>
     </div>
 
     <!-- FINANCES -->
-    <div id="screen-finances" class="content-screen">
-      <h2>Team Finances</h2>
-      <div id="finances-content"></div>
+    <div id="s-finances" class="content-screen">
+      <div class="section-bar"><span class="section-title">Team Finances</span></div>
+      <div id="fin-body"></div>
     </div>
 
-    <!-- TRADE CENTER -->
-    <div id="screen-trades" class="content-screen">
-      <h2>Trade Center</h2>
+    <!-- TRADES -->
+    <div id="s-trades" class="content-screen">
+      <div class="section-bar"><span class="section-title">Trade Center</span></div>
       <div class="trade-layout">
-        <div class="trade-panel" id="trade-your-team">
-          <h3 id="trade-your-name">Your Team</h3>
-          <div id="trade-your-players"></div>
+        <div class="trade-panel">
+          <div class="trade-panel-header" id="trade-your-hdr">Your Team</div>
+          <div id="trade-your"></div>
         </div>
         <div class="trade-middle">
           <div class="trade-offer-box">
-            <h3>Trade Offer</h3>
-            <div id="trade-offering" class="trade-slot">Players you're offering...</div>
+            <h3>Offer</h3>
+            <div id="trade-slot-offer" class="trade-slot">Click players to offer...</div>
             <div class="trade-arrow">⇄</div>
-            <div id="trade-requesting" class="trade-slot">Players you want...</div>
-            <button class="btn btn-primary" onclick="submitTrade()">Propose Trade</button>
+            <div id="trade-slot-req" class="trade-slot">Click players to request...</div>
+            <button class="btn btn-primary" style="width:100%;margin-top:8px" onclick="submitTrade()">Propose Trade</button>
           </div>
-          <div id="trade-response" class="trade-response"></div>
+          <div id="trade-resp" class="trade-response"></div>
         </div>
-        <div class="trade-panel" id="trade-other-team">
-          <h3>
-            <select id="trade-team-select" onchange="loadTradeTeam()">
-              <option value="">Select a team...</option>
+        <div class="trade-panel">
+          <div class="trade-panel-header">
+            <select id="trade-sel" onchange="loadTradeTeam()">
+              <option value="">Select team...</option>
             </select>
-          </h3>
-          <div id="trade-other-players"></div>
+          </div>
+          <div id="trade-other"></div>
         </div>
       </div>
     </div>
 
     <!-- FREE AGENTS -->
-    <div id="screen-free-agents" class="content-screen">
-      <h2>Free Agent Market</h2>
-      <div id="fa-content"></div>
+    <div id="s-freeagents" class="content-screen">
+      <div class="section-bar"><span class="section-title">Free Agent Market</span></div>
+      <div id="fa-body"></div>
     </div>
 
     <!-- LEADERS -->
-    <div id="screen-leaders" class="content-screen">
-      <h2>League Leaders</h2>
+    <div id="s-leaders" class="content-screen">
+      <div class="section-bar"><span class="section-title">League Leaders</span></div>
       <div class="leaders-grid">
-        <div class="leader-card">
-          <h3>Home Runs</h3>
-          <div id="leaders-hr"></div>
-        </div>
-        <div class="leader-card">
-          <h3>Batting Average</h3>
-          <div id="leaders-avg"></div>
-        </div>
-        <div class="leader-card">
-          <h3>RBI</h3>
-          <div id="leaders-rbi"></div>
-        </div>
-        <div class="leader-card">
-          <h3>Wins</h3>
-          <div id="leaders-wins"></div>
-        </div>
-        <div class="leader-card">
-          <h3>ERA</h3>
-          <div id="leaders-era"></div>
-        </div>
-        <div class="leader-card">
-          <h3>Strikeouts</h3>
-          <div id="leaders-so"></div>
-        </div>
+        <div class="leader-card"><h3>Home Runs</h3><div id="ldr-hr"></div></div>
+        <div class="leader-card"><h3>Batting Average</h3><div id="ldr-avg"></div></div>
+        <div class="leader-card"><h3>RBI</h3><div id="ldr-rbi"></div></div>
+        <div class="leader-card"><h3>Wins</h3><div id="ldr-wins"></div></div>
+        <div class="leader-card"><h3>Strikeouts (P)</h3><div id="ldr-era"></div></div>
+        <div class="leader-card"><h3>Stolen Bases</h3><div id="ldr-sb"></div></div>
       </div>
     </div>
 
     <!-- MESSAGES -->
-    <div id="screen-messages" class="content-screen">
-      <h2>Inbox</h2>
-      <div id="messages-content"></div>
+    <div id="s-messages" class="content-screen">
+      <div class="section-bar"><span class="section-title">Inbox</span></div>
+      <div id="msg-body"></div>
     </div>
+
   </main>
 
-  <!-- Player Modal -->
+  <!-- Player / Box Score Modal -->
   <div id="player-modal" class="modal" style="display:none">
     <div class="modal-content">
       <button class="modal-close" onclick="closeModal()">&times;</button>
@@ -198,10 +159,10 @@
     </div>
   </div>
 
-  <!-- Status Bar -->
   <footer id="status-bar">
-    <div id="ticker" class="ticker"></div>
+    <span id="ticker">Front Office v0.1 — Phase 1</span>
   </footer>
+
 </div>
 
 <script src="/static/app.js"></script>

@@ -236,31 +236,56 @@ class BaseState:
 
 
 def _advance_runners(bases: BaseState, outcome: str, batter_id: int,
-                     batter_speed: int) -> int:
-    """Advance runners based on hit outcome. Returns runs scored."""
+                     batter_speed: int, lineup: list[BatterStats] = None) -> int:
+    """Advance runners based on hit outcome. Returns runs scored.
+    When lineup is provided, increments runs on the BatterStats for each scorer.
+    """
     runs = 0
+    scorers = []  # player_ids that scored
 
     if outcome == "HR":
-        runs = bases.runners_on() + 1
+        # Everyone on base scores, plus the batter
+        if bases.third:
+            scorers.append(bases.third)
+        if bases.second:
+            scorers.append(bases.second)
+        if bases.first:
+            scorers.append(bases.first)
+        scorers.append(batter_id)
+        runs = len(scorers)
         bases.clear()
     elif outcome == "3B":
-        if bases.third: runs += 1
-        if bases.second: runs += 1
-        if bases.first: runs += 1
+        if bases.third:
+            scorers.append(bases.third)
+            runs += 1
+        if bases.second:
+            scorers.append(bases.second)
+            runs += 1
+        if bases.first:
+            scorers.append(bases.first)
+            runs += 1
         bases.clear()
         bases.third = batter_id
     elif outcome == "2B":
-        if bases.third: runs += 1
-        if bases.second: runs += 1
+        if bases.third:
+            scorers.append(bases.third)
+            runs += 1
+        if bases.second:
+            scorers.append(bases.second)
+            runs += 1
         bases.third = bases.first if bases.first and random.random() < 0.6 else 0
         if bases.first and not bases.third:
+            scorers.append(bases.first)
             runs += 1
         bases.second = batter_id
         bases.first = 0
     elif outcome == "1B":
-        if bases.third: runs += 1
+        if bases.third:
+            scorers.append(bases.third)
+            runs += 1
         if bases.second:
             if random.random() < 0.4 + batter_speed * 0.003:
+                scorers.append(bases.second)
                 runs += 1
             else:
                 bases.third = bases.second
@@ -273,6 +298,7 @@ def _advance_runners(bases: BaseState, outcome: str, batter_id: int,
         bases.first = batter_id
     elif outcome in ("BB", "HBP"):
         if bases.first and bases.second and bases.third:
+            scorers.append(bases.third)
             runs += 1
         if bases.first and bases.second:
             bases.third = bases.second
@@ -281,19 +307,130 @@ def _advance_runners(bases: BaseState, outcome: str, batter_id: int,
         bases.first = batter_id
     elif outcome == "SF":
         if bases.third:
+            scorers.append(bases.third)
             runs += 1
             bases.third = 0
+
+    # Credit runs scored to individual batters in the lineup
+    if lineup and scorers:
+        lineup_by_id = {b.player_id: b for b in lineup}
+        for scorer_id in scorers:
+            if scorer_id in lineup_by_id:
+                lineup_by_id[scorer_id].runs += 1
 
     return runs
 
 
+def _calculate_dp_chance(runner_speed: int, batter_speed: int) -> float:
+    """Calculate double play probability based on runner and batter speed.
+    Base rate ~50%, adjusted by runner speed (fast runners avoid DP)
+    and batter speed (slow batters ground into more DP).
+    """
+    base_rate = 0.50
+    # Fast runner (70+) reduces DP chance; slow runner (30-) increases it
+    if runner_speed >= 70:
+        base_rate = 0.30
+    elif runner_speed <= 30:
+        base_rate = 0.65
+    else:
+        # Linear interpolation between 30 and 70
+        base_rate = 0.65 - (runner_speed - 30) * (0.35 / 40)
+
+    # Batter speed adjustment: slow batters more likely to GIDP
+    batter_mod = 1.0 + (50 - batter_speed) * 0.005  # slow=+boost to DP, fast=-reduction
+    base_rate *= max(0.15, min(1.5, batter_mod))
+
+    return max(0.10, min(0.75, base_rate))
+
+
+def _attempt_stolen_base(bases: BaseState, outs: int, lineup: list[BatterStats],
+                         pitcher: PitcherStats, steal_multiplier: float = 1.0) -> tuple:
+    """Attempt a stolen base before the at-bat.
+    Returns (did_attempt, did_succeed, outs_added).
+    """
+    if outs >= 2:
+        return False, False, 0
+
+    # Identify the lead runner eligible to steal
+    runner_id = 0
+    stealing_base = None
+    if bases.first and not bases.second:
+        runner_id = bases.first
+        stealing_base = "second"
+    elif bases.second and not bases.third:
+        runner_id = bases.second
+        stealing_base = "third"
+    else:
+        return False, False, 0
+
+    # Find the runner's BatterStats to get speed
+    runner = None
+    for b in lineup:
+        if b.player_id == runner_id:
+            runner = b
+            break
+    if not runner:
+        return False, False, 0
+
+    # Attempt probability: 8% base * (speed / 50) * steal_multiplier
+    attempt_prob = 0.08 * (runner.speed / 50.0) * steal_multiplier
+    if random.random() >= attempt_prob:
+        return False, False, 0
+
+    # Success rate: 65% base + (speed - 50) * 0.5%
+    success_rate = 0.65 + (runner.speed - 50) * 0.005
+    success_rate = max(0.35, min(0.95, success_rate))
+
+    if random.random() < success_rate:
+        # Success: advance runner
+        runner.sb += 1
+        if stealing_base == "second":
+            bases.second = bases.first
+            bases.first = 0
+        elif stealing_base == "third":
+            bases.third = bases.second
+            bases.second = 0
+        return True, True, 0
+    else:
+        # Caught stealing: runner is out
+        runner.cs += 1
+        if stealing_base == "second":
+            bases.first = 0
+        elif stealing_base == "third":
+            bases.second = 0
+        return True, False, 1
+
+
+def _attempt_sac_bunt(batter: BatterStats, bases: BaseState, outs: int,
+                      bunt_rate: float) -> bool:
+    """Attempt a sacrifice bunt. Returns True if bunt attempted and executed."""
+    if outs >= 2 or bunt_rate <= 0:
+        return False
+    if not bases.first and not bases.second:
+        return False
+    # Only low-power/high-speed batters bunt (not cleanup hitters)
+    if batter.power >= 60:
+        return False
+    if random.random() >= bunt_rate:
+        return False
+    return True
+
+
 def simulate_game(home_lineup: list[BatterStats], away_lineup: list[BatterStats],
                   home_pitchers: list[PitcherStats], away_pitchers: list[PitcherStats],
-                  park: ParkFactors, home_team_id: int = 0, away_team_id: int = 0) -> dict:
+                  park: ParkFactors, home_team_id: int = 0, away_team_id: int = 0,
+                  home_strategy: dict = None, away_strategy: dict = None) -> dict:
     """
     Simulate a full baseball game.
     Returns dict with full box score data.
     """
+    from .strategy import DEFAULT_STRATEGY, STEAL_FREQUENCY_MULTIPLIER, BUNT_FREQUENCY_CONFIG
+
+    if home_strategy is None:
+        home_strategy = dict(DEFAULT_STRATEGY)
+    if away_strategy is None:
+        away_strategy = dict(DEFAULT_STRATEGY)
+
     home_score = 0
     away_score = 0
     innings_home = []
@@ -316,16 +453,23 @@ def simulate_game(home_lineup: list[BatterStats], away_lineup: list[BatterStats]
     home_pitcher_when_lead_taken = None
     away_pitcher_when_lead_taken = None
 
-    def _should_pull_pitcher(p: PitcherStats, inning: int, is_starter: bool) -> bool:
+    def _should_pull_pitcher(p: PitcherStats, inning: int, is_starter: bool,
+                             score_diff: int, strategy: dict) -> bool:
         """Decide if pitcher should be replaced."""
         if is_starter:
-            # Starters: pull based on pitch count relative to stamina
-            max_pitches = 70 + p.stamina * 0.75  # 85-130 range
+            # Use strategy pitch count limit or stamina-based calculation
+            stamina_max = 70 + p.stamina * 0.75  # 85-130 range
+            max_pitches = min(strategy.get("pitch_count_limit", 100), stamina_max)
             if p.pitches >= max_pitches:
+                return True
+            # Stamina-based inning range: low stamina (30) -> pull after 5,
+            # high stamina (80) -> can go 7+
+            max_innings = 5 + (p.stamina - 30) * 0.04  # 5.0 to 7.0
+            pitcher_innings = p.ip_outs / 3
+            if pitcher_innings >= max_innings:
                 return True
             if inning >= 7 and p.runs_allowed >= 4:
                 return True
-            # High recent damage
             if p.pitches > 60 and p.er >= 5:
                 return True
         else:
@@ -337,26 +481,112 @@ def simulate_game(home_lineup: list[BatterStats], away_lineup: list[BatterStats]
                 return True
         return False
 
-    def _next_pitcher(pitchers: list, current_idx: int, pitch_order: int) -> tuple:
-        """Get next available pitcher."""
-        next_idx = current_idx + 1
-        if next_idx < len(pitchers):
-            p = pitchers[next_idx]
-            p.pitch_order = pitch_order
-            return next_idx, p
-        # No more pitchers, keep current
-        return current_idx, pitchers[current_idx]
+    def _select_reliever(pitchers: list, current_idx: int, inning: int,
+                         score_diff: int, pitch_order: int) -> tuple:
+        """Select the right reliever based on game situation.
+        pitchers[0] is the starter, pitchers[1:] are relievers.
+        Reliever roles by position in bullpen:
+          - Last reliever (highest stuff typically): closer
+          - Second to last: setup man
+          - Others: middle/long relief
+        Returns (new_idx, pitcher).
+        """
+        available = [(i, p) for i, p in enumerate(pitchers)
+                     if i > current_idx and p.pitches == 0]
+        if not available:
+            # No fresh arms, try anyone not totally spent
+            available = [(i, p) for i, p in enumerate(pitchers)
+                         if i > current_idx and p.ip_outs < 9]
+        if not available:
+            return current_idx, pitchers[current_idx]
+
+        num_relievers = len([p for p in pitchers[1:] if True])
+        closer_idx = len(pitchers) - 1  # last bullpen arm
+        setup_idx = len(pitchers) - 2 if len(pitchers) > 2 else closer_idx
+
+        # Blowout (lead or deficit > 6): use worst available reliever (mop-up)
+        if abs(score_diff) > 6:
+            # Mop-up: pick the reliever with lowest stuff (first available)
+            pick = min(available, key=lambda x: x[1].stuff)
+            pick[1].pitch_order = pitch_order
+            return pick
+
+        # Inning 9, leading by 1-3: use closer
+        if inning >= 9 and 0 < score_diff <= 3:
+            for idx, p in available:
+                if idx == closer_idx:
+                    p.pitch_order = pitch_order
+                    return idx, p
+
+        # Inning 8: setup man
+        if inning == 8:
+            for idx, p in available:
+                if idx == setup_idx:
+                    p.pitch_order = pitch_order
+                    return idx, p
+
+        # Inning 7: next best available
+        if inning == 7:
+            for idx, p in available:
+                if idx == setup_idx or idx == setup_idx - 1:
+                    p.pitch_order = pitch_order
+                    return idx, p
+
+        # Innings 5-6, losing or close: long reliever (first available reliever)
+        if inning <= 6:
+            for idx, p in available:
+                p.pitch_order = pitch_order
+                return idx, p
+
+        # Default: next available
+        idx, p = available[0]
+        p.pitch_order = pitch_order
+        return idx, p
+
+    # Pre-compute strategy values
+    away_steal_mult = STEAL_FREQUENCY_MULTIPLIER.get(
+        away_strategy.get("steal_frequency", "normal"), 1.0)
+    home_steal_mult = STEAL_FREQUENCY_MULTIPLIER.get(
+        home_strategy.get("steal_frequency", "normal"), 1.0)
+    away_bunt_rate = BUNT_FREQUENCY_CONFIG.get(
+        away_strategy.get("bunt_frequency", "normal"), 0.05)
+    home_bunt_rate = BUNT_FREQUENCY_CONFIG.get(
+        home_strategy.get("bunt_frequency", "normal"), 0.05)
 
     num_innings = 9
 
     for inning in range(1, num_innings + 10):  # +10 for extras
-        # Top of inning (away bats)
+        # ============================================================
+        # TOP OF INNING (away bats vs home pitcher)
+        # ============================================================
         inning_runs = 0
         outs = 0
         bases = BaseState()
 
         while outs < 3:
             batter = away_lineup[away_batter_idx % len(away_lineup)]
+
+            # --- Stolen base attempt before at-bat ---
+            sb_attempt, sb_success, sb_outs = _attempt_stolen_base(
+                bases, outs, away_lineup, current_home_pitcher, away_steal_mult)
+            outs += sb_outs
+            if outs >= 3:
+                break
+
+            # --- Sacrifice bunt attempt ---
+            if _attempt_sac_bunt(batter, bases, outs, away_bunt_rate):
+                outs += 1
+                batter.ab += 1
+                # Advance runners on sac bunt
+                if bases.second:
+                    bases.third = bases.second
+                    bases.second = 0
+                if bases.first:
+                    bases.second = bases.first
+                    bases.first = 0
+                away_batter_idx += 1
+                continue
+
             leverage = 1.0 + (0.1 * inning if inning >= 7 else 0)
             if abs(home_score - (away_score + inning_runs)) <= 2 and inning >= 7:
                 leverage = 1.5
@@ -367,13 +597,22 @@ def simulate_game(home_lineup: list[BatterStats], away_lineup: list[BatterStats]
             if outcome in ("GO", "FO"):
                 outs += 1
                 # Double play chance on GO with runner on first
-                if outcome == "GO" and bases.first and outs < 3 and random.random() < 0.5:
-                    outs += 1
-                    bases.first = 0
+                if outcome == "GO" and bases.first and outs < 3:
+                    # Look up runner speed for DP calculation
+                    runner_speed = 50
+                    for b in away_lineup:
+                        if b.player_id == bases.first:
+                            runner_speed = b.speed
+                            break
+                    dp_chance = _calculate_dp_chance(runner_speed, batter.speed)
+                    if random.random() < dp_chance:
+                        outs += 1
+                        bases.first = 0
             elif outcome == "SF":
                 outs += 1
                 batter.sf += 1
-                runs = _advance_runners(bases, outcome, batter.player_id, batter.speed)
+                runs = _advance_runners(bases, outcome, batter.player_id,
+                                        batter.speed, away_lineup)
                 inning_runs += runs
                 batter.rbi += runs
                 current_home_pitcher.runs_allowed += runs
@@ -389,7 +628,8 @@ def simulate_game(home_lineup: list[BatterStats], away_lineup: list[BatterStats]
                     current_home_pitcher.bb_allowed += 1
                 else:
                     batter.hbp += 1
-                runs = _advance_runners(bases, outcome, batter.player_id, batter.speed)
+                runs = _advance_runners(bases, outcome, batter.player_id,
+                                        batter.speed, away_lineup)
                 inning_runs += runs
                 batter.rbi += runs
                 current_home_pitcher.runs_allowed += runs
@@ -406,25 +646,28 @@ def simulate_game(home_lineup: list[BatterStats], away_lineup: list[BatterStats]
                 elif outcome == "HR":
                     batter.hr += 1
                     current_home_pitcher.hr_allowed += 1
-                runs = _advance_runners(bases, outcome, batter.player_id, batter.speed)
+                runs = _advance_runners(bases, outcome, batter.player_id,
+                                        batter.speed, away_lineup)
                 inning_runs += runs
                 batter.rbi += runs
                 current_home_pitcher.runs_allowed += runs
                 current_home_pitcher.er += runs
 
             if outcome not in ("BB", "HBP", "SF"):
-                if outcome not in ("SO",):
-                    pass  # AB already counted for hits/outs
                 if outcome in ("GO", "FO"):
                     batter.ab += 1
 
             away_batter_idx += 1
 
             # Check pitcher change
-            if _should_pull_pitcher(current_home_pitcher, inning, current_home_pitcher.is_starter):
+            score_diff_home = home_score - (away_score + inning_runs)
+            if _should_pull_pitcher(current_home_pitcher, inning,
+                                    current_home_pitcher.is_starter,
+                                    score_diff_home, home_strategy):
                 current_home_pitcher.ip_outs += 0  # partial inning handled below
-                home_pitcher_idx, current_home_pitcher = _next_pitcher(
-                    home_pitchers, home_pitcher_idx, home_pitcher_idx + 2)
+                home_pitcher_idx, current_home_pitcher = _select_reliever(
+                    home_pitchers, home_pitcher_idx, inning,
+                    score_diff_home, home_pitcher_idx + 2)
 
         # Record outs for pitcher
         current_home_pitcher.ip_outs += 3
@@ -432,7 +675,9 @@ def simulate_game(home_lineup: list[BatterStats], away_lineup: list[BatterStats]
         away_score += inning_runs
         innings_away.append(inning_runs)
 
-        # Bottom of inning (home bats)
+        # ============================================================
+        # BOTTOM OF INNING (home bats vs away pitcher)
+        # ============================================================
         # Skip bottom 9+ if home team leads
         if inning >= 9 and home_score > away_score:
             innings_home.append(None)  # didn't bat
@@ -444,6 +689,27 @@ def simulate_game(home_lineup: list[BatterStats], away_lineup: list[BatterStats]
 
         while outs < 3:
             batter = home_lineup[home_batter_idx % len(home_lineup)]
+
+            # --- Stolen base attempt before at-bat ---
+            sb_attempt, sb_success, sb_outs = _attempt_stolen_base(
+                bases, outs, home_lineup, current_away_pitcher, home_steal_mult)
+            outs += sb_outs
+            if outs >= 3:
+                break
+
+            # --- Sacrifice bunt attempt ---
+            if _attempt_sac_bunt(batter, bases, outs, home_bunt_rate):
+                outs += 1
+                batter.ab += 1
+                if bases.second:
+                    bases.third = bases.second
+                    bases.second = 0
+                if bases.first:
+                    bases.second = bases.first
+                    bases.first = 0
+                home_batter_idx += 1
+                continue
+
             leverage = 1.0 + (0.1 * inning if inning >= 7 else 0)
             if abs(away_score - (home_score + inning_runs)) <= 2 and inning >= 7:
                 leverage = 1.5
@@ -453,13 +719,21 @@ def simulate_game(home_lineup: list[BatterStats], away_lineup: list[BatterStats]
 
             if outcome in ("GO", "FO"):
                 outs += 1
-                if outcome == "GO" and bases.first and outs < 3 and random.random() < 0.5:
-                    outs += 1
-                    bases.first = 0
+                if outcome == "GO" and bases.first and outs < 3:
+                    runner_speed = 50
+                    for b in home_lineup:
+                        if b.player_id == bases.first:
+                            runner_speed = b.speed
+                            break
+                    dp_chance = _calculate_dp_chance(runner_speed, batter.speed)
+                    if random.random() < dp_chance:
+                        outs += 1
+                        bases.first = 0
             elif outcome == "SF":
                 outs += 1
                 batter.sf += 1
-                runs = _advance_runners(bases, outcome, batter.player_id, batter.speed)
+                runs = _advance_runners(bases, outcome, batter.player_id,
+                                        batter.speed, home_lineup)
                 inning_runs += runs
                 batter.rbi += runs
                 current_away_pitcher.runs_allowed += runs
@@ -475,7 +749,8 @@ def simulate_game(home_lineup: list[BatterStats], away_lineup: list[BatterStats]
                     current_away_pitcher.bb_allowed += 1
                 else:
                     batter.hbp += 1
-                runs = _advance_runners(bases, outcome, batter.player_id, batter.speed)
+                runs = _advance_runners(bases, outcome, batter.player_id,
+                                        batter.speed, home_lineup)
                 inning_runs += runs
                 batter.rbi += runs
                 current_away_pitcher.runs_allowed += runs
@@ -491,7 +766,8 @@ def simulate_game(home_lineup: list[BatterStats], away_lineup: list[BatterStats]
                 elif outcome == "HR":
                     batter.hr += 1
                     current_away_pitcher.hr_allowed += 1
-                runs = _advance_runners(bases, outcome, batter.player_id, batter.speed)
+                runs = _advance_runners(bases, outcome, batter.player_id,
+                                        batter.speed, home_lineup)
                 inning_runs += runs
                 batter.rbi += runs
                 current_away_pitcher.runs_allowed += runs
@@ -512,9 +788,13 @@ def simulate_game(home_lineup: list[BatterStats], away_lineup: list[BatterStats]
                 num_innings = inning
                 break
 
-            if _should_pull_pitcher(current_away_pitcher, inning, current_away_pitcher.is_starter):
-                away_pitcher_idx, current_away_pitcher = _next_pitcher(
-                    away_pitchers, away_pitcher_idx, away_pitcher_idx + 2)
+            score_diff_away = away_score - (home_score + inning_runs)
+            if _should_pull_pitcher(current_away_pitcher, inning,
+                                    current_away_pitcher.is_starter,
+                                    score_diff_away, away_strategy):
+                away_pitcher_idx, current_away_pitcher = _select_reliever(
+                    away_pitchers, away_pitcher_idx, inning,
+                    score_diff_away, away_pitcher_idx + 2)
         else:
             current_away_pitcher.ip_outs += 3
             home_score += inning_runs
@@ -528,11 +808,7 @@ def simulate_game(home_lineup: list[BatterStats], away_lineup: list[BatterStats]
     _assign_decisions(home_pitchers, away_pitchers, home_score, away_score,
                       innings_home, innings_away)
 
-    # Tally runs for batters
-    for b in home_lineup:
-        b.runs = 0  # runs scored tracked via RBI of others
-    for b in away_lineup:
-        b.runs = 0
+    # Runs scored are now tracked in _advance_runners via lineup -- no zeroing needed
 
     return {
         "home_score": home_score,

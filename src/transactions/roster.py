@@ -27,6 +27,20 @@ def call_up_player(player_id: int, db_path: str = None) -> dict:
         conn.close()
         return {"error": "Active roster is full (26 players). Option or DFA someone first."}
 
+    # Check 40-man roster limit
+    forty_man_count = conn.execute("""
+        SELECT COUNT(*) as c FROM players
+        WHERE team_id=? AND on_forty_man=1
+    """, (player["team_id"],)).fetchone()["c"]
+
+    if not player["on_forty_man"] and forty_man_count >= 40:
+        conn.close()
+        return {"error": "40-man roster is full (40 players). Remove someone from the 40-man first."}
+
+    # If player isn't on 40-man, add them
+    if not player["on_forty_man"]:
+        conn.execute("UPDATE players SET on_forty_man=1 WHERE id=?", (player_id,))
+
     conn.execute("UPDATE players SET roster_status='active' WHERE id=?", (player_id,))
 
     state = conn.execute("SELECT current_date FROM game_state WHERE id=1").fetchone()
@@ -76,18 +90,30 @@ def option_player(player_id: int, level: str = "minors_aaa",
 
 
 def dfa_player(player_id: int, db_path: str = None) -> dict:
-    """Designate a player for assignment."""
+    """Designate a player for assignment. Places on waivers for 7 days."""
     conn = get_connection(db_path)
     player = conn.execute("SELECT * FROM players WHERE id=?", (player_id,)).fetchone()
     if not player:
         conn.close()
         return {"error": "Player not found"}
 
-    conn.execute("UPDATE players SET roster_status='free_agent', team_id=NULL WHERE id=?",
-                (player_id,))
-
     state = conn.execute("SELECT current_date FROM game_state WHERE id=1").fetchone()
     game_date = state["current_date"] if state else "2025-01-01"
+
+    # Set to DFA waivers status instead of immediately becoming a free agent
+    conn.execute("UPDATE players SET roster_status='dfa_waivers', on_forty_man=0 WHERE id=?",
+                (player_id,))
+
+    # Calculate expiry date (7 days from now)
+    from datetime import date, timedelta
+    dfa_date = date.fromisoformat(game_date)
+    expiry_date = (dfa_date + timedelta(days=7)).isoformat()
+
+    # Create waiver claim entry
+    conn.execute("""
+        INSERT INTO waiver_claims (player_id, original_team_id, dfa_date, expiry_date, status)
+        VALUES (?, ?, ?, ?, 'pending')
+    """, (player_id, player["team_id"], game_date, expiry_date))
 
     conn.execute("""
         INSERT INTO transactions (transaction_date, transaction_type, details_json,
@@ -95,6 +121,53 @@ def dfa_player(player_id: int, db_path: str = None) -> dict:
         VALUES (?, 'dfa', '{}', ?, ?)
     """, (game_date, player["team_id"], str(player_id)))
 
+    conn.commit()
+    conn.close()
+    return {"success": True, "player_id": player_id, "waiver_expiry": expiry_date}
+
+
+def add_to_forty_man(player_id: int, db_path: str = None) -> dict:
+    """Add a player to the 40-man roster."""
+    conn = get_connection(db_path)
+    player = conn.execute("SELECT * FROM players WHERE id=?", (player_id,)).fetchone()
+    if not player:
+        conn.close()
+        return {"error": "Player not found"}
+    if player["on_forty_man"]:
+        conn.close()
+        return {"error": "Player is already on the 40-man roster"}
+
+    # Check 40-man limit
+    forty_man_count = conn.execute("""
+        SELECT COUNT(*) as c FROM players
+        WHERE team_id=? AND on_forty_man=1
+    """, (player["team_id"],)).fetchone()["c"]
+
+    if forty_man_count >= 40:
+        conn.close()
+        return {"error": "40-man roster is full (40 players). Remove someone first."}
+
+    conn.execute("UPDATE players SET on_forty_man=1 WHERE id=?", (player_id,))
+    conn.commit()
+    conn.close()
+    return {"success": True, "player_id": player_id}
+
+
+def remove_from_forty_man(player_id: int, db_path: str = None) -> dict:
+    """Remove a player from the 40-man roster."""
+    conn = get_connection(db_path)
+    player = conn.execute("SELECT * FROM players WHERE id=?", (player_id,)).fetchone()
+    if not player:
+        conn.close()
+        return {"error": "Player not found"}
+    if not player["on_forty_man"]:
+        conn.close()
+        return {"error": "Player is not on the 40-man roster"}
+    if player["roster_status"] == "active":
+        conn.close()
+        return {"error": "Cannot remove an active player from the 40-man. Option or DFA first."}
+
+    conn.execute("UPDATE players SET on_forty_man=0 WHERE id=?", (player_id,))
     conn.commit()
     conn.close()
     return {"success": True, "player_id": player_id}
@@ -126,6 +199,13 @@ def get_roster_summary(team_id: int, db_path: str = None) -> dict:
         WHERE p.team_id=? AND p.is_injured=1
     """, (team_id,), db_path=db_path)
 
+    # Count 40-man roster based on on_forty_man flag
+    forty_man = query("""
+        SELECT COUNT(*) as c FROM players
+        WHERE team_id=? AND on_forty_man=1
+    """, (team_id,), db_path=db_path)
+    forty_man_count = forty_man[0]["c"] if forty_man else 0
+
     payroll = sum(p.get("annual_salary", 0) or 0 for p in active + minors)
 
     return {
@@ -135,6 +215,6 @@ def get_roster_summary(team_id: int, db_path: str = None) -> dict:
         "minors_count": len(minors),
         "injured": injured,
         "injured_count": len(injured),
-        "forty_man_count": len(active) + len(minors),
+        "forty_man_count": forty_man_count,
         "payroll": payroll,
     }

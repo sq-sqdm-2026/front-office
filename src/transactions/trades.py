@@ -15,6 +15,18 @@ async def propose_trade(proposing_team_id: int, receiving_team_id: int,
     Propose a trade to another team's GM.
     Returns the GM's response (accept/reject with reasoning).
     """
+    # Check trade deadline
+    state = query("SELECT * FROM game_state WHERE id=1", db_path=db_path)
+    if state:
+        gs = state[0]
+        current_date = date.fromisoformat(gs["current_date"])
+        season = gs["season"]
+        deadline = date(season, 7, 31)
+        if gs["phase"] == "regular_season" and current_date > deadline:
+            return {
+                "error": "Trade deadline has passed. Only waiver trades available after July 31."
+            }
+
     # Validate players belong to correct teams
     for pid in players_offered:
         p = query("SELECT team_id FROM players WHERE id=?", (pid,), db_path=db_path)
@@ -42,6 +54,63 @@ async def propose_trade(proposing_team_id: int, receiving_team_id: int,
             return {"error": "Insufficient cash for this trade"}
 
     # Get GM's evaluation
+    result = await evaluate_trade(
+        proposing_team_id, receiving_team_id,
+        players_offered, players_requested,
+        cash_included, db_path
+    )
+
+    return result
+
+
+async def propose_waiver_trade(proposing_team_id: int, receiving_team_id: int,
+                               players_offered: list[int], players_requested: list[int],
+                               cash_included: int = 0, db_path: str = None) -> dict:
+    """
+    Propose a post-deadline waiver trade.
+    Players must have cleared waivers or been claimed before trading.
+    Only available after July 31.
+    """
+    state = query("SELECT * FROM game_state WHERE id=1", db_path=db_path)
+    if not state:
+        return {"error": "No game state found"}
+
+    gs = state[0]
+    current_date = date.fromisoformat(gs["current_date"])
+    season = gs["season"]
+    deadline = date(season, 7, 31)
+
+    if current_date <= deadline:
+        return {"error": "Waiver trades are only available after the July 31 trade deadline."}
+
+    # Verify all requested players have cleared waivers or are on waivers
+    for pid in players_requested:
+        player = query("SELECT roster_status FROM players WHERE id=?", (pid,), db_path=db_path)
+        if not player:
+            return {"error": f"Player {pid} not found"}
+        # For post-deadline trades, player must have been through waivers
+        waiver_record = query("""
+            SELECT * FROM waiver_claims
+            WHERE player_id=? AND status IN ('cleared', 'claimed')
+            ORDER BY id DESC LIMIT 1
+        """, (pid,), db_path=db_path)
+        if not waiver_record:
+            return {
+                "error": f"Player {pid} must clear waivers before a post-deadline trade."
+            }
+
+    # Validate players belong to correct teams
+    for pid in players_offered:
+        p = query("SELECT team_id FROM players WHERE id=?", (pid,), db_path=db_path)
+        if not p or p[0]["team_id"] != proposing_team_id:
+            return {"error": f"Player {pid} is not on the proposing team"}
+
+    for pid in players_requested:
+        p = query("SELECT team_id FROM players WHERE id=?", (pid,), db_path=db_path)
+        if not p or p[0]["team_id"] != receiving_team_id:
+            return {"error": f"Player {pid} is not on the receiving team"}
+
+    # Get GM's evaluation (same logic)
     result = await evaluate_trade(
         proposing_team_id, receiving_team_id,
         players_offered, players_requested,

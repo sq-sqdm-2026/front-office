@@ -12,7 +12,11 @@ from ..transactions.trades import propose_trade, execute_trade
 from ..transactions.free_agency import get_free_agents, sign_free_agent
 from ..ai.ollama_client import check_health
 from ..ai.gm_brain import generate_scouting_report
-from ..transactions.roster import call_up_player, option_player, dfa_player, get_roster_summary
+from ..transactions.roster import (
+    call_up_player, option_player, dfa_player, get_roster_summary,
+    add_to_forty_man, remove_from_forty_man
+)
+from ..transactions.trades import propose_waiver_trade
 from ..transactions.draft import generate_draft_class, make_draft_pick
 from ..simulation.injuries import check_injuries_for_day
 from ..financial.economics import calculate_season_finances
@@ -335,6 +339,42 @@ async def ollama_status():
 
 
 # ============================================================
+# BOX SCORE
+# ============================================================
+@app.get("/game/{schedule_id}/boxscore")
+async def get_boxscore(schedule_id: int):
+    """Full box score with linescore, batting lines, pitching lines."""
+    game = query("""
+        SELECT s.*, h.abbreviation as home_abbr, a.abbreviation as away_abbr,
+               h.city as home_city, h.name as home_name,
+               a.city as away_city, a.name as away_name
+        FROM schedule s
+        JOIN teams h ON h.id = s.home_team_id
+        JOIN teams a ON a.id = s.away_team_id
+        WHERE s.id=?
+    """, (schedule_id,))
+    if not game:
+        raise HTTPException(404, "Game not found")
+    result = query("SELECT * FROM game_results WHERE schedule_id=?", (schedule_id,))
+    batting = query("""
+        SELECT bl.*, p.first_name, p.last_name
+        FROM batting_lines bl JOIN players p ON p.id = bl.player_id
+        WHERE bl.schedule_id=? ORDER BY bl.team_id, bl.batting_order
+    """, (schedule_id,))
+    pitching = query("""
+        SELECT pl.*, p.first_name, p.last_name
+        FROM pitching_lines pl JOIN players p ON p.id = pl.player_id
+        WHERE pl.schedule_id=? ORDER BY pl.team_id, pl.pitch_order
+    """, (schedule_id,))
+    return {
+        "game": game[0],
+        "result": result[0] if result else None,
+        "batting": batting,
+        "pitching": pitching,
+    }
+
+
+# ============================================================
 # ROSTER MANAGEMENT
 # ============================================================
 @app.get("/roster/{team_id}")
@@ -466,3 +506,140 @@ async def pitching_leaders(stat: str = "wins", limit: int = 10):
         ORDER BY ps.{stat} DESC
         LIMIT ?
     """, (limit,))
+
+
+# ============================================================
+# LINEUP & ROTATION MANAGEMENT
+# ============================================================
+@app.get("/roster/{team_id}/lineup")
+async def get_lineup(team_id: int):
+    """Get the team's current lineup configuration."""
+    import json as _json
+    team = query("SELECT lineup_json FROM teams WHERE id=?", (team_id,))
+    if not team:
+        raise HTTPException(404, "Team not found")
+    lineup_raw = team[0].get("lineup_json")
+    return _json.loads(lineup_raw) if lineup_raw else {"batting_order": []}
+
+
+class LineupRequest(BaseModel):
+    batting_order: list[dict]  # [{player_id, position, order}]
+
+@app.post("/roster/{team_id}/lineup")
+async def set_lineup(team_id: int, req: LineupRequest):
+    """Save the team's batting lineup."""
+    import json as _json
+    lineup_json = _json.dumps({"batting_order": req.batting_order})
+    execute("UPDATE teams SET lineup_json=? WHERE id=?", (lineup_json, team_id))
+    return {"success": True, "team_id": team_id}
+
+
+@app.get("/roster/{team_id}/rotation")
+async def get_rotation(team_id: int):
+    """Get the team's pitching rotation and bullpen roles."""
+    import json as _json
+    team = query("SELECT rotation_json FROM teams WHERE id=?", (team_id,))
+    if not team:
+        raise HTTPException(404, "Team not found")
+    rotation_raw = team[0].get("rotation_json")
+    return _json.loads(rotation_raw) if rotation_raw else {"rotation": [], "bullpen": []}
+
+
+class RotationRequest(BaseModel):
+    rotation: list[dict]  # [{player_id, role}]
+    bullpen: list[dict] = []
+
+@app.post("/roster/{team_id}/rotation")
+async def set_rotation(team_id: int, req: RotationRequest):
+    """Save the team's pitching rotation and bullpen roles."""
+    import json as _json
+    rotation_json = _json.dumps({"rotation": req.rotation, "bullpen": req.bullpen})
+    execute("UPDATE teams SET rotation_json=? WHERE id=?", (rotation_json, team_id))
+    return {"success": True, "team_id": team_id}
+
+
+# ============================================================
+# TEAM STRATEGY
+# ============================================================
+@app.get("/team/{team_id}/strategy")
+async def get_team_strategy(team_id: int):
+    """Get team strategy settings."""
+    import json as _json
+    team = query("SELECT team_strategy_json FROM teams WHERE id=?", (team_id,))
+    if not team:
+        raise HTTPException(404, "Team not found")
+    strategy_raw = team[0].get("team_strategy_json", "{}")
+    return _json.loads(strategy_raw) if strategy_raw else {}
+
+
+class StrategyRequest(BaseModel):
+    strategy: dict
+
+@app.post("/team/{team_id}/strategy")
+async def set_team_strategy(team_id: int, req: StrategyRequest):
+    """Save team strategy settings."""
+    import json as _json
+    execute("UPDATE teams SET team_strategy_json=? WHERE id=?",
+            (_json.dumps(req.strategy), team_id))
+    return {"success": True, "team_id": team_id}
+
+
+# ============================================================
+# MONTHLY SCHEDULE
+# ============================================================
+@app.get("/schedule/month")
+async def get_monthly_schedule(year: int, month: int, team_id: int = None):
+    """Get games for a specific month, optionally filtered by team."""
+    month_start = f"{year}-{month:02d}-01"
+    if month == 12:
+        month_end = f"{year + 1}-01-01"
+    else:
+        month_end = f"{year}-{month + 1:02d}-01"
+
+    conditions = ["s.game_date >= ? AND s.game_date < ?"]
+    params: list = [month_start, month_end]
+
+    if team_id:
+        conditions.append("(s.home_team_id = ? OR s.away_team_id = ?)")
+        params.extend([team_id, team_id])
+
+    where = " AND ".join(conditions)
+    return query(f"""
+        SELECT s.*, h.abbreviation as home_abbr, a.abbreviation as away_abbr,
+               h.city as home_city, h.name as home_name,
+               a.city as away_city, a.name as away_name
+        FROM schedule s
+        JOIN teams h ON h.id = s.home_team_id
+        JOIN teams a ON a.id = s.away_team_id
+        WHERE {where}
+        ORDER BY s.game_date, s.id
+    """, tuple(params))
+
+
+# ============================================================
+# WAIVER TRADE (post-deadline)
+# ============================================================
+@app.post("/trade/waiver-propose")
+async def waiver_trade_propose(trade: TradeProposal):
+    """Propose a post-deadline waiver trade."""
+    result = await propose_waiver_trade(
+        trade.proposing_team_id, trade.receiving_team_id,
+        trade.players_offered, trade.players_requested,
+        trade.cash_included
+    )
+    return result
+
+
+# ============================================================
+# 40-MAN ROSTER MANAGEMENT
+# ============================================================
+@app.post("/roster/forty-man/add/{player_id}")
+async def roster_add_forty_man(player_id: int):
+    """Add a player to the 40-man roster."""
+    return add_to_forty_man(player_id)
+
+
+@app.post("/roster/forty-man/remove/{player_id}")
+async def roster_remove_forty_man(player_id: int):
+    """Remove a player from the 40-man roster."""
+    return remove_from_forty_man(player_id)

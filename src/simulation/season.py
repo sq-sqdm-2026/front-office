@@ -9,6 +9,7 @@ from ..database.db import get_connection, query, execute
 from .game_engine import (
     simulate_game, BatterStats, PitcherStats, ParkFactors
 )
+from .strategy import get_strategy
 
 
 def get_standings(season: int = None, db_path: str = None) -> dict:
@@ -175,11 +176,58 @@ def _rotate_starter(team_id: int, db_path: str = None) -> int:
     return starters[0]["id"] if starters else None
 
 
+def _load_team_strategy(team_id: int, db_path: str = None) -> dict:
+    """Load team strategy settings from the database."""
+    team = query("SELECT team_strategy_json FROM teams WHERE id=?",
+                 (team_id,), db_path=db_path)
+    if team and team[0].get("team_strategy_json"):
+        return get_strategy(team[0]["team_strategy_json"])
+    return get_strategy()
+
+
+def _determine_phase(game_date: date, season: int) -> str:
+    """Determine the current season phase based on date.
+    - Before March 26: spring_training
+    - March 26 - September 28: regular_season
+    - October 1-31: postseason
+    - November 1 - February 14: offseason
+    """
+    month = game_date.month
+    day = game_date.day
+
+    if month >= 11 or (month <= 2 and day <= 14):
+        return "offseason"
+    if month == 2 and day > 14:
+        return "spring_training"
+    if month == 3 and day < 26:
+        return "spring_training"
+    if (month == 3 and day >= 26) or (4 <= month <= 8) or (month == 9 and day <= 28):
+        return "regular_season"
+    if month == 9 and day > 28:
+        # Gap between regular season end and postseason start
+        return "regular_season"
+    if month == 10:
+        return "postseason"
+
+    return "regular_season"
+
+
+def is_past_trade_deadline(game_date: date) -> bool:
+    """Check if the current date is past the July 31 trade deadline."""
+    return game_date.month > 7 or (game_date.month == 7 and game_date.day > 31)
+
+
 def sim_day(game_date: str = None, db_path: str = None) -> list:
     """Simulate all games for a given date. Returns list of results."""
     if game_date is None:
         state = query("SELECT current_date FROM game_state WHERE id=1", db_path=db_path)
         game_date = state[0]["current_date"]
+
+    # Check phase -- don't play regular season games during spring training
+    parsed_date = date.fromisoformat(game_date)
+    phase = _determine_phase(parsed_date, parsed_date.year)
+    if phase == "spring_training":
+        return []  # no regular season games during spring training
 
     games = query("""
         SELECT * FROM schedule
@@ -200,10 +248,15 @@ def sim_day(game_date: str = None, db_path: str = None) -> list:
         if not home_lineup or not away_lineup or not home_pitchers or not away_pitchers:
             continue
 
+        # Load team strategies
+        home_strategy = _load_team_strategy(home_id, db_path)
+        away_strategy = _load_team_strategy(away_id, db_path)
+
         result = simulate_game(
             home_lineup, away_lineup,
             home_pitchers, away_pitchers,
-            park, home_id, away_id
+            park, home_id, away_id,
+            home_strategy, away_strategy
         )
 
         # Save to database
@@ -341,19 +394,62 @@ def advance_date(days: int = 1, db_path: str = None) -> dict:
         return {"error": "No game state found"}
 
     current = date.fromisoformat(state[0]["current_date"])
+    season = state[0]["season"]
     all_results = []
+    waiver_outcomes = []
+    ai_trade_events = []
+    offseason_events = []
 
     for d in range(days):
-        game_date = (current + timedelta(days=d)).isoformat()
-        day_results = sim_day(game_date, db_path)
-        all_results.extend(day_results)
+        game_date_obj = current + timedelta(days=d)
+        game_date = game_date_obj.isoformat()
+
+        # Update phase based on current date
+        phase = _determine_phase(game_date_obj, season)
+        execute("UPDATE game_state SET phase=? WHERE id=1",
+                (phase,), db_path=db_path)
+
+        if phase == "offseason":
+            # Process offseason day instead of simulating games
+            from .offseason import process_offseason_day
+            off_result = process_offseason_day(game_date, season, db_path)
+            offseason_events.append(off_result)
+        else:
+            # Simulate games for the day
+            day_results = sim_day(game_date, db_path)
+            all_results.extend(day_results)
+
+            # Process waivers daily
+            from ..transactions.waivers import process_waivers
+            waivers = process_waivers(game_date, db_path)
+            if waivers:
+                waiver_outcomes.extend(waivers)
+
+            # Process AI trades daily (only during regular season)
+            if phase == "regular_season":
+                from ..transactions.ai_trades import process_ai_trades
+                ai_trades = process_ai_trades(game_date, db_path)
+                if ai_trades:
+                    ai_trade_events.extend(ai_trades)
 
     new_date = (current + timedelta(days=days)).isoformat()
-    execute("UPDATE game_state SET current_date=? WHERE id=1",
-            (new_date,), db_path=db_path)
+    new_date_obj = current + timedelta(days=days)
+    final_phase = _determine_phase(new_date_obj, season)
+    execute("UPDATE game_state SET current_date=?, phase=? WHERE id=1",
+            (new_date, final_phase), db_path=db_path)
 
-    return {
+    result = {
         "new_date": new_date,
+        "phase": final_phase,
         "games_played": len(all_results),
         "results": all_results,
     }
+
+    if waiver_outcomes:
+        result["waiver_outcomes"] = waiver_outcomes
+    if ai_trade_events:
+        result["ai_trades"] = ai_trade_events
+    if offseason_events:
+        result["offseason"] = offseason_events
+
+    return result
