@@ -10,6 +10,9 @@ from .game_engine import (
     simulate_game, BatterStats, PitcherStats, ParkFactors
 )
 from .strategy import get_strategy
+from .chemistry import (
+    update_player_morale, update_team_chemistry, calculate_team_chemistry
+)
 
 
 def get_standings(season: int = None, db_path: str = None) -> dict:
@@ -106,7 +109,6 @@ def _load_team_lineup(team_id: int, db_path: str = None) -> tuple:
 
     # Build batting order (simplified auto-sort)
     lineup = []
-    # Sort: speed leadoff, then power/contact, pitcher last
     sorted_batters = sorted(batters_data,
         key=lambda b: (b["speed_rating"] * 0.3 + b["contact_rating"] * 0.7),
         reverse=True)
@@ -122,23 +124,83 @@ def _load_team_lineup(team_id: int, db_path: str = None) -> tuple:
             power=b["power_rating"],
             speed=b["speed_rating"],
             clutch=b["clutch"],
+            fielding=b["fielding_rating"],
+            morale=b["morale"],
         ))
 
-    # Build pitching staff
+    # Load pitcher fatigue data to filter out those needing rest
+    team = query("SELECT team_strategy_json FROM teams WHERE id=?",
+                 (team_id,), db_path=db_path)
+    fatigue_data = {}
+    if team and team[0].get("team_strategy_json"):
+        try:
+            strategy = json.loads(team[0]["team_strategy_json"])
+            fatigue_data = strategy.get("pitcher_fatigue", {})
+        except:
+            fatigue_data = {}
+
+    # Get current date for rest calculation
+    state = query("SELECT current_date FROM game_state WHERE id=1", db_path=db_path)
+    current_date = state[0]["current_date"] if state else "2026-02-15"
+    from datetime import datetime
+    current = datetime.fromisoformat(current_date).date()
+
+    # Build pitching staff, filtering relievers by rest status
     pitchers = []
     starters = [p for p in pitchers_data if p["position"] == "SP"]
     relievers = [p for p in pitchers_data if p["position"] == "RP"]
 
-    for p in (starters[:1] + relievers[:6]):  # 1 starter + up to 6 relievers
+    # Add starter
+    if starters:
+        p = starters[0]
+        pitch_types = [("FB", 70), ("SL", 60), ("CB", 55)]
         pitchers.append(PitcherStats(
             player_id=p["id"],
             name=f"{p['first_name']} {p['last_name']}",
             throws=p["throws"],
-            role="starter" if p["position"] == "SP" else "reliever",
+            role="starter",
             stuff=p["stuff_rating"],
             control=p["control_rating"],
             stamina=p["stamina_rating"],
             clutch=p["clutch"],
+            pitch_types=pitch_types,
+        ))
+
+    # Add relievers, excluding those who need rest
+    available_relievers = []
+    fatigued_relievers = []
+    for p in relievers:
+        reliever_id = p["id"]
+        if str(reliever_id) in fatigue_data:
+            fatigue = fatigue_data[str(reliever_id)]
+            last_game = datetime.fromisoformat(fatigue["last_game_date"]).date()
+            rest_needed = fatigue.get("rest_days_needed", 1)
+            days_rested = (current - last_game).days
+            if days_rested < rest_needed:
+                fatigued_relievers.append(p)
+                continue  # Skip, still needs rest
+        available_relievers.append(p)
+
+    # Use up to 6 available relievers
+    selected_relievers = available_relievers[:6]
+
+    # Emergency fallback: if fewer than 6 available, add fatigued relievers (never blank out the bullpen)
+    if len(selected_relievers) < 6:
+        remaining_slots = 6 - len(selected_relievers)
+        selected_relievers.extend(fatigued_relievers[:remaining_slots])
+
+    for p in selected_relievers:
+        pitch_types = [("FB", 70), ("SL", 60), ("CB", 55)]
+        pitchers.append(PitcherStats(
+            player_id=p["id"],
+            name=f"{p['first_name']} {p['last_name']}",
+            throws=p["throws"],
+            role="reliever",
+            stuff=p["stuff_rating"],
+            control=p["control_rating"],
+            stamina=p["stamina_rating"],
+            clutch=p["clutch"],
+            pitch_types=pitch_types,
         ))
 
     return lineup, pitchers
@@ -159,7 +221,26 @@ def _get_park_factors(team_id: int, db_path: str = None) -> ParkFactors:
 
 
 def _rotate_starter(team_id: int, db_path: str = None) -> int:
-    """Get the next starter in the rotation based on recent usage."""
+    """Get the next starter in the rotation, enforcing 4+ days rest.
+    If no starter has 4+ days rest, use the best-rested reliever as a spot starter.
+    Emergency fallback: use most-rested pitcher if all are fatigued."""
+    # Load team's pitcher fatigue tracking
+    team = query("SELECT team_strategy_json FROM teams WHERE id=?",
+                 (team_id,), db_path=db_path)
+    fatigue_data = {}
+    if team and team[0].get("team_strategy_json"):
+        try:
+            strategy = json.loads(team[0]["team_strategy_json"])
+            fatigue_data = strategy.get("pitcher_fatigue", {})
+        except:
+            fatigue_data = {}
+
+    # Get current date
+    state = query("SELECT current_date FROM game_state WHERE id=1", db_path=db_path)
+    current_date = state[0]["current_date"] if state else "2026-02-15"
+
+    # Find starters by recency
+    from datetime import datetime, timedelta
     starters = query("""
         SELECT p.id, p.first_name, p.last_name,
             COALESCE(
@@ -171,9 +252,71 @@ def _rotate_starter(team_id: int, db_path: str = None) -> int:
         FROM players p
         WHERE p.team_id=? AND p.position='SP' AND p.roster_status='active'
         ORDER BY last_start ASC
-        LIMIT 1
     """, (team_id,), db_path=db_path)
-    return starters[0]["id"] if starters else None
+
+    # Filter starters: those with 4+ days rest
+    current = datetime.fromisoformat(current_date).date()
+    fully_rested = []
+    for starter in starters:
+        starter_id = starter["id"]
+        if str(starter_id) in fatigue_data:
+            fatigue = fatigue_data[str(starter_id)]
+            last_game = datetime.fromisoformat(fatigue["last_game_date"]).date()
+            rest_needed = fatigue.get("rest_days_needed", 4)
+            days_rested = (current - last_game).days
+            if days_rested < 4:  # Strict 4+ days for starters
+                continue
+        fully_rested.append(starter)
+
+    # If a fully-rested starter is available, use them
+    if fully_rested:
+        return fully_rested[0]["id"]
+
+    # Otherwise, find the best-rested reliever as spot starter (bullpen day)
+    relievers = query("""
+        SELECT p.id, p.first_name, p.last_name,
+            COALESCE(
+                (SELECT MAX(s.game_date) FROM pitching_lines pl
+                 JOIN schedule s ON s.id = pl.schedule_id
+                 WHERE pl.player_id = p.id),
+                '2000-01-01'
+            ) as last_game
+        FROM players p
+        WHERE p.team_id=? AND p.position='RP' AND p.roster_status='active'
+        ORDER BY last_game DESC
+    """, (team_id,), db_path=db_path)
+
+    if relievers:
+        # Find best-rested reliever
+        best_rested = None
+        most_days = -999
+        for reliever in relievers:
+            reliever_id = reliever["id"]
+            last_game_date = reliever["last_game"]
+            days_since = (current - datetime.fromisoformat(last_game_date).date()).days
+            if days_since > most_days:
+                most_days = days_since
+                best_rested = reliever
+        if best_rested:
+            return best_rested["id"]
+
+    # Ultimate fallback: return the most-rested starter even if they haven't had full rest
+    best_rest_starter = None
+    best_rest_days = -999
+    for starter in starters:
+        starter_id = starter["id"]
+        if str(starter_id) in fatigue_data:
+            fatigue = fatigue_data[str(starter_id)]
+            last_game = datetime.fromisoformat(fatigue["last_game_date"]).date()
+            days_rested = (current - last_game).days
+            if days_rested > best_rest_days:
+                best_rest_days = days_rested
+                best_rest_starter = starter
+        else:
+            best_rest_starter = starter
+            break
+
+    return best_rest_starter["id"] if best_rest_starter else (starters[0]["id"] if starters else None)
 
 
 def _load_team_strategy(team_id: int, db_path: str = None) -> dict:
@@ -186,12 +329,7 @@ def _load_team_strategy(team_id: int, db_path: str = None) -> dict:
 
 
 def _determine_phase(game_date: date, season: int) -> str:
-    """Determine the current season phase based on date.
-    - Before March 26: spring_training
-    - March 26 - September 28: regular_season
-    - October 1-31: postseason
-    - November 1 - February 14: offseason
-    """
+    """Determine the current season phase based on date."""
     month = game_date.month
     day = game_date.day
 
@@ -204,7 +342,6 @@ def _determine_phase(game_date: date, season: int) -> str:
     if (month == 3 and day >= 26) or (4 <= month <= 8) or (month == 9 and day <= 28):
         return "regular_season"
     if month == 9 and day > 28:
-        # Gap between regular season end and postseason start
         return "regular_season"
     if month == 10:
         return "postseason"
@@ -217,17 +354,167 @@ def is_past_trade_deadline(game_date: date) -> bool:
     return game_date.month > 7 or (game_date.month == 7 and game_date.day > 31)
 
 
+def _generate_key_plays(game_result: dict, home_team_id: int, away_team_id: int) -> list:
+    """Generate play-by-play summary focusing on key events."""
+    key_plays = []
+
+    # If game engine already has play_by_play data, use it
+    if "play_by_play" in game_result and game_result["play_by_play"]:
+        return game_result["play_by_play"]
+
+    # Fallback: extract key plays from lineup stats
+    home_lineup = game_result.get("home_lineup", [])
+    away_lineup = game_result.get("away_lineup", [])
+    home_pitchers = game_result.get("home_pitchers", [])
+    away_pitchers = game_result.get("away_pitchers", [])
+
+    # Scan all batters for key plays
+    for lineup, team_id in [(home_lineup, home_team_id), (away_lineup, away_team_id)]:
+        for batter in lineup:
+            # Home runs (most important)
+            if batter.hr > 0:
+                for _ in range(batter.hr):
+                    key_plays.append({
+                        "type": "HR",
+                        "player": batter.name,
+                        "team_id": team_id,
+                        "inning": None,
+                    })
+            # Strikeouts (mark important outs)
+            if batter.so > 0:
+                for _ in range(batter.so):
+                    key_plays.append({
+                        "type": "SO",
+                        "player": batter.name,
+                        "team_id": team_id,
+                    })
+            # Stolen bases
+            if batter.sb > 0:
+                for _ in range(batter.sb):
+                    key_plays.append({
+                        "type": "SB",
+                        "player": batter.name,
+                        "team_id": team_id,
+                    })
+            # Reached on error
+            if batter.reached_on_error > 0:
+                for _ in range(batter.reached_on_error):
+                    key_plays.append({
+                        "type": "ROE",
+                        "player": batter.name,
+                        "team_id": team_id,
+                    })
+
+    # Scan pitchers for changes and key moments
+    for pitchers, team_id in [(home_pitchers, home_team_id), (away_pitchers, away_team_id)]:
+        for i, pitcher in enumerate(pitchers):
+            if i > 0 and pitcher.ip_outs > 0:  # Relief pitcher who threw
+                key_plays.append({
+                    "type": "PITCHING_CHANGE",
+                    "player": pitcher.name,
+                    "team_id": team_id,
+                })
+
+    return key_plays
+
+
+def _initialize_pitcher_fatigue(team_id: int, db_path: str = None):
+    """Create or initialize fatigue tracking for a team."""
+    conn = get_connection(db_path)
+    team = conn.execute("SELECT team_strategy_json FROM teams WHERE id=?",
+                       (team_id,)).fetchone()
+    if not team:
+        return
+
+    strategy_json = team["team_strategy_json"] or "{}"
+    try:
+        strategy = json.loads(strategy_json)
+    except:
+        strategy = {}
+
+    if "pitcher_fatigue" not in strategy:
+        strategy["pitcher_fatigue"] = {}
+
+    conn.execute("UPDATE teams SET team_strategy_json=? WHERE id=?",
+                (json.dumps(strategy), team_id))
+    conn.commit()
+    conn.close()
+
+
+def _update_pitcher_rest(game_date: str, db_path: str = None):
+    """Update pitcher rest days after each game."""
+    conn = get_connection(db_path)
+
+    # Get all games played today
+    games = query("""
+        SELECT gr.id, pl.player_id, pl.ip_outs, pl.pitches, s.home_team_id, s.away_team_id
+        FROM game_results gr
+        JOIN pitching_lines pl ON pl.schedule_id = gr.schedule_id
+        JOIN schedule s ON s.id = gr.schedule_id
+        WHERE s.game_date = ?
+    """, (game_date,), db_path=db_path)
+
+    for game in games:
+        pitcher_id = game["player_id"]
+        pitches = game["pitches"]
+        ip_outs = game["ip_outs"]
+
+        # Determine rest needed (strict enforcement)
+        if ip_outs >= 15:  # 5+ innings (starter)
+            rest_needed = 4  # Starters must have 4 days rest minimum
+            if pitches > 110:
+                rest_needed = 5  # Extra day if very high pitch count
+        elif pitches >= 45:  # heavy reliever use (45+ pitches)
+            rest_needed = 2  # 2 days rest for heavy use
+        elif pitches >= 30:  # moderate reliever use (30-44 pitches)
+            rest_needed = 1  # 1 day rest for moderate use
+        else:
+            rest_needed = 0  # Light use, no rest required
+
+        if rest_needed > 0:
+            # Store last game date in team strategy for this pitcher
+            teams = [game["home_team_id"], game["away_team_id"]]
+            for team_id in teams:
+                team_row = conn.execute("SELECT team_strategy_json FROM teams WHERE id=?",
+                                       (team_id,)).fetchone()
+                if not team_row:
+                    continue
+
+                strategy_json = team_row["team_strategy_json"] or "{}"
+                try:
+                    strategy = json.loads(strategy_json)
+                except:
+                    strategy = {}
+
+                if "pitcher_fatigue" not in strategy:
+                    strategy["pitcher_fatigue"] = {}
+
+                strategy["pitcher_fatigue"][str(pitcher_id)] = {
+                    "last_game_date": game_date,
+                    "rest_days_needed": rest_needed,
+                    "pitches_thrown": pitches,
+                }
+
+                conn.execute("UPDATE teams SET team_strategy_json=? WHERE id=?",
+                            (json.dumps(strategy), team_id))
+
+    conn.commit()
+    conn.close()
+
+
 def sim_day(game_date: str = None, db_path: str = None) -> list:
     """Simulate all games for a given date. Returns list of results."""
     if game_date is None:
         state = query("SELECT current_date FROM game_state WHERE id=1", db_path=db_path)
         game_date = state[0]["current_date"]
 
-    # Check phase -- don't play regular season games during spring training
     parsed_date = date.fromisoformat(game_date)
     phase = _determine_phase(parsed_date, parsed_date.year)
     if phase == "spring_training":
-        return []  # no regular season games during spring training
+        return []
+
+    # Check for September 1 (expansion to 28-man roster)
+    is_september = parsed_date.month == 9 and parsed_date.day >= 1
 
     games = query("""
         SELECT * FROM schedule
@@ -245,19 +532,54 @@ def sim_day(game_date: str = None, db_path: str = None) -> list:
         away_lineup, away_pitchers = _load_team_lineup(away_id, db_path)
         park = _get_park_factors(home_id, db_path)
 
+        # September callups: expand active roster temporarily
+        if is_september:
+            # Load additional minor leaguers as callups
+            callup_limit = 2
+            home_callups = query("""
+                SELECT p.*, c.annual_salary FROM players p
+                LEFT JOIN contracts c ON c.player_id = p.id
+                WHERE p.team_id=? AND p.roster_status LIKE 'minors%'
+                AND p.position NOT IN ('SP', 'RP')
+                ORDER BY p.power_rating + p.contact_rating DESC
+                LIMIT ?
+            """, (home_id, callup_limit), db_path=db_path)
+
+            for callup in home_callups:
+                if callup["position"] not in ("SP", "RP"):
+                    home_lineup.append(BatterStats(
+                        player_id=callup["id"],
+                        name=f"{callup['first_name']} {callup['last_name']}",
+                        position=callup["position"],
+                        batting_order=len(home_lineup) + 1,
+                        bats=callup["bats"],
+                        contact=callup["contact_rating"],
+                        power=callup["power_rating"],
+                        speed=callup["speed_rating"],
+                        clutch=callup["clutch"],
+                        fielding=callup["fielding_rating"],
+                    ))
+
         if not home_lineup or not away_lineup or not home_pitchers or not away_pitchers:
             continue
 
-        # Load team strategies
         home_strategy = _load_team_strategy(home_id, db_path)
         away_strategy = _load_team_strategy(away_id, db_path)
+
+        # Load team chemistry scores
+        home_chemistry = calculate_team_chemistry(home_id, db_path)
+        away_chemistry = calculate_team_chemistry(away_id, db_path)
 
         result = simulate_game(
             home_lineup, away_lineup,
             home_pitchers, away_pitchers,
             park, home_id, away_id,
-            home_strategy, away_strategy
+            home_strategy, away_strategy,
+            home_chemistry=home_chemistry, away_chemistry=away_chemistry
         )
+
+        # Update pitcher rest tracking
+        _update_pitcher_rest(game_date, db_path)
 
         # Save to database
         conn.execute("""
@@ -265,14 +587,18 @@ def sim_day(game_date: str = None, db_path: str = None) -> list:
             WHERE id=?
         """, (result["home_score"], result["away_score"], game["id"]))
 
-        # Save game result
+        # Generate key plays for play-by-play
+        key_plays = _generate_key_plays(result, home_id, away_id)
+
+        # Save game result with play-by-play
         conn.execute("""
-            INSERT INTO game_results (schedule_id, innings_json,
+            INSERT INTO game_results (schedule_id, innings_json, play_by_play_json,
                 winning_pitcher_id, losing_pitcher_id, save_pitcher_id, attendance)
-            VALUES (?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
         """, (
             game["id"],
             json.dumps([result["innings_away"], result["innings_home"]]),
+            json.dumps(key_plays),
             next((p.player_id for p in result["home_pitchers"] + result["away_pitchers"] if p.decision == "W"), None),
             next((p.player_id for p in result["home_pitchers"] + result["away_pitchers"] if p.decision == "L"), None),
             next((p.player_id for p in result["home_pitchers"] + result["away_pitchers"] if p.decision == "S"), None),
@@ -291,7 +617,6 @@ def sim_day(game_date: str = None, db_path: str = None) -> list:
                       b.position, b.ab, b.runs, b.hits, b.doubles, b.triples,
                       b.hr, b.rbi, b.bb, b.so, b.sb, b.cs, b.hbp, b.sf))
 
-                # Update season stats
                 conn.execute("""
                     INSERT INTO batting_stats (player_id, team_id, season, level, games,
                         pa, ab, runs, hits, doubles, triples, hr, rbi, bb, so, sb, cs, hbp, sf)
@@ -332,7 +657,6 @@ def sim_day(game_date: str = None, db_path: str = None) -> list:
                       p.bb_allowed, p.so_pitched, p.hr_allowed, p.pitches,
                       1 if p.is_starter else 0, p.decision))
 
-                # Update season pitching stats
                 conn.execute("""
                     INSERT INTO pitching_stats (player_id, team_id, season, level, games,
                         games_started, wins, losses, saves, ip_outs,
@@ -369,8 +693,18 @@ def sim_day(game_date: str = None, db_path: str = None) -> list:
             "innings": len(result["innings_away"]),
         })
 
+        # Update morale for both teams after game
+        update_player_morale(home_id, db_path)
+        update_player_morale(away_id, db_path)
+
     conn.commit()
     conn.close()
+
+    # Update team chemistry after games
+    for result_item in results:
+        update_team_chemistry(result_item["home_team_id"], db_path)
+        update_team_chemistry(result_item["away_team_id"], db_path)
+
     return results
 
 
@@ -404,33 +738,33 @@ def advance_date(days: int = 1, db_path: str = None) -> dict:
         game_date_obj = current + timedelta(days=d)
         game_date = game_date_obj.isoformat()
 
-        # Update phase based on current date
         phase = _determine_phase(game_date_obj, season)
         execute("UPDATE game_state SET phase=? WHERE id=1",
                 (phase,), db_path=db_path)
 
         if phase == "offseason":
-            # Process offseason day instead of simulating games
             from .offseason import process_offseason_day
             off_result = process_offseason_day(game_date, season, db_path)
             offseason_events.append(off_result)
         else:
-            # Simulate games for the day
             day_results = sim_day(game_date, db_path)
             all_results.extend(day_results)
 
-            # Process waivers daily
             from ..transactions.waivers import process_waivers
             waivers = process_waivers(game_date, db_path)
             if waivers:
                 waiver_outcomes.extend(waivers)
 
-            # Process AI trades daily (only during regular season)
             if phase == "regular_season":
                 from ..transactions.ai_trades import process_ai_trades
                 ai_trades = process_ai_trades(game_date, db_path)
                 if ai_trades:
                     ai_trade_events.extend(ai_trades)
+
+                # Check for trading block offers
+                trading_offers = process_trading_block_offers(game_date, db_path)
+                if trading_offers:
+                    ai_trade_events.extend([{"type": "trading_block_offer", "offer": o} for o in trading_offers])
 
     new_date = (current + timedelta(days=days)).isoformat()
     new_date_obj = current + timedelta(days=days)
@@ -453,3 +787,84 @@ def advance_date(days: int = 1, db_path: str = None) -> dict:
         result["offseason"] = offseason_events
 
     return result
+
+
+def process_trading_block_offers(game_date: str, db_path: str = None) -> list:
+    """
+    Process AI team trade offers for players on the user's trading block.
+
+    During the regular season, AI teams periodically evaluate players on the user's
+    trading block and may make trade offers. Each trading block player has a 10%
+    chance per day that an AI team makes an offer.
+
+    Returns list of trade offers made.
+    """
+    import random
+
+    state = query("SELECT user_team_id FROM game_state WHERE id=1", db_path=db_path)
+    user_team_id = state[0]["user_team_id"] if state else None
+
+    if not user_team_id:
+        return []
+
+    # Get user's team with trading block
+    team = query("SELECT trading_block_json FROM teams WHERE id=?",
+                (user_team_id,), db_path=db_path)
+
+    if not team or not team[0].get("trading_block_json"):
+        return []
+
+    try:
+        trading_block = json.loads(team[0]["trading_block_json"])
+    except (json.JSONDecodeError, TypeError):
+        return []
+
+    if not isinstance(trading_block, list) or len(trading_block) == 0:
+        return []
+
+    offers = []
+
+    # For each player on the trading block, 10% chance per day an AI team makes an offer
+    for player_id in trading_block:
+        if random.random() < 0.10:
+            # AI team wants to make an offer
+            player = query("SELECT first_name, last_name, position FROM players WHERE id=?",
+                          (player_id,), db_path=db_path)
+
+            if not player:
+                continue
+
+            # Pick a random AI team (not the user's team)
+            ai_teams = query("""
+                SELECT id, city, name FROM teams WHERE id != ? ORDER BY RANDOM() LIMIT 1
+            """, (user_team_id,), db_path=db_path)
+
+            if not ai_teams:
+                continue
+
+            proposing_team = ai_teams[0]
+            player_info = player[0]
+            player_name = f"{player_info['first_name']} {player_info['last_name']}"
+            proposing_team_name = f"{proposing_team['city']} {proposing_team['name']}"
+
+            # Create a simple offer (some prospects/picks)
+            offer_details = {
+                "proposing_team_id": proposing_team["id"],
+                "proposing_team_name": proposing_team_name,
+                "player_id": player_id,
+                "player_name": player_name,
+                "assets": [
+                    {"type": "prospects", "count": random.randint(1, 3)},
+                    {"type": "draft_picks", "count": random.randint(0, 2)},
+                ]
+            }
+
+            # Send notification to user
+            from ..transactions.messages import send_message
+            subject = f"Trade Interest: {player_name}"
+            body = f"The {proposing_team_name} has expressed trade interest in {player_name}. Check the Transactions tab for details."
+            send_message(user_team_id, "trade_offer", subject, body, game_date, db_path=db_path)
+
+            offers.append(offer_details)
+
+    return offers

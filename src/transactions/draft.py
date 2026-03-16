@@ -133,6 +133,55 @@ def _generate_prospect(tier: str, rank: int, used_names: set) -> dict:
     }
 
 
+def initialize_draft_pick_ownership(season: int, db_path: str = None) -> list:
+    """
+    Initialize draft pick ownership for a season.
+    Each team owns one pick per round (rounds 1-20), 30 teams * 20 rounds = 600 picks.
+    """
+    conn = get_connection(db_path)
+
+    # Check if already initialized
+    existing = conn.execute("""
+        SELECT COUNT(*) as c FROM draft_pick_ownership WHERE season=?
+    """, (season,)).fetchone()["c"]
+
+    if existing > 0:
+        conn.close()
+        return query("""
+            SELECT * FROM draft_pick_ownership WHERE season=?
+            ORDER BY round, pick_number
+        """, (season,), db_path=db_path)
+
+    # Get all teams
+    teams = conn.execute("SELECT id FROM teams ORDER BY id").fetchall()
+    team_ids = [t["id"] for t in teams]
+
+    picks_created = []
+
+    # Create picks for 20 rounds
+    for round_num in range(1, 21):
+        # Rotate team order by round (worst record gets earlier picks - simplified: reverse order)
+        team_order = list(reversed(team_ids)) if round_num % 2 == 0 else team_ids
+
+        for pick_num, team_id in enumerate(team_order, 1):
+            conn.execute("""
+                INSERT INTO draft_pick_ownership
+                (season, round, pick_number, original_team_id, current_owner_team_id)
+                VALUES (?, ?, ?, ?, ?)
+            """, (season, round_num, pick_num, team_id, team_id))
+
+            picks_created.append({
+                "season": season,
+                "round": round_num,
+                "pick": pick_num,
+                "owner_team_id": team_id,
+            })
+
+    conn.commit()
+    conn.close()
+    return picks_created
+
+
 def make_draft_pick(team_id: int, prospect_id: int, round_num: int,
                     pick_num: int, db_path: str = None) -> dict:
     """Draft a prospect - creates a real player from the prospect template."""
@@ -203,6 +252,16 @@ def make_draft_pick(team_id: int, prospect_id: int, round_num: int,
           json.dumps({"round": round_num, "pick": pick_num,
                      "prospect_name": f"{p['first_name']} {p['last_name']}"}),
           team_id, str(player_id)))
+
+    # Send notification if drafted by user's team
+    state = conn.execute("SELECT user_team_id FROM game_state WHERE id=1").fetchone()
+    user_team_id = state["user_team_id"] if state else None
+    if team_id == user_team_id:
+        from .messages import send_draft_notification
+        player_name = f"{p['first_name']} {p['last_name']}"
+        team = conn.execute("SELECT city, name FROM teams WHERE id=?", (team_id,)).fetchone()
+        team_name = f"{team['city']} {team['name']}" if team else "Your Team"
+        send_draft_notification(user_team_id, player_name, round_num, pick_num, team_name, db_path=db_path)
 
     conn.commit()
     conn.close()

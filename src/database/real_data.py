@@ -283,7 +283,10 @@ def _safe_float(val, default=0.0) -> float:
 
 
 def _hitting_ratings(stats: dict, position: str, age: int) -> dict:
-    """Convert 2024 hitting stats to 20-80 scouting ratings."""
+    """
+    Convert 2024 hitting stats to 20-80 scouting ratings using percentile-based approach.
+    Better accounts for league context and park factors.
+    """
     avg = _safe_float(stats.get("avg"), 0.250)
     slg = _safe_float(stats.get("slg"), 0.400)
     obp = _safe_float(stats.get("obp"), 0.320)
@@ -294,43 +297,103 @@ def _hitting_ratings(stats: dict, position: str, age: int) -> dict:
     triples = _safe_float(stats.get("triples"), 0)
     games = _safe_float(stats.get("gamesPlayed"), 1)
 
-    # Avoid division by zero
     ab = max(ab, 1)
     games = max(games, 1)
 
     k_rate = so / ab
     hr_rate = hr / ab
-    iso = max(0, slg - avg)  # isolated power
+    iso = max(0, slg - avg)
     sb_per_game = sb / games
     triples_per_game = triples / games
 
-    # Contact: based on AVG and K-rate
-    # .300 avg + low K = 80, .200 avg + high K = 20
-    contact_from_avg = (avg - 0.180) / 0.140 * 60 + 20  # .180=20, .320=80
-    contact_from_k = (1 - k_rate / 0.35) * 60 + 20       # 0% K=80, 35% K=20
-    contact = _clamp((contact_from_avg * 0.6 + contact_from_k * 0.4))
+    # Percentile-based contact rating
+    # League average AVG ~.244, elite ~.320+
+    # League average K% ~21%, low ~15%, high ~28%
+    if avg >= 0.320:
+        contact_from_avg = 75
+    elif avg >= 0.300:
+        contact_from_avg = 70
+    elif avg >= 0.280:
+        contact_from_avg = 65
+    elif avg >= 0.260:
+        contact_from_avg = 60
+    elif avg >= 0.240:
+        contact_from_avg = 50
+    elif avg >= 0.220:
+        contact_from_avg = 40
+    else:
+        contact_from_avg = 30
 
-    # Power: based on ISO and HR rate
-    # ISO .300+ = 80, ISO .050 = 20
-    power_from_iso = (iso - 0.050) / 0.250 * 60 + 20
-    power_from_hr = (hr_rate - 0.010) / 0.060 * 60 + 20
-    power = _clamp((power_from_iso * 0.6 + power_from_hr * 0.4))
+    if k_rate <= 0.15:
+        contact_from_k = 80
+    elif k_rate <= 0.18:
+        contact_from_k = 70
+    elif k_rate <= 0.21:
+        contact_from_k = 60
+    elif k_rate <= 0.25:
+        contact_from_k = 50
+    elif k_rate <= 0.28:
+        contact_from_k = 40
+    else:
+        contact_from_k = 30
 
-    # Speed: based on SB and triples
-    speed_from_sb = (sb_per_game - 0.02) / 0.25 * 60 + 30
-    speed_from_3b = triples_per_game / 0.03 * 20 + 30
-    speed = _clamp((speed_from_sb * 0.7 + speed_from_3b * 0.3))
-    # Age-based speed decline
+    contact = _clamp(int(contact_from_avg * 0.6 + contact_from_k * 0.4))
+
+    # Percentile-based power rating
+    # League average ISO ~.150, elite ~.250+
+    # League average HR/AB ~3.5%, elite ~5%+
+    if iso >= 0.250:
+        power_from_iso = 80
+    elif iso >= 0.220:
+        power_from_iso = 75
+    elif iso >= 0.190:
+        power_from_iso = 70
+    elif iso >= 0.160:
+        power_from_iso = 60
+    elif iso >= 0.120:
+        power_from_iso = 50
+    elif iso >= 0.080:
+        power_from_iso = 40
+    else:
+        power_from_iso = 30
+
+    if hr_rate >= 0.050:
+        power_from_hr = 75
+    elif hr_rate >= 0.040:
+        power_from_hr = 65
+    elif hr_rate >= 0.035:
+        power_from_hr = 55
+    elif hr_rate >= 0.025:
+        power_from_hr = 45
+    elif hr_rate >= 0.015:
+        power_from_hr = 35
+    else:
+        power_from_hr = 25
+
+    power = _clamp(int(power_from_iso * 0.6 + power_from_hr * 0.4))
+
+    # Speed: based on SB rate (league average ~.25 SB/game)
+    if sb_per_game >= 0.30:
+        speed = 75
+    elif sb_per_game >= 0.20:
+        speed = 65
+    elif sb_per_game >= 0.10:
+        speed = 55
+    elif sb_per_game >= 0.05:
+        speed = 45
+    else:
+        speed = 35
+
     if age > 30:
         speed = _clamp(speed - (age - 30) * 3)
 
-    # Fielding: position-based with some variance
+    # Fielding: position-based
     fielding_base = FIELDING_BASE.get(position, 45)
-    fielding = _clamp(fielding_base + random.randint(-8, 8))
+    fielding = _clamp(fielding_base + random.randint(-5, 5))
 
-    # Arm: position-based with some variance
+    # Arm: position-based
     arm_base = ARM_BASE.get(position, 45)
-    arm = _clamp(arm_base + random.randint(-8, 8))
+    arm = _clamp(arm_base + random.randint(-5, 5))
 
     return {
         "contact_rating": contact,
@@ -342,16 +405,18 @@ def _hitting_ratings(stats: dict, position: str, age: int) -> dict:
 
 
 def _pitching_ratings(stats: dict, position: str, age: int) -> dict:
-    """Convert 2024 pitching stats to 20-80 scouting ratings."""
+    """
+    Convert 2024 pitching stats to 20-80 scouting ratings.
+    Weight K/9 and BB/9 more heavily than ERA.
+    """
     ip_str = stats.get("inningsPitched", "0")
-    # IP is stored as "123.1" where .1 = 1/3, .2 = 2/3
     try:
         parts = str(ip_str).split(".")
         ip = float(parts[0]) + (float(parts[1]) / 3 if len(parts) > 1 else 0)
     except (ValueError, IndexError):
         ip = 0
 
-    ip = max(ip, 1.0)  # avoid division by zero
+    ip = max(ip, 1.0)
 
     so = _safe_float(stats.get("strikeOuts"), 0)
     bb = _safe_float(stats.get("baseOnBalls"), 0)
@@ -365,30 +430,75 @@ def _pitching_ratings(stats: dict, position: str, age: int) -> dict:
     hr_per_9 = (hr / ip) * 9
     era = (er / ip) * 9
 
-    # FIP approximation: (13*HR + 3*BB - 2*K) / IP + 3.10
-    fip = (13 * hr + 3 * bb - 2 * so) / ip + 3.10
+    # Percentile-based stuff rating (K/9 primary driver)
+    # Elite: 12+ K/9, Average: 8.5 K/9, Poor: <6.5 K/9
+    if k_per_9 >= 12.0:
+        stuff = 80
+    elif k_per_9 >= 11.0:
+        stuff = 75
+    elif k_per_9 >= 10.0:
+        stuff = 70
+    elif k_per_9 >= 9.0:
+        stuff = 65
+    elif k_per_9 >= 8.5:
+        stuff = 60
+    elif k_per_9 >= 8.0:
+        stuff = 55
+    elif k_per_9 >= 7.0:
+        stuff = 50
+    elif k_per_9 >= 6.0:
+        stuff = 40
+    else:
+        stuff = 30
 
-    # Stuff: based on K/9 and FIP
-    # K/9 of 12+ = 80, K/9 of 4 = 20
-    stuff_from_k = (k_per_9 - 4.0) / 8.0 * 60 + 20
-    stuff_from_fip = (5.50 - fip) / 4.0 * 60 + 20  # FIP 1.5=80, FIP 5.5=20
-    stuff = _clamp((stuff_from_k * 0.5 + stuff_from_fip * 0.5))
+    stuff = _clamp(stuff)
 
-    # Control: based on BB/9 inverse
-    # BB/9 of 1.0 = 80, BB/9 of 5.5 = 20
-    control = _clamp((5.5 - bb_per_9) / 4.5 * 60 + 20)
+    # Control rating (BB/9 inverse)
+    # Elite: <2.0 BB/9, Average: 3.0 BB/9, Poor: >4.5 BB/9
+    if bb_per_9 <= 1.5:
+        control = 80
+    elif bb_per_9 <= 2.0:
+        control = 75
+    elif bb_per_9 <= 2.5:
+        control = 70
+    elif bb_per_9 <= 3.0:
+        control = 65
+    elif bb_per_9 <= 3.5:
+        control = 60
+    elif bb_per_9 <= 4.0:
+        control = 50
+    elif bb_per_9 <= 4.5:
+        control = 40
+    else:
+        control = 30
 
-    # Stamina: based on IP/GS for starters, low for relievers
+    control = _clamp(control)
+
+    # Stamina: based on IP/GS for starters
     is_starter = position == "SP"
     if is_starter and gs > 0:
         ip_per_start = ip / gs
-        # 7.0 IP/GS = 80, 4.0 IP/GS = 20
-        stamina = _clamp((ip_per_start - 4.0) / 3.0 * 60 + 20)
+        if ip_per_start >= 7.0:
+            stamina = 80
+        elif ip_per_start >= 6.5:
+            stamina = 75
+        elif ip_per_start >= 6.0:
+            stamina = 70
+        elif ip_per_start >= 5.5:
+            stamina = 65
+        elif ip_per_start >= 5.0:
+            stamina = 60
+        elif ip_per_start >= 4.5:
+            stamina = 50
+        else:
+            stamina = 40
     elif is_starter:
-        stamina = _clamp(50)
+        stamina = 50
     else:
-        # Relievers: base 30-45
-        stamina = _clamp(random.randint(25, 45))
+        # Relievers: typically 30-50
+        stamina = random.randint(30, 50)
+
+    stamina = _clamp(stamina)
 
     return {
         "stuff_rating": stuff,
@@ -501,26 +611,148 @@ def _build_player_dict(details: dict, roster_entry: dict) -> dict:
         option_years = 0
         roster_status = roster_entry.get("roster_status", "active")
 
-    # Contract estimate from age/ratings
+    # Better contract estimation based on service time and ratings
     overall = max(hit_ratings.values()) if not is_pitcher else max(pitch_ratings.values())
-    if overall >= 65 and service_years >= 3:
-        salary = random.randint(12_000_000, 35_000_000)
-        contract_years = random.randint(2, 6)
-        ntc = random.choices([0, 1, 2], weights=[30, 40, 30])[0]
-    elif overall >= 50 and service_years >= 2:
-        salary = random.randint(3_000_000, 15_000_000)
-        contract_years = random.randint(1, 4)
-        ntc = random.choices([0, 1, 2], weights=[70, 20, 10])[0]
+
+    if service_years >= 6:
+        # Free agent caliber (6+ years of service)
+        if overall >= 70:
+            salary = random.randint(20_000_000, 40_000_000)
+            contract_years = random.randint(4, 8)
+        elif overall >= 60:
+            salary = random.randint(12_000_000, 25_000_000)
+            contract_years = random.randint(3, 6)
+        else:
+            salary = random.randint(5_000_000, 15_000_000)
+            contract_years = random.randint(2, 4)
+        ntc = random.choices([0, 1, 2], weights=[20, 50, 30])[0]
+    elif service_years >= 3:
+        # Arbitration-eligible (3-6 years)
+        if overall >= 65:
+            salary = random.randint(8_000_000, 18_000_000)
+            contract_years = random.randint(2, 4)
+        elif overall >= 55:
+            salary = random.randint(4_000_000, 12_000_000)
+            contract_years = random.randint(1, 3)
+        else:
+            salary = random.randint(2_000_000, 8_000_000)
+            contract_years = 1
+        ntc = random.choices([0, 1, 2], weights=[50, 30, 20])[0]
     elif service_years >= 1:
-        salary = random.randint(750_000, 5_000_000)
-        contract_years = random.randint(1, 3)
+        # Pre-arb (< 3 years service)
+        if overall >= 60:
+            salary = random.randint(1_500_000, 5_000_000)
+            contract_years = random.randint(1, 2)
+        else:
+            salary = random.randint(750_000, 2_000_000)
+            contract_years = 1
         ntc = 0
     else:
-        salary = random.randint(720_000, 740_000)
-        contract_years = random.randint(1, 3)
+        # Rookie or near-rookie
+        salary = random.randint(720_000, 750_000)
+        contract_years = 1
         ntc = 0
 
     peak_age = random.randint(26, 30)
+
+    # Generate platoon splits for hitters
+    platoon_split_json = None
+    if not is_pitcher:
+        if details["bats"] == "S":
+            # Switch hitters: small bonuses either way
+            platoon_split_json = {
+                "vs_lhp": {"contact": 1, "power": 1},
+                "vs_rhp": {"contact": 1, "power": 1}
+            }
+        elif details["bats"] == "L":
+            # LHB vs RHP: +3 contact, +2 power (natural advantage)
+            # LHB vs LHP: -2 contact, -3 power (same-handed disadvantage)
+            platoon_split_json = {
+                "vs_lhp": {"contact": -2, "power": -3},
+                "vs_rhp": {"contact": 3, "power": 2}
+            }
+        else:  # RHB
+            # RHB vs LHP: +2 contact, +3 power (natural advantage)
+            # RHB vs RHP: -3 contact, -2 power (same-handed disadvantage)
+            platoon_split_json = {
+                "vs_lhp": {"contact": 2, "power": 3},
+                "vs_rhp": {"contact": -3, "power": -2}
+            }
+        import json
+        platoon_split_json = json.dumps(platoon_split_json)
+
+    # Generate pitch repertoire for pitchers
+    pitch_repertoire_json = None
+    if is_pitcher:
+        # Determine pitch mix based on pitcher type and stats
+        pitch_types = ["4SFB", "2SFB", "CUT", "SI", "SL", "CB", "CH", "SPL", "KC", "SW", "SC", "KN"]
+
+        # High K/9 pitchers use more strikeout pitches
+        k_rate = details["pitching_stats"].get("strikeout_rate", 8.0) if details["pitching_stats"] else 8.0
+        gb_rate = details["pitching_stats"].get("ground_ball_rate", 45.0) if details["pitching_stats"] else 45.0
+
+        repertoire = []
+
+        # 4-seam fastball (everyone has this)
+        repertoire.append({
+            "type": "4SFB",
+            "rating": int(pitch_ratings["stuff_rating"] * 0.95),
+            "usage": 0.35
+        })
+
+        # If high GB rate, add sinker/2-seam
+        if gb_rate > 50:
+            repertoire.append({
+                "type": "SI",
+                "rating": int(pitch_ratings["stuff_rating"] * 0.85),
+                "usage": 0.15
+            })
+        else:
+            repertoire.append({
+                "type": "2SFB",
+                "rating": int(pitch_ratings["stuff_rating"] * 0.88),
+                "usage": 0.12
+            })
+
+        # Slider (most common secondary)
+        repertoire.append({
+            "type": "SL",
+            "rating": int(pitch_ratings["control_rating"] * 0.95),
+            "usage": 0.15
+        })
+
+        # Curveball (if high K rate)
+        if k_rate > 9.5:
+            repertoire.append({
+                "type": "CB",
+                "rating": int(pitch_ratings["control_rating"] * 0.90),
+                "usage": 0.10
+            })
+        else:
+            repertoire.append({
+                "type": "CH",
+                "rating": int(pitch_ratings["control_rating"] * 0.92),
+                "usage": 0.08
+            })
+
+        # Splitter (elite pitchers)
+        if pitch_ratings["stuff_rating"] >= 65:
+            repertoire.append({
+                "type": "SPL",
+                "rating": int(pitch_ratings["stuff_rating"] * 0.80),
+                "usage": 0.08
+            })
+
+        # Cutter (good stuff pitchers)
+        if pitch_ratings["stuff_rating"] >= 60:
+            repertoire.append({
+                "type": "CUT",
+                "rating": int(pitch_ratings["stuff_rating"] * 0.82),
+                "usage": 0.07
+            })
+
+        import json
+        pitch_repertoire_json = json.dumps(repertoire)
 
     return {
         "first_name": details["first_name"],
@@ -553,6 +785,8 @@ def _build_player_dict(details: dict, roster_entry: dict) -> dict:
         "salary": salary,
         "contract_years": contract_years,
         "ntc": ntc,
+        "platoon_split_json": platoon_split_json,
+        "pitch_repertoire_json": pitch_repertoire_json,
     }
 
 

@@ -14,6 +14,9 @@ CREATE TABLE IF NOT EXISTS game_state (
     phase TEXT NOT NULL DEFAULT 'spring_training',  -- spring_training, regular_season, postseason, offseason
     user_team_id INTEGER,
     difficulty TEXT NOT NULL DEFAULT 'manager',  -- fan, coach, manager, mogul
+    scouting_mode TEXT NOT NULL DEFAULT 'traditional',  -- traditional, stat_based, variable
+    commissioner_mode INTEGER NOT NULL DEFAULT 0,  -- 0=off, 1=on
+    stat_display_config_json TEXT DEFAULT NULL,  -- JSON: {batting: [...], pitching: [...]}
     FOREIGN KEY (user_team_id) REFERENCES teams(id)
 );
 
@@ -56,7 +59,11 @@ CREATE TABLE IF NOT EXISTS teams (
     scouting_staff_budget INTEGER NOT NULL DEFAULT 10000000,
     team_strategy_json TEXT NOT NULL DEFAULT '{}',
     lineup_json TEXT DEFAULT NULL,
-    rotation_json TEXT DEFAULT NULL
+    rotation_json TEXT DEFAULT NULL,
+    trading_block_json TEXT NOT NULL DEFAULT '[]',
+    -- Broadcast contract
+    broadcast_contract_type TEXT NOT NULL DEFAULT 'normal',  -- normal, cable, blackout
+    broadcast_contract_years_remaining INTEGER NOT NULL DEFAULT 3
 );
 
 -- ============================================================
@@ -99,17 +106,31 @@ CREATE TABLE IF NOT EXISTS players (
     work_ethic INTEGER NOT NULL DEFAULT 50,
     clutch INTEGER NOT NULL DEFAULT 50,
     durability INTEGER NOT NULL DEFAULT 50,  -- injury resistance
+    loyalty INTEGER NOT NULL DEFAULT 50,  -- attachment to current team
+    greed INTEGER NOT NULL DEFAULT 50,  -- money vs winning priority
+    composure INTEGER NOT NULL DEFAULT 50,  -- handles pressure/media
+    intelligence INTEGER NOT NULL DEFAULT 50,  -- baseball IQ, learning speed
+    aggression INTEGER NOT NULL DEFAULT 50,  -- plays hard, fights, intensity
+    sociability INTEGER NOT NULL DEFAULT 50,  -- teammate bonds, clubhouse presence
+    morale INTEGER NOT NULL DEFAULT 50,  -- current morale (0-100)
     -- Status
     roster_status TEXT NOT NULL DEFAULT 'active',  -- active, minors_aaa, minors_aa, minors_low, injured_dl, free_agent, retired
     is_injured INTEGER NOT NULL DEFAULT 0,
     injury_type TEXT DEFAULT NULL,
     injury_days_remaining INTEGER DEFAULT 0,
+    il_tier TEXT DEFAULT NULL,  -- 10-day, 15-day, 60-day
     on_forty_man INTEGER NOT NULL DEFAULT 1,
     option_years_remaining INTEGER NOT NULL DEFAULT 3,
     service_years REAL NOT NULL DEFAULT 0.0,
     -- Development
     peak_age INTEGER NOT NULL DEFAULT 27,
     development_rate REAL NOT NULL DEFAULT 1.0,  -- multiplier for improvement speed
+    -- Platoon splits: JSON format {"vs_lhp": {"contact": +5, "power": +8}, "vs_rhp": {"contact": -3, "power": -5}}
+    platoon_split_json TEXT DEFAULT NULL,
+    -- Pitch repertoire for pitchers: JSON format [{"type": "4SFB", "rating": 65, "usage": 0.35}, ...]
+    pitch_repertoire_json TEXT DEFAULT NULL,
+    -- Scouted ratings cache: JSON format {"season": 2026, "scouted": {"contact": 55, "power": 48, ...}, "mode": "traditional"}
+    scouted_ratings_json TEXT DEFAULT NULL,
     FOREIGN KEY (team_id) REFERENCES teams(id)
 );
 
@@ -130,6 +151,10 @@ CREATE TABLE IF NOT EXISTS contracts (
     player_option_year INTEGER DEFAULT NULL,
     is_arb_eligible INTEGER NOT NULL DEFAULT 0,
     signed_date TEXT NOT NULL,
+    -- Contract complexity features
+    vesting_option_json TEXT DEFAULT NULL,  -- {"year": 2028, "condition": "500_pa", "salary": 15000000}
+    incentives_json TEXT DEFAULT NULL,  -- [{"type": "all_star", "bonus": 500000}, ...]
+    deferred_pct INTEGER NOT NULL DEFAULT 0,  -- % of salary deferred to future years
     FOREIGN KEY (player_id) REFERENCES players(id),
     FOREIGN KEY (team_id) REFERENCES teams(id)
 );
@@ -161,6 +186,8 @@ CREATE TABLE IF NOT EXISTS game_results (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     schedule_id INTEGER NOT NULL,
     innings_json TEXT NOT NULL,  -- JSON: [[home_runs_per_inning], [away_runs_per_inning]]
+    play_by_play_json TEXT,  -- JSON: key plays from the game
+    weather_json TEXT DEFAULT NULL,  -- JSON: {temp, wind_direction, wind_speed, humidity, is_day_game}
     winning_pitcher_id INTEGER,
     losing_pitcher_id INTEGER,
     save_pitcher_id INTEGER,
@@ -389,6 +416,53 @@ CREATE TABLE IF NOT EXISTS draft_prospects (
 );
 
 -- ============================================================
+-- DRAFT PICK OWNERSHIP
+-- ============================================================
+CREATE TABLE IF NOT EXISTS draft_pick_ownership (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    season INTEGER NOT NULL,
+    round INTEGER NOT NULL,
+    pick_number INTEGER NOT NULL,
+    original_team_id INTEGER NOT NULL,
+    current_owner_team_id INTEGER NOT NULL,
+    traded_date TEXT,  -- when it was last traded, NULL if not traded
+    UNIQUE(season, round, pick_number),
+    FOREIGN KEY (original_team_id) REFERENCES teams(id),
+    FOREIGN KEY (current_owner_team_id) REFERENCES teams(id)
+);
+
+-- ============================================================
+-- INTERNATIONAL FREE AGENTS
+-- ============================================================
+CREATE TABLE IF NOT EXISTS international_prospects (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    season INTEGER NOT NULL,
+    first_name TEXT NOT NULL,
+    last_name TEXT NOT NULL,
+    age INTEGER NOT NULL,
+    birth_country TEXT NOT NULL,
+    position TEXT NOT NULL,
+    bats TEXT NOT NULL DEFAULT 'R',
+    throws TEXT NOT NULL DEFAULT 'R',
+    contact_floor INTEGER NOT NULL DEFAULT 30,
+    contact_ceiling INTEGER NOT NULL DEFAULT 60,
+    power_floor INTEGER NOT NULL DEFAULT 30,
+    power_ceiling INTEGER NOT NULL DEFAULT 60,
+    speed_floor INTEGER NOT NULL DEFAULT 30,
+    speed_ceiling INTEGER NOT NULL DEFAULT 60,
+    fielding_floor INTEGER NOT NULL DEFAULT 30,
+    fielding_ceiling INTEGER NOT NULL DEFAULT 60,
+    arm_floor INTEGER NOT NULL DEFAULT 30,
+    arm_ceiling INTEGER NOT NULL DEFAULT 60,
+    scouting_report TEXT DEFAULT '',
+    is_signed INTEGER NOT NULL DEFAULT 0,
+    signed_by_team_id INTEGER,
+    signing_bonus INTEGER,
+    signed_date TEXT,
+    FOREIGN KEY (signed_by_team_id) REFERENCES teams(id)
+);
+
+-- ============================================================
 -- CHAT / MESSAGE HISTORY
 -- ============================================================
 CREATE TABLE IF NOT EXISTS messages (
@@ -448,6 +522,34 @@ CREATE TABLE IF NOT EXISTS waiver_claims (
 );
 
 -- ============================================================
+-- PLAYER RELATIONSHIPS (Friends, Rivals, Mentors)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS player_relationships (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    player_id_1 INTEGER NOT NULL,
+    player_id_2 INTEGER NOT NULL,
+    relationship_type TEXT NOT NULL,  -- friend, rival, mentor
+    strength INTEGER NOT NULL DEFAULT 50,  -- 1-100, intensity of relationship
+    created_date TEXT NOT NULL,
+    UNIQUE(player_id_1, player_id_2),
+    FOREIGN KEY (player_id_1) REFERENCES players(id),
+    FOREIGN KEY (player_id_2) REFERENCES players(id)
+);
+
+-- ============================================================
+-- TEAM CHEMISTRY TRACKING
+-- ============================================================
+CREATE TABLE IF NOT EXISTS team_chemistry (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    team_id INTEGER NOT NULL UNIQUE,
+    chemistry_score INTEGER NOT NULL DEFAULT 50,  -- 0-100
+    last_updated TEXT NOT NULL,
+    recent_trade_count INTEGER NOT NULL DEFAULT 0,  -- within 30 days
+    win_streak INTEGER NOT NULL DEFAULT 0,  -- positive for wins, negative for losses
+    FOREIGN KEY (team_id) REFERENCES teams(id)
+);
+
+-- ============================================================
 -- INDEXES
 -- ============================================================
 CREATE INDEX IF NOT EXISTS idx_players_team ON players(team_id);
@@ -459,7 +561,15 @@ CREATE INDEX IF NOT EXISTS idx_pitching_lines_game ON pitching_lines(schedule_id
 CREATE INDEX IF NOT EXISTS idx_batting_stats_player ON batting_stats(player_id, season);
 CREATE INDEX IF NOT EXISTS idx_pitching_stats_player ON pitching_stats(player_id, season);
 CREATE INDEX IF NOT EXISTS idx_contracts_player ON contracts(player_id);
+CREATE INDEX IF NOT EXISTS idx_contracts_team ON contracts(team_id);
 CREATE INDEX IF NOT EXISTS idx_messages_date ON messages(game_date);
 CREATE INDEX IF NOT EXISTS idx_transactions_date ON transactions(transaction_date);
 CREATE INDEX IF NOT EXISTS idx_waiver_claims_status ON waiver_claims(status, expiry_date);
+CREATE INDEX IF NOT EXISTS idx_draft_pick_ownership_season ON draft_pick_ownership(season);
+CREATE INDEX IF NOT EXISTS idx_draft_pick_ownership_owner ON draft_pick_ownership(current_owner_team_id);
+CREATE INDEX IF NOT EXISTS idx_international_prospects_season ON international_prospects(season);
+CREATE INDEX IF NOT EXISTS idx_international_prospects_signed ON international_prospects(is_signed);
+CREATE INDEX IF NOT EXISTS idx_player_relationships_player1 ON player_relationships(player_id_1);
+CREATE INDEX IF NOT EXISTS idx_player_relationships_player2 ON player_relationships(player_id_2);
+CREATE INDEX IF NOT EXISTS idx_team_chemistry_team ON team_chemistry(team_id);
 """

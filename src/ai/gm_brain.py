@@ -5,6 +5,8 @@ Each GM evaluates trades, free agents, and roster moves through
 their personality lens via Ollama.
 """
 import json
+import random
+from typing import Optional
 from ..database.db import query
 from .ollama_client import generate_json, generate
 
@@ -130,9 +132,10 @@ How's your job security?"""
     # Try LLM first, fall back to algorithmic
     try:
         result = await generate_json(prompt, task_type="strategic", system_prompt=system)
-        if "error" not in result:
+        if result and "error" not in result:
             return result
-    except Exception:
+    except Exception as e:
+        # Ollama unavailable or error - gracefully degrade
         pass
 
     # Tier 1 fallback: algorithmic evaluation
@@ -143,7 +146,27 @@ How's your job security?"""
 def _algorithmic_trade_eval(gm: dict, offered: list, requested: list,
                             cash: int = 0, team_id: int = None,
                             db_path: str = None) -> dict:
-    """Fallback trade evaluation using math when LLM is unavailable."""
+    """Fallback trade evaluation using math when LLM is unavailable.
+
+    Applies difficulty modifiers:
+    - Fan difficulty: AI teams favor trades with player by +10%
+    - Coach difficulty: Normal (baseline)
+    - Manager difficulty: AI teams resist trades by -10%
+    - Mogul difficulty: AI teams resist trades by -20%
+    """
+    # Get difficulty setting for trade acceptance threshold
+    game_state = query("SELECT difficulty FROM game_state WHERE id=1", db_path=db_path)
+    difficulty = game_state[0]["difficulty"] if game_state else "manager"
+
+    # Trade acceptance modifiers by difficulty
+    difficulty_trade_mods = {
+        "fan": 0.90,        # +10% acceptance (lower threshold)
+        "coach": 1.0,       # baseline
+        "manager": 1.0,     # baseline
+        "mogul": 1.20,      # -20% acceptance (higher threshold)
+    }
+    trade_threshold_mod = difficulty_trade_mods.get(difficulty, 1.0)
+
     # Get team needs for roster-aware evaluation
     needs = {}
     if team_id:
@@ -188,6 +211,9 @@ def _algorithmic_trade_eval(gm: dict, offered: list, requested: list,
     if gm["emotional_state"] == "desperate":
         threshold -= 0.15
 
+    # Apply difficulty modifier to threshold
+    threshold *= trade_threshold_mod
+
     accept = ratio >= threshold
 
     return {
@@ -200,36 +226,223 @@ def _algorithmic_trade_eval(gm: dict, offered: list, requested: list,
 
 
 async def generate_scouting_report(player_id: int, scout_quality: int = 50,
-                                   db_path: str = None) -> str:
-    """Generate an LLM-written scouting report for a player."""
+                                   db_path: str = None) -> dict:
+    """
+    Generate a comprehensive scouting report with present/future grades,
+    narrative, comp, and uncertainty margins based on scout quality.
+    """
     player = query("""SELECT * FROM players WHERE id=?""",
                    (player_id,), db_path=db_path)
     if not player:
-        return "Player not found."
+        return {"error": "Player not found"}
     p = player[0]
 
     is_pitcher = p["position"] in ("SP", "RP")
 
-    if is_pitcher:
-        ratings_str = (f"Stuff: {p['stuff_rating']}, Control: {p['control_rating']}, "
-                       f"Stamina: {p['stamina_rating']}")
+    # Calculate uncertainty margins based on scout quality
+    if scout_quality >= 70:
+        uncertainty = 3  # Elite scout: +/- 3
+    elif scout_quality >= 50:
+        uncertainty = 7  # Average scout: +/- 7
     else:
-        ratings_str = (f"Contact: {p['contact_rating']}, Power: {p['power_rating']}, "
-                       f"Speed: {p['speed_rating']}, Fielding: {p['fielding_rating']}, "
-                       f"Arm: {p['arm_rating']}")
+        uncertainty = 12  # Poor scout: +/- 12
 
-    prompt = f"""Write a 2-3 sentence scouting report for this player in a scout's voice.
-Be opinionated and specific. Compare to real MLB players if appropriate.
+    # Generate present grades (based on current ratings with noise)
+    if is_pitcher:
+        present_grades = {
+            "fastball": max(20, min(80, p["stuff_rating"] + random.randint(-uncertainty, uncertainty))),
+            "curveball": max(20, min(80, p["control_rating"] + random.randint(-uncertainty, uncertainty))),
+            "slider": max(20, min(80, p["control_rating"] + random.randint(-uncertainty, uncertainty))),
+            "changeup": max(20, min(80, p["control_rating"] + random.randint(-uncertainty, uncertainty))),
+            "command": max(20, min(80, p["control_rating"] + random.randint(-uncertainty, uncertainty))),
+            "control": max(20, min(80, p["control_rating"] + random.randint(-uncertainty, uncertainty))),
+        }
+        # Future grades: add development and age adjustment
+        age_adj = max(-5, 5 - max(0, (p["age"] - 27) * 1.5))
+        dev_bonus = p["development_rate"] * 5
+        future_grades = {
+            "fastball": max(20, min(80, present_grades["fastball"] + int(dev_bonus + age_adj))),
+            "curveball": max(20, min(80, present_grades["curveball"] + int(dev_bonus + age_adj))),
+            "slider": max(20, min(80, present_grades["slider"] + int(dev_bonus + age_adj))),
+            "changeup": max(20, min(80, present_grades["changeup"] + int(dev_bonus + age_adj))),
+            "command": max(20, min(80, present_grades["command"] + int(dev_bonus + age_adj))),
+            "control": max(20, min(80, present_grades["control"] + int(dev_bonus + age_adj))),
+        }
+    else:
+        present_grades = {
+            "hit": max(20, min(80, p["contact_rating"] + random.randint(-uncertainty, uncertainty))),
+            "power": max(20, min(80, p["power_rating"] + random.randint(-uncertainty, uncertainty))),
+            "run": max(20, min(80, p["speed_rating"] + random.randint(-uncertainty, uncertainty))),
+            "field": max(20, min(80, p["fielding_rating"] + random.randint(-uncertainty, uncertainty))),
+            "arm": max(20, min(80, p["arm_rating"] + random.randint(-uncertainty, uncertainty))),
+        }
+        # Future grades with development and age
+        age_adj = max(-5, 8 - max(0, (p["age"] - 27) * 2))
+        dev_bonus = p["development_rate"] * 5
+        future_grades = {
+            "hit": max(20, min(80, present_grades["hit"] + int(dev_bonus + age_adj))),
+            "power": max(20, min(80, present_grades["power"] + int(dev_bonus + age_adj))),
+            "run": max(20, min(80, present_grades["run"] + int(dev_bonus + age_adj))),
+            "field": max(20, min(80, present_grades["field"] + int(dev_bonus + age_adj))),
+            "arm": max(20, min(80, present_grades["arm"] + int(dev_bonus + age_adj))),
+        }
 
-Player: {p['first_name']} {p['last_name']}
-Position: {p['position']}, Age: {p['age']}, Bats: {p['bats']}, Throws: {p['throws']}
-Ratings (20-80 scale): {ratings_str}
-Personality: Ego {p['ego']}, Leadership {p['leadership']}, Work Ethic {p['work_ethic']}, Clutch {p['clutch']}
-Country: {p['birth_country']}
+    # Calculate OFP (Overall Future Potential)
+    avg_future = sum(future_grades.values()) / len(future_grades)
+    # Adjust by makeup (ego affects ceiling)
+    makeup_adj = (50 - p["ego"]) / 100 * 5  # Higher ego slightly lowers ceiling
+    ofp = max(20, min(80, int(avg_future + makeup_adj)))
 
-{'Include uncertainty - this scout is not very accurate.' if scout_quality < 40 else ''}
-{'This scout has excellent judgment.' if scout_quality > 70 else ''}"""
+    # Generate ceiling and floor descriptions
+    if ofp >= 70:
+        ceiling = "Star/All-Star caliber player"
+        floor = "Above-average regular"
+    elif ofp >= 60:
+        ceiling = "Above-average regular with potential for all-star seasons"
+        floor = "Solid starter/regular"
+    elif ofp >= 50:
+        ceiling = "Everyday player"
+        floor = "Reserve/platoon player"
+    elif ofp >= 40:
+        ceiling = "Useful bench player"
+        floor = "Minor leaguer or organizational depth"
+    else:
+        ceiling = "Role player at best"
+        floor = "Non-prospect"
 
-    report = await generate(prompt, task_type="creative",
-                           system_prompt="You are an experienced baseball scout writing a report for the GM.")
-    return report or f"Solid {'arm' if is_pitcher else 'bat'}. Projects as a {'rotation piece' if is_pitcher else 'everyday player'}."
+    # Determine risk level based on grades vs potential
+    rating_avg = sum(present_grades.values()) / len(present_grades)
+    gap = ofp - rating_avg
+    if gap > 10:
+        risk_level = "high"
+    elif gap > 5:
+        risk_level = "medium"
+    else:
+        risk_level = "low"
+
+    # ETA calculation
+    if p["age"] <= 22:
+        eta = str(2026 + random.randint(0, 2))
+    elif p["age"] <= 25:
+        eta = str(2026 + random.randint(0, 1))
+    else:
+        eta = "2026"
+
+    # Get MLB comp
+    from .player_comps import find_best_comp
+    comps = find_best_comp(p, p["position"], is_pitcher, count=1)
+    mlb_comp = comps[0] if comps else None
+
+    # Try LLM for narrative, fall back to algorithmic
+    narrative = await _generate_scouting_narrative(p, present_grades, future_grades,
+                                                   ceiling, floor, is_pitcher, mlb_comp,
+                                                   scout_quality, db_path)
+
+    return {
+        "player_id": player_id,
+        "player_name": f"{p['first_name']} {p['last_name']}",
+        "position": p["position"],
+        "age": p["age"],
+        "present_grades": present_grades,
+        "future_grades": future_grades,
+        "ofp": ofp,
+        "ceiling": ceiling,
+        "floor": floor,
+        "risk_level": risk_level,
+        "eta": eta,
+        "narrative": narrative,
+        "mlb_comp": mlb_comp,
+        "scout_quality": scout_quality,
+        "uncertainty_margin": uncertainty,
+        "physical": {
+            "height": "6-0",  # Would come from extended player data
+            "weight": "190",
+            "body_type": "athletic",
+            "bats": p["bats"],
+            "throws": p["throws"],
+        },
+        "makeup": {
+            "ego": p["ego"],
+            "leadership": p["leadership"],
+            "work_ethic": p["work_ethic"],
+            "clutch": p["clutch"],
+        },
+    }
+
+
+async def _generate_scouting_narrative(player: dict, present_grades: dict,
+                                       future_grades: dict, ceiling: str, floor: str,
+                                       is_pitcher: bool, mlb_comp: Optional[dict],
+                                       scout_quality: int, db_path: str = None) -> str:
+    """Generate narrative portion of scouting report via LLM or algorithm."""
+    if is_pitcher:
+        grades_str = f"Fastball: {present_grades.get('fastball')}, Curveball: {present_grades.get('curveball')}, Control: {present_grades.get('control')}"
+        tools_desc = "arm"
+    else:
+        grades_str = f"Hit: {present_grades.get('hit')}, Power: {present_grades.get('power')}, Speed: {present_grades.get('run')}, Defense: {present_grades.get('field')}"
+        tools_desc = "bat"
+
+    comp_info = ""
+    if mlb_comp:
+        comp_info = f"\nCompare favorably to {mlb_comp['name']} ({mlb_comp['years']}): {mlb_comp['description']}"
+
+    prompt = f"""Write a professional scouting report narrative (2-3 sentences) for this player.
+Use authentic scouting terminology. Mention ceiling/floor, makeup, and specific tool strengths.
+
+Player: {player['first_name']} {player['last_name']}, {player['position']}, Age {player['age']}
+Present Grades: {grades_str}
+Ceiling: {ceiling}
+Floor: {floor}
+Makeup: Leadership {player['leadership']}, Work Ethic {player['work_ethic']}, Ego {player['ego']}{comp_info}
+
+Use scouting language like: plus, loose arm action, projectable, barrel control, repeatable delivery, etc."""
+
+    system = f"You are an experienced professional baseball scout. Confidence level: {scout_quality}/100."
+
+    try:
+        narrative = await generate(prompt, task_type="creative", system_prompt=system)
+        if narrative and "[LLM unavailable" not in narrative:
+            return narrative
+    except Exception as e:
+        # Ollama error or timeout - fall back gracefully
+        pass
+
+    # Fallback: algorithmic narrative
+    return _generate_algorithmic_narrative(player, present_grades, future_grades,
+                                           ceiling, floor, is_pitcher, mlb_comp)
+
+
+def _generate_algorithmic_narrative(player: dict, present_grades: dict, future_grades: dict,
+                                    ceiling: str, floor: str, is_pitcher: bool,
+                                    mlb_comp: Optional[dict]) -> str:
+    """Generate narrative using template-based approach."""
+    tools_text = []
+    if is_pitcher:
+        if present_grades.get("fastball", 0) >= 75:
+            tools_text.append("power fastball")
+        if present_grades.get("curveball", 0) >= 75:
+            tools_text.append("sharp curveball")
+        if present_grades.get("control", 0) >= 75:
+            tools_text.append("exceptional control")
+    else:
+        if present_grades.get("power", 0) >= 75:
+            tools_text.append("plus-plus power")
+        if present_grades.get("hit", 0) >= 75:
+            tools_text.append("excellent bat speed")
+        if present_grades.get("run", 0) >= 70:
+            tools_text.append("above-average speed")
+        if present_grades.get("field", 0) >= 75:
+            tools_text.append("slick defense")
+
+    tools_phrase = " with ".join(tools_text) if tools_text else "solid tools"
+
+    ego_text = "high maintenance player" if player["ego"] >= 70 else "good makeup" if player["ego"] <= 40 else "average approach"
+
+    narrative = f"{player['first_name']} projects as {ceiling.lower()}. {tools_phrase}. {ego_text}. "
+
+    if mlb_comp:
+        narrative += f"Similar profile to {mlb_comp['name']}. "
+
+    narrative += f"Best case: {ceiling.lower()}. Worst case: {floor.lower()}."
+
+    return narrative

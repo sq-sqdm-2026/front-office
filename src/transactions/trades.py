@@ -10,11 +10,19 @@ from ..ai.gm_brain import evaluate_trade
 
 async def propose_trade(proposing_team_id: int, receiving_team_id: int,
                         players_offered: list[int], players_requested: list[int],
-                        cash_included: int = 0, db_path: str = None) -> dict:
+                        cash_included: int = 0, draft_picks_offered: list[dict] = None,
+                        draft_picks_requested: list[dict] = None,
+                        db_path: str = None) -> dict:
     """
     Propose a trade to another team's GM.
+    Draft picks format: [{"season": 2027, "round": 1, "pick_number": 5}, ...]
     Returns the GM's response (accept/reject with reasoning).
     """
+    if draft_picks_offered is None:
+        draft_picks_offered = []
+    if draft_picks_requested is None:
+        draft_picks_requested = []
+
     # Check trade deadline
     state = query("SELECT * FROM game_state WHERE id=1", db_path=db_path)
     if state:
@@ -46,12 +54,36 @@ async def propose_trade(proposing_team_id: int, receiving_team_id: int,
             return {"error": f"Player {pid} has a full no-trade clause",
                     "ntc_block": True}
 
+    # Check 10-and-5 rights
+    from ..transactions.contracts import check_10_and_5_rights
+    for pid in players_requested:
+        if check_10_and_5_rights(pid, db_path):
+            return {"error": f"Player {pid} has 10-and-5 rights and cannot be traded without consent",
+                    "rights_block": True}
+
     # Check cash availability
     if cash_included > 0:
         team = query("SELECT cash FROM teams WHERE id=?",
                     (proposing_team_id,), db_path=db_path)
         if team and team[0]["cash"] < cash_included:
             return {"error": "Insufficient cash for this trade"}
+
+    # Validate draft picks belong to correct teams
+    for pick in draft_picks_offered:
+        ownership = query("""
+            SELECT current_owner_team_id FROM draft_pick_ownership
+            WHERE season=? AND round=? AND pick_number=?
+        """, (pick["season"], pick["round"], pick["pick_number"]), db_path=db_path)
+        if not ownership or ownership[0]["current_owner_team_id"] != proposing_team_id:
+            return {"error": f"Draft pick not owned by proposing team"}
+
+    for pick in draft_picks_requested:
+        ownership = query("""
+            SELECT current_owner_team_id FROM draft_pick_ownership
+            WHERE season=? AND round=? AND pick_number=?
+        """, (pick["season"], pick["round"], pick["pick_number"]), db_path=db_path)
+        if not ownership or ownership[0]["current_owner_team_id"] != receiving_team_id:
+            return {"error": f"Draft pick not owned by receiving team"}
 
     # Get GM's evaluation
     result = await evaluate_trade(
@@ -122,25 +154,56 @@ async def propose_waiver_trade(proposing_team_id: int, receiving_team_id: int,
 
 def execute_trade(proposing_team_id: int, receiving_team_id: int,
                   players_offered: list[int], players_requested: list[int],
-                  cash_included: int = 0, db_path: str = None) -> dict:
-    """Execute an accepted trade - move players between teams."""
+                  cash_included: int = 0, draft_picks_offered: list[dict] = None,
+                  draft_picks_requested: list[dict] = None,
+                  db_path: str = None) -> dict:
+    """Execute an accepted trade - move players between teams and update roster status."""
+    if draft_picks_offered is None:
+        draft_picks_offered = []
+    if draft_picks_requested is None:
+        draft_picks_requested = []
+
     conn = get_connection(db_path)
 
     # Move offered players to receiving team
     for pid in players_offered:
-        conn.execute("UPDATE players SET team_id=? WHERE id=?",
+        # Update player team and maintain active status
+        conn.execute("""UPDATE players SET team_id=?, roster_status='active'
+                        WHERE id=? AND roster_status IN ('active', 'minors_aaa', 'minors_aa', 'minors_low')""",
                     (receiving_team_id, pid))
+        # Update contract team
         conn.execute("UPDATE contracts SET team_id=? WHERE player_id=?",
                     (receiving_team_id, pid))
 
     # Move requested players to proposing team
     for pid in players_requested:
-        conn.execute("UPDATE players SET team_id=? WHERE id=?",
+        # Update player team and maintain active status
+        conn.execute("""UPDATE players SET team_id=?, roster_status='active'
+                        WHERE id=? AND roster_status IN ('active', 'minors_aaa', 'minors_aa', 'minors_low')""",
                     (proposing_team_id, pid))
+        # Update contract team
         conn.execute("UPDATE contracts SET team_id=? WHERE player_id=?",
                     (proposing_team_id, pid))
 
-    # Handle cash
+    # Transfer draft picks offered
+    for pick in draft_picks_offered:
+        conn.execute("""
+            UPDATE draft_pick_ownership
+            SET current_owner_team_id=?, traded_date=?
+            WHERE season=? AND round=? AND pick_number=?
+        """, (receiving_team_id, date.today().isoformat(),
+              pick["season"], pick["round"], pick["pick_number"]))
+
+    # Transfer draft picks requested
+    for pick in draft_picks_requested:
+        conn.execute("""
+            UPDATE draft_pick_ownership
+            SET current_owner_team_id=?, traded_date=?
+            WHERE season=? AND round=? AND pick_number=?
+        """, (proposing_team_id, date.today().isoformat(),
+              pick["season"], pick["round"], pick["pick_number"]))
+
+    # Handle cash transfer
     if cash_included > 0:
         conn.execute("UPDATE teams SET cash = cash - ? WHERE id=?",
                     (cash_included, proposing_team_id))
@@ -157,6 +220,8 @@ def execute_trade(proposing_team_id: int, receiving_team_id: int,
         "players_to_receiving": players_offered,
         "players_to_proposing": players_requested,
         "cash": cash_included,
+        "draft_picks_to_receiving": draft_picks_offered,
+        "draft_picks_to_proposing": draft_picks_requested,
     }
     conn.execute("""
         INSERT INTO transactions (transaction_date, transaction_type, details_json,

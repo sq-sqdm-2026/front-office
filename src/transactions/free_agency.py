@@ -138,6 +138,16 @@ def sign_free_agent(player_id: int, team_id: int, salary: int, years: int,
     """, (game_date, json.dumps({"salary": salary, "years": years}),
           team_id, str(player_id)))
 
+    # Send notification if signing team is the user's team
+    state = conn.execute("SELECT user_team_id FROM game_state WHERE id=1").fetchone()
+    user_team_id = state["user_team_id"] if state else None
+    if team_id == user_team_id:
+        from .messages import send_free_agent_signing_message
+        team = conn.execute("SELECT city, name FROM teams WHERE id=?", (team_id,)).fetchone()
+        team_name = f"{team['city']} {team['name']}" if team else "Unknown"
+        player_name = f"{player['first_name']} {player['last_name']}"
+        send_free_agent_signing_message(user_team_id, player_name, team_name, salary, db_path=db_path)
+
     # Clear best offer tracking
     _best_offers.pop(player_id, None)
 

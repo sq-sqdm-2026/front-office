@@ -8,9 +8,12 @@ At-bat resolution model based on Baseball Mogul mechanics:
 - Park factors modify HR/2B/3B rates
 - Fatigue degrades pitcher effectiveness
 - Clutch ratings affect high-leverage situations
+- Count-dependent pitching with pitch types
+- Error probability on batted balls
 """
 import random
 import math
+import json
 from dataclasses import dataclass, field
 
 
@@ -25,6 +28,9 @@ class BatterStats:
     power: int
     speed: int
     clutch: int
+    fielding: int = 50
+    morale: int = 50  # 0-100 morale rating
+    platoon_split_json: str = None  # JSON with platoon splits
     # Game accumulators
     ab: int = 0
     runs: int = 0
@@ -39,6 +45,8 @@ class BatterStats:
     cs: int = 0
     hbp: int = 0
     sf: int = 0
+    errors_committed: int = 0
+    reached_on_error: int = 0
 
 
 @dataclass
@@ -52,6 +60,10 @@ class PitcherStats:
     stamina: int
     clutch: int
     pitch_order: int = 0
+    # Pitch types: list of tuples [(pitch_type, effectiveness_rating)]
+    pitch_types: list = field(default_factory=lambda: [("4SFB", 70), ("SL", 60), ("CB", 55)])
+    # Pitch repertoire: JSON list of dicts with 'type', 'rating', 'usage'
+    pitch_repertoire: list = field(default_factory=list)
     # Game accumulators
     ip_outs: int = 0
     hits_allowed: int = 0
@@ -63,6 +75,7 @@ class PitcherStats:
     pitches: int = 0
     is_starter: bool = False
     decision: str = None  # W, L, S, H, BS
+    errors_caused: int = 0
 
 
 @dataclass
@@ -121,6 +134,113 @@ class ParkFactors:
         )
 
 
+def _generate_weather(month: int = None, is_dome: bool = False) -> dict:
+    """Generate random weather for a game.
+
+    Returns: {temp: int, wind_direction: str, wind_speed: int, humidity: float, is_day_game: bool}
+    """
+    if is_dome:
+        # Domes always have neutral weather
+        return {
+            "temp": 72,
+            "wind_direction": "calm",
+            "wind_speed": 0,
+            "humidity": 0.50,
+            "is_day_game": random.random() < 0.20
+        }
+
+    # Temperature varies by month
+    if month is None:
+        month = random.randint(1, 12)
+
+    # April = cooler, July = hotter
+    month_temp_offsets = {
+        1: -10, 2: -8, 3: -3, 4: 5, 5: 12, 6: 18,
+        7: 22, 8: 21, 9: 15, 10: 8, 11: 0, 12: -8
+    }
+    base_temp = 65 + month_temp_offsets.get(month, 0)
+    temp = int(random.gauss(base_temp, 5))
+    temp = max(45, min(95, temp))  # Clamp 45-95F
+
+    # Wind
+    wind_directions = ["in", "out", "crossfield", "calm", "calm"]  # calm is weighted
+    wind_direction = random.choice(wind_directions)
+    wind_speed = random.randint(0, 25) if wind_direction != "calm" else 0
+
+    # Humidity
+    humidity = random.uniform(0.30, 0.90)
+
+    # Day/night: 20% day games on weekdays, 40% on weekends
+    # For simplicity, use 20% as default, 40% if it's a weekend
+    day_prob = 0.20
+    is_day_game = random.random() < day_prob
+
+    return {
+        "temp": temp,
+        "wind_direction": wind_direction,
+        "wind_speed": wind_speed,
+        "humidity": humidity,
+        "is_day_game": is_day_game
+    }
+
+
+def _apply_weather_modifiers(batter_mod_dict: dict, pitcher_mod_dict: dict,
+                             weather: dict, park: ParkFactors) -> tuple:
+    """Apply weather modifiers to park factors and batting/pitching ratings.
+
+    Returns: (modified_park_factors, batter_rating_mod, pitcher_rating_mod)
+    """
+    temp = weather.get("temp", 72)
+    wind_direction = weather.get("wind_direction", "calm")
+    wind_speed = weather.get("wind_speed", 0)
+    humidity = weather.get("humidity", 0.50)
+
+    # Create modified park factors
+    mod_park = ParkFactors(
+        hr_factor=park.hr_factor,
+        double_factor=park.double_factor,
+        triple_factor=park.triple_factor,
+        hit_factor=park.hit_factor,
+        so_factor=park.so_factor
+    )
+
+    # Temperature effects
+    if temp < 50:
+        mod_park.hr_factor *= 0.95  # -5% HR
+        mod_park.double_factor *= 0.97  # -3% extra base hits
+    elif temp > 85:
+        mod_park.hr_factor *= 1.05  # +5% HR
+        mod_park.double_factor *= 1.02  # +2% extra base hits
+
+    # Wind effects
+    wind_mod = 1.0
+    if wind_direction == "out":
+        wind_mod = 1.0 + (wind_speed / 5 * 0.08)  # +8% HR per 5mph out
+        mod_park.hr_factor *= wind_mod
+    elif wind_direction == "in":
+        wind_mod = 1.0 - (wind_speed / 5 * 0.08)  # -8% HR per 5mph in
+        mod_park.hr_factor *= wind_mod
+
+    # Humidity effects
+    if humidity >= 0.80:
+        mod_park.hr_factor *= 1.02  # +2% HR from better ball carry
+
+    # Batter rating modifiers for day/night
+    batter_mod = 0
+    if weather.get("is_day_game"):
+        batter_mod = 1.02  # +2% contact in day games (better visibility)
+    else:
+        # Night games increase strikeouts slightly
+        pass  # handled in pitcher mods
+
+    # Pitcher rating modifiers
+    pitcher_mod = 0
+    if not weather.get("is_day_game"):
+        pitcher_mod = 1.03  # +3% strikeout rate in night games (harder to see breaking balls)
+
+    return mod_park, batter_mod, pitcher_mod
+
+
 def _rating_to_prob(rating: int, baseline: float) -> float:
     """Convert a 20-80 rating to a probability modifier.
     50 = league average = baseline probability.
@@ -132,14 +252,51 @@ def _rating_to_prob(rating: int, baseline: float) -> float:
     return baseline * max(0.3, min(2.0, modifier))
 
 
-def _platoon_adjustment(batter_bats: str, pitcher_throws: str) -> float:
-    """Platoon advantage: opposite-hand batters get a boost."""
+def _platoon_adjustment(batter_bats: str, pitcher_throws: str,
+                        platoon_split_json: str = None) -> tuple:
+    """Calculate platoon adjustments for contact and power.
+
+    Returns: (contact_modifier, power_modifier) based on batter hand vs pitcher hand.
+    If platoon_split_json provided, uses per-player data; otherwise uses defaults.
+    """
+    contact_mod = 1.0
+    power_mod = 1.0
+
+    # If player has custom platoon splits, use them
+    if platoon_split_json:
+        try:
+            splits = json.loads(platoon_split_json)
+            # Determine which split applies (vs LHP or RHP)
+            vs_key = "vs_lhp" if pitcher_throws == "L" else "vs_rhp"
+            if vs_key in splits:
+                split_data = splits[vs_key]
+                # Splits are stored as +5 for +5% bonus
+                contact_mod = 1.0 + (split_data.get("contact", 0) / 100.0)
+                power_mod = 1.0 + (split_data.get("power", 0) / 100.0)
+                return contact_mod, power_mod
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+    # Default platoon adjustments
     if batter_bats == "S":
-        return 1.02  # Switch hitters get slight advantage
-    if (batter_bats == "L" and pitcher_throws == "R") or \
-       (batter_bats == "R" and pitcher_throws == "L"):
-        return 1.08  # Opposite hand = advantage
-    return 0.92  # Same hand = disadvantage
+        contact_mod = 1.01
+        power_mod = 1.01
+    elif (batter_bats == "L" and pitcher_throws == "R") or \
+         (batter_bats == "R" and pitcher_throws == "L"):
+        # Natural advantage: LHB vs RHP = +3 contact, +2 power
+        # RHB vs LHP = +2 contact, +3 power
+        if batter_bats == "L":
+            contact_mod = 1.03
+            power_mod = 1.02
+        else:
+            contact_mod = 1.02
+            power_mod = 1.03
+    else:
+        # Same hand disadvantage
+        contact_mod = 0.97
+        power_mod = 0.97
+
+    return contact_mod, power_mod
 
 
 def _fatigue_modifier(pitcher: PitcherStats) -> float:
@@ -156,70 +313,338 @@ def _fatigue_modifier(pitcher: PitcherStats) -> float:
     return max(0.6, 1.0 - overage * 0.01)
 
 
-def _resolve_at_bat(batter: BatterStats, pitcher: PitcherStats,
-                    park: ParkFactors, runners_on: int = 0,
-                    outs: int = 0, leverage: float = 1.0) -> str:
+def _pitch_characteristics(pitch_type: str) -> dict:
+    """Return characteristics for each pitch type.
+
+    Pitch types: 4SFB (4-seam), 2SFB (2-seam), CUT (cutter), SI (sinker),
+                 SL (slider), CB (curveball), CH (changeup), SPL (splitter),
+                 KC (knuckle curve), SW (sweeper), SC (screwball), KN (knuckleball)
     """
-    Resolve a single plate appearance.
-    Returns: 'BB', 'HBP', 'SO', '1B', '2B', '3B', 'HR', 'GO', 'FO', 'SF'
+    characteristics = {
+        "4SFB": {
+            "contact": 0.95, "strikeout": 1.0, "hr": 1.10, "contact_quality": 0.90,
+            "gb_rate_mod": 0.95, "babip_mod": 1.0, "usage": 0.35
+        },
+        "2SFB": {
+            "contact": 0.90, "strikeout": 0.95, "hr": 0.95, "contact_quality": 0.85,
+            "gb_rate_mod": 1.15, "babip_mod": 0.98, "usage": 0.15
+        },
+        "CUT": {
+            "contact": 0.88, "strikeout": 1.05, "hr": 0.85, "contact_quality": 0.92,
+            "gb_rate_mod": 1.05, "babip_mod": 0.95, "usage": 0.12
+        },
+        "SI": {
+            "contact": 0.85, "strikeout": 0.92, "hr": 0.80, "contact_quality": 0.80,
+            "gb_rate_mod": 1.20, "babip_mod": 0.93, "usage": 0.12
+        },
+        "SL": {
+            "contact": 0.80, "strikeout": 1.20, "hr": 0.75, "contact_quality": 0.95,
+            "gb_rate_mod": 0.90, "babip_mod": 1.0, "usage": 0.15
+        },
+        "CB": {
+            "contact": 0.78, "strikeout": 1.15, "hr": 0.70, "contact_quality": 0.95,
+            "gb_rate_mod": 0.95, "babip_mod": 1.02, "usage": 0.10
+        },
+        "CH": {
+            "contact": 0.88, "strikeout": 1.08, "hr": 0.82, "contact_quality": 0.88,
+            "gb_rate_mod": 1.05, "babip_mod": 0.97, "usage": 0.08
+        },
+        "SPL": {
+            "contact": 0.75, "strikeout": 1.12, "hr": 0.65, "contact_quality": 0.93,
+            "gb_rate_mod": 1.00, "babip_mod": 0.98, "usage": 0.06
+        },
+        "KC": {
+            "contact": 0.82, "strikeout": 1.18, "hr": 0.72, "contact_quality": 0.94,
+            "gb_rate_mod": 0.98, "babip_mod": 1.0, "usage": 0.04
+        },
+        "SW": {
+            "contact": 0.80, "strikeout": 1.08, "hr": 0.78, "contact_quality": 0.92,
+            "gb_rate_mod": 0.92, "babip_mod": 1.0, "usage": 0.03
+        },
+        "SC": {
+            "contact": 0.79, "strikeout": 1.10, "hr": 0.75, "contact_quality": 0.94,
+            "gb_rate_mod": 0.95, "babip_mod": 1.01, "usage": 0.02
+        },
+        "KN": {
+            "contact": 0.85, "strikeout": 1.25, "hr": 0.90, "contact_quality": 0.85,
+            "gb_rate_mod": 1.10, "babip_mod": 1.05, "usage": 0.02
+        },
+    }
+    return characteristics.get(pitch_type, characteristics["4SFB"])
+
+
+def _select_pitch_type(pitcher: PitcherStats, count: list, is_strikeout_situation: bool) -> str:
+    """Select a pitch type based on count and pitcher's repertoire.
+
+    Uses pitch_repertoire_json if available, otherwise falls back to legacy pitch_types.
     """
+    # Try to use pitch_repertoire_json first
+    if hasattr(pitcher, 'pitch_repertoire') and pitcher.pitch_repertoire:
+        # pitcher.pitch_repertoire should be a list of dicts with 'type', 'rating', 'usage'
+        pitches_by_rating = sorted(pitcher.pitch_repertoire, key=lambda x: x.get('rating', 50), reverse=True)
+
+        # Strikeout situation (2 strikes): use best secondary
+        if is_strikeout_situation and len(pitches_by_rating) > 1:
+            if random.random() < 0.7 and pitches_by_rating[1]['type'] not in ("4SFB", "2SFB", "SI"):
+                return pitches_by_rating[1]['type']
+
+        # Behind in count: favor fastball types
+        if count[0] > count[1]:
+            fastballs = [p for p in pitches_by_rating if p['type'] in ("4SFB", "2SFB", "SI")]
+            if fastballs:
+                return fastballs[0]['type']
+
+        # Ahead in count: mix in breaking balls
+        if count[1] > count[0]:
+            if random.random() < 0.6:
+                secondary = [p for p in pitches_by_rating if p['type'] not in ("4SFB", "2SFB", "SI")]
+                if secondary:
+                    return secondary[0]['type']
+
+        # Weighted selection by usage rates
+        total_usage = sum(p.get('usage', 0.05) for p in pitches_by_rating)
+        if total_usage > 0:
+            r = random.uniform(0, total_usage)
+            cumulative = 0
+            for pitch_data in pitches_by_rating:
+                cumulative += pitch_data.get('usage', 0.05)
+                if r <= cumulative:
+                    return pitch_data['type']
+
+        return pitches_by_rating[0]['type'] if pitches_by_rating else "4SFB"
+
+    # Legacy fallback: use pitch_types tuples
+    if not pitcher.pitch_types:
+        return "4SFB"
+
+    pitches_by_rating = sorted(pitcher.pitch_types, key=lambda x: x[1], reverse=True)
+
+    # Strikeout situation (2 strikes): use best secondary
+    if is_strikeout_situation and len(pitches_by_rating) > 1:
+        if random.random() < 0.7 and pitches_by_rating[1][0] not in ("4SFB", "2SFB", "SI", "FB"):
+            return pitches_by_rating[1][0]
+
+    # Behind in count (more balls than strikes): favor fastball
+    if count[0] > count[1]:
+        fastballs = [p for p in pitches_by_rating if p[0] in ("4SFB", "2SFB", "SI", "FB")]
+        if fastballs:
+            return fastballs[0][0]
+
+    # Ahead in count: mix in breaking balls
+    if count[1] > count[0]:
+        if random.random() < 0.6:
+            secondary = [p for p in pitches_by_rating if p[0] not in ("4SFB", "2SFB", "SI", "FB")]
+            if secondary:
+                return secondary[0][0]
+
+    # Even count or default: weighted by effectiveness
+    total_rating = sum(p[1] for p in pitches_by_rating)
+    r = random.uniform(0, total_rating)
+    cumulative = 0
+    for pitch_type, rating in pitches_by_rating:
+        cumulative += rating
+        if r <= cumulative:
+            return pitch_type
+
+    return pitches_by_rating[0][0]
+
+
+def _pitch_type_modifier(pitch_type: str, is_fastball_count: bool) -> dict:
+    """Return probability modifiers for each pitch type."""
+    chars = _pitch_characteristics(pitch_type)
+    return {
+        "contact": chars.get("contact", 0.95),
+        "strikeout": chars.get("strikeout", 1.0),
+        "hr": chars.get("hr", 1.0),
+        "contact_quality": chars.get("contact_quality", 0.90)
+    }
+
+
+def _resolve_pitch(batter: BatterStats, pitcher: PitcherStats, count: list,
+                  park: ParkFactors, leverage: float = 1.0, weather: dict = None,
+                  pitcher_team_chemistry: int = 50) -> str:
+    """Resolve a single pitch. Returns: 'ball', 'called_strike', 'swinging_strike', 'foul', 'hbp', 'in_play'"""
     fatigue = _fatigue_modifier(pitcher)
-    platoon = _platoon_adjustment(batter.bats, pitcher.throws)
+    contact_mod, power_mod = _platoon_adjustment(batter.bats, pitcher.throws, batter.platoon_split_json)
 
-    # Base probabilities (MLB averages ~2023)
-    # BB: .085, HBP: .012, SO: .225, HR: .033, 3B: .005, 2B: .045, 1B: .150, GO: .220, FO: .225
-    pitcher_control_mod = _rating_to_prob(int(pitcher.control * fatigue), 1.0)
+    # Get pitch type
+    is_strikeout_sit = count[1] >= 2
+    pitch_type = _select_pitch_type(pitcher, count, is_strikeout_sit)
+    pitch_mod = _pitch_type_modifier(pitch_type, count[0] > count[1])
+
+    # Control rating with chemistry modifier determines zone accuracy
+    adjusted_control = _apply_chemistry_control_modifier(pitcher.control, pitcher_team_chemistry)
+    pitcher_control_mod = _rating_to_prob(int(adjusted_control * fatigue), 1.0)
+    pitcher_stuff_mod = _rating_to_prob(int(pitcher.stuff * fatigue), 1.0) * pitch_mod["strikeout"]
+    batter_contact_mod = _rating_to_prob(batter.contact, 1.0) * contact_mod
+
+    # Strike zone probability (affected by control and count)
+    in_zone_prob = 0.65 * pitcher_control_mod
+    if count[1] >= 2:  # two strikes, pitcher ahead
+        in_zone_prob = 0.75  # strike zone expands
+    elif count[0] >= 2:  # hitter ahead
+        in_zone_prob = 0.55  # pitcher avoids zone
+
+    # Decide: ball or pitch in zone
+    if random.random() > in_zone_prob:
+        return "ball"
+
+    # Pitch in zone: swing or take?
+    swing_prob = 0.55 + (50 - batter.contact) * 0.005 + count[1] * 0.1
+    swing_prob = max(0.3, min(0.9, swing_prob))
+
+    if random.random() > swing_prob:
+        return "called_strike"
+
+    # Batter swings
+    # Swinging strike vs contact
+    contact_prob = _rating_to_prob(batter.contact, 0.65) * pitch_mod["contact"]
+    contact_prob = max(0.2, min(0.95, contact_prob))
+
+    if random.random() > contact_prob:
+        return "swinging_strike"
+
+    # Contact made: foul or in play?
+    foul_prob = 0.25
+    if count[1] >= 2:
+        foul_prob = 0.15  # fewer fouls with 2 strikes
+
+    if random.random() < foul_prob:
+        return "foul"
+
+    # Ball in play
+    return "in_play"
+
+
+def _resolve_batted_ball(batter: BatterStats, pitcher: PitcherStats, park: ParkFactors,
+                        count: list, runners_on: int, outs: int, leverage: float = 1.0,
+                        weather: dict = None) -> str:
+    """Resolve outcome of a ball in play."""
+    fatigue = _fatigue_modifier(pitcher)
+    contact_mod, power_mod = _platoon_adjustment(batter.bats, pitcher.throws, batter.platoon_split_json)
+
+    # Apply morale modifiers to contact and power ratings
+    morale_contact_mult, morale_power_mult = _apply_morale_modifier(batter)
+
     pitcher_stuff_mod = _rating_to_prob(int(pitcher.stuff * fatigue), 1.0)
-    batter_contact_mod = _rating_to_prob(batter.contact, 1.0) * platoon
+    batter_contact_mod = _rating_to_prob(batter.contact * morale_contact_mult, 1.0) * contact_mod
+    batter_power_mod = _rating_to_prob(batter.power * morale_power_mult, 1.0) * power_mod
+    batter_speed_mod = _rating_to_prob(batter.speed, 1.0)
 
-    # Walk probability: higher batter eye + lower pitcher control = more walks
-    bb_prob = 0.085 * (2.0 - pitcher_control_mod) * park.hit_factor
-    hbp_prob = 0.012
-
-    # Strikeout: higher pitcher stuff + lower batter contact = more Ks
-    so_prob = 0.225 * pitcher_stuff_mod * (2.0 - batter_contact_mod) * park.so_factor
-
-    # Home run: batter power + park factor
-    hr_prob = _rating_to_prob(batter.power, 0.033) * park.hr_factor * platoon / pitcher_stuff_mod
-
-    # Extra base hits
-    double_prob = _rating_to_prob(batter.power, 0.045) * park.double_factor * 0.8 * platoon
-    triple_prob = _rating_to_prob(batter.speed, 0.005) * park.triple_factor * platoon
-
-    # Single
-    single_prob = _rating_to_prob(batter.contact, 0.150) * park.hit_factor * platoon / pitcher_stuff_mod
-
-    # Clutch adjustment for high-leverage situations
-    if leverage > 1.2:
-        clutch_mod = 1.0 + (batter.clutch - 50) * 0.005
-        hr_prob *= clutch_mod
-        single_prob *= clutch_mod
-        so_prob *= (2.0 - clutch_mod)
-
-    # Sac fly possibility
-    sf_prob = 0.015 if runners_on > 0 and outs < 2 else 0.0
-
-    # Ground out vs fly out for remaining probability
+    # Base probabilities
+    hr_prob = batter_power_mod * 0.033 * park.hr_factor / pitcher_stuff_mod
+    double_prob = batter_power_mod * 0.045 * park.double_factor * 0.8 * power_mod
+    triple_prob = batter_speed_mod * 0.005 * park.triple_factor * contact_mod
+    single_prob = batter_contact_mod * 0.150 * park.hit_factor / pitcher_stuff_mod
     go_prob = 0.22
     fo_prob = 0.22
 
-    # Normalize
-    total = bb_prob + hbp_prob + so_prob + hr_prob + double_prob + triple_prob + single_prob + go_prob + fo_prob + sf_prob
-    r = random.random() * total
+    # Clutch adjustment: enhanced for high-leverage situations
+    if leverage > 1.2:
+        # Clutch 70+: +3-5% hit probability
+        # Clutch 30-: -3-5% hit probability
+        # Clutch 50: neutral
+        clutch_bonus = (batter.clutch - 50) * 0.001  # -0.05 to +0.05 range
+        hr_prob *= (1.0 + clutch_bonus)
+        single_prob *= (1.0 + clutch_bonus)
+        double_prob *= (1.0 + clutch_bonus)
 
-    pitcher.pitches += random.randint(3, 7)  # avg pitches per PA
+    # Normalize
+    total = hr_prob + double_prob + triple_prob + single_prob + go_prob + fo_prob
+    r = random.random() * total
 
     cumulative = 0
     for outcome, prob in [
-        ("BB", bb_prob), ("HBP", hbp_prob), ("SO", so_prob),
         ("HR", hr_prob), ("3B", triple_prob), ("2B", double_prob),
-        ("1B", single_prob), ("SF", sf_prob), ("GO", go_prob), ("FO", fo_prob)
+        ("1B", single_prob), ("GO", go_prob), ("FO", fo_prob)
     ]:
         cumulative += prob
         if r < cumulative:
             return outcome
 
-    return "FO"  # fallback
+    return "FO"
+
+
+def _apply_morale_modifier(batter: BatterStats) -> tuple:
+    """Apply morale rating modifiers to contact and power ratings.
+    Returns (contact_multiplier, power_multiplier).
+    Morale 0-30: -3 contact, -3 power
+    Morale 50: neutral (1.0x)
+    Morale 70-100: +3 contact, +3 power
+    """
+    contact_delta = (batter.morale - 50) * 0.06  # -3 to +3 range
+    power_delta = (batter.morale - 50) * 0.06    # -3 to +3 range
+
+    return (1.0 + contact_delta / 50, 1.0 + power_delta / 50)
+
+
+def _is_leverage_situation(runners_on: int, outs: int, inning: int,
+                          home_score: int, away_score: int) -> bool:
+    """Check if this is a high-leverage situation for clutch activation.
+    High-leverage: runners in scoring position AND (7th inning+ OR score diff <= 2)
+    """
+    runners_in_scoring_position = runners_on > 0
+    late_game = inning >= 7
+    close_game = abs(home_score - away_score) <= 2
+
+    return runners_in_scoring_position and (late_game or close_game)
+
+
+def _apply_chemistry_control_modifier(pitcher_control: int, team_chemistry: int) -> int:
+    """Apply team chemistry modifier to pitcher control.
+    Chemistry > 70: +1 control
+    Chemistry < 30: -1 control
+    Chemistry 30-70: proportional scaling
+    """
+    if team_chemistry > 70:
+        return min(80, pitcher_control + 1)
+    elif team_chemistry < 30:
+        return max(20, pitcher_control - 1)
+    return pitcher_control
+
+
+def _resolve_at_bat_with_count(batter: BatterStats, pitcher: PitcherStats,
+                               park: ParkFactors, runners_on: int = 0,
+                               outs: int = 0, leverage: float = 1.0, weather: dict = None,
+                               pitcher_team_chemistry: int = 50) -> tuple:
+    """
+    Resolve a single plate appearance with pitch-by-pitch count tracking.
+    Returns (outcome, pitches_thrown) where pitches_thrown is a list of pitch results.
+    """
+    count = [0, 0]  # [balls, strikes]
+    pitches_thrown = []
+
+    while True:
+        # Resolve this pitch
+        result = _resolve_pitch(batter, pitcher, count, park, leverage, weather, pitcher_team_chemistry)
+        pitches_thrown.append(result)
+
+        if result == "ball":
+            count[0] += 1
+            if count[0] >= 4:
+                return "BB", pitches_thrown
+
+        elif result in ("called_strike", "swinging_strike"):
+            count[1] += 1
+            if count[1] >= 3:
+                return "SO", pitches_thrown
+
+        elif result == "foul":
+            # Foul doesn't increase strike count unless already 2 strikes
+            if count[1] < 2:
+                count[1] += 1
+            # Otherwise foul just stays in play
+
+        elif result == "hbp":
+            return "HBP", pitches_thrown
+
+        elif result == "in_play":
+            # Resolve batted ball outcome
+            outcome = _resolve_batted_ball(batter, pitcher, park, count, runners_on, outs, leverage, weather)
+            return outcome, pitches_thrown
+
+        # Add pitches for fatigue tracking
+        pitcher.pitches += 1
 
 
 @dataclass
@@ -310,6 +735,16 @@ def _advance_runners(bases: BaseState, outcome: str, batter_id: int,
             scorers.append(bases.third)
             runs += 1
             bases.third = 0
+    elif outcome == "E":
+        # Reached on error: advance runners like a single
+        if bases.third:
+            scorers.append(bases.third)
+            runs += 1
+        if bases.second:
+            bases.third = bases.second
+        if bases.first:
+            bases.second = bases.first
+        bases.first = batter_id
 
     # Credit runs scored to individual batters in the lineup
     if lineup and scorers:
@@ -322,25 +757,31 @@ def _advance_runners(bases: BaseState, outcome: str, batter_id: int,
 
 
 def _calculate_dp_chance(runner_speed: int, batter_speed: int) -> float:
-    """Calculate double play probability based on runner and batter speed.
-    Base rate ~50%, adjusted by runner speed (fast runners avoid DP)
-    and batter speed (slow batters ground into more DP).
-    """
+    """Calculate double play probability based on runner and batter speed."""
     base_rate = 0.50
-    # Fast runner (70+) reduces DP chance; slow runner (30-) increases it
     if runner_speed >= 70:
         base_rate = 0.30
     elif runner_speed <= 30:
         base_rate = 0.65
     else:
-        # Linear interpolation between 30 and 70
         base_rate = 0.65 - (runner_speed - 30) * (0.35 / 40)
 
-    # Batter speed adjustment: slow batters more likely to GIDP
-    batter_mod = 1.0 + (50 - batter_speed) * 0.005  # slow=+boost to DP, fast=-reduction
+    batter_mod = 1.0 + (50 - batter_speed) * 0.005
     base_rate *= max(0.15, min(1.5, batter_mod))
 
     return max(0.10, min(0.75, base_rate))
+
+
+def _calculate_error_probability(fielding_rating: int, is_ground_ball: bool = True) -> float:
+    """Calculate error probability on a batted ball."""
+    if is_ground_ball:
+        # Ground balls: 2% base rate, adjusted by fielding
+        base_rate = 0.02 * (2.0 - fielding_rating / 50)
+    else:
+        # Fly balls: 0.5% base rate
+        base_rate = 0.005 * (2.0 - fielding_rating / 50)
+
+    return max(0.0, min(0.15, base_rate))
 
 
 def _attempt_stolen_base(bases: BaseState, outs: int, lineup: list[BatterStats],
@@ -408,7 +849,6 @@ def _attempt_sac_bunt(batter: BatterStats, bases: BaseState, outs: int,
         return False
     if not bases.first and not bases.second:
         return False
-    # Only low-power/high-speed batters bunt (not cleanup hitters)
     if batter.power >= 60:
         return False
     if random.random() >= bunt_rate:
@@ -416,20 +856,194 @@ def _attempt_sac_bunt(batter: BatterStats, bases: BaseState, outs: int,
     return True
 
 
+def _attempt_hit_and_run(bases: BaseState, outs: int, batter: BatterStats,
+                         hit_and_run_mult: float = 1.0) -> bool:
+    """Attempt hit-and-run with runner on first, < 2 outs."""
+    if outs >= 2:
+        return False
+    if not bases.first or bases.second or bases.third:
+        return False
+    if batter.contact < 40:
+        return False
+
+    # Base attempt rate: 5% with multiplier
+    attempt_rate = 0.05 * hit_and_run_mult
+    return random.random() < attempt_rate
+
+
+def _apply_hit_and_run(pitcher: PitcherStats, batter: BatterStats,
+                      park: ParkFactors) -> str:
+    """Resolve outcome with hit-and-run active.
+    Runner goes, batter must swing. Higher contact chance, lower power.
+    """
+    # Force swing, higher contact rate
+    contact_mod = 1.2  # Contact becomes more likely
+    power_mod = 0.7    # Power diminished
+
+    # Simulate at-bat with modified ratings
+    platoon = _platoon_adjustment(batter.bats, pitcher.throws)
+    fatigue = _fatigue_modifier(pitcher)
+
+    pitcher_stuff_mod = _rating_to_prob(int(pitcher.stuff * fatigue), 1.0)
+    batter_contact_mod = _rating_to_prob(int(batter.contact * contact_mod), 1.0) * platoon
+    batter_power_mod = _rating_to_prob(int(batter.power * power_mod), 1.0) * platoon
+
+    # Base probabilities with modifications
+    hr_prob = batter_power_mod * 0.02 * park.hr_factor / pitcher_stuff_mod
+    double_prob = batter_power_mod * 0.03 * park.double_factor * 0.8 * platoon
+    triple_prob = 0.001  # Very unlikely on hit-and-run
+    single_prob = batter_contact_mod * 0.18 * park.hit_factor / pitcher_stuff_mod
+    go_prob = 0.25
+    fo_prob = 0.15  # Must swing, can't take strikes
+
+    total = hr_prob + double_prob + triple_prob + single_prob + go_prob + fo_prob
+    r = random.random() * total
+
+    cumulative = 0
+    for outcome, prob in [
+        ("HR", hr_prob), ("3B", triple_prob), ("2B", double_prob),
+        ("1B", single_prob), ("GO", go_prob), ("FO", fo_prob)
+    ]:
+        cumulative += prob
+        if r < cumulative:
+            return outcome
+
+    return "GO"
+
+
+def _attempt_suicide_squeeze(bases: BaseState, outs: int, batter: BatterStats,
+                            squeeze_mult: float = 1.0) -> bool:
+    """Attempt suicide squeeze with runner on 3rd, < 2 outs."""
+    if outs >= 2:
+        return False
+    if not bases.third:
+        return False
+
+    # Low power hitters more likely
+    power_penalty = 1.0 - (batter.power - 40) * 0.01
+    attempt_rate = 0.02 * squeeze_mult * max(0.1, power_penalty)
+    return random.random() < attempt_rate
+
+
+def _apply_suicide_squeeze(batter: BatterStats, pitcher: PitcherStats,
+                          park: ParkFactors) -> str:
+    """Resolve suicide squeeze. Must bunt successfully or runner is out."""
+    # Bunt success heavily dependent on contact
+    contact_mod = (batter.contact / 50.0) * 1.5
+    bunt_success_rate = 0.3 * contact_mod
+    bunt_success_rate = max(0.2, min(0.8, bunt_success_rate))
+
+    if random.random() < bunt_success_rate:
+        return "SAC"  # Successful bunt, runner scores
+    else:
+        return "SO"  # Failed bunt, runner likely caught at plate
+
+
+def _attempt_intentional_walk(bases: BaseState, outs: int, batter: BatterStats,
+                             next_batter: BatterStats = None,
+                             ibb_threshold: int = 80) -> bool:
+    """Attempt IBB on dangerous hitter when first base open, runner in scoring position."""
+    if outs >= 2:
+        return False
+    if bases.first:
+        return False  # First must be open
+    if not (bases.second or bases.third):
+        return False  # Need runner in scoring position
+
+    if batter.power < ibb_threshold:
+        return False
+
+    # If next batter is significantly worse, increase IBB chance
+    ibb_prob = 0.3
+    if next_batter:
+        batter_power = batter.power
+        next_power = next_batter.power
+        if batter_power - next_power >= 15:
+            ibb_prob = 0.7
+
+    return random.random() < ibb_prob
+
+
+def _attempt_defensive_shift(batter: BatterStats) -> bool:
+    """Deploy defensive shift against extreme pull hitters (power > 65, contact < 45)."""
+    return batter.power > 65 and batter.contact < 45
+
+
+def _apply_shift_modifier(outcome: str) -> str:
+    """Modify outcome based on shift deployment."""
+    if outcome == "1B":
+        # Shift reduces singles by 15%, turns some into outs
+        if random.random() < 0.15:
+            return "GO"
+    elif outcome == "2B":
+        # Shift increases doubles by 10% (pulled harder)
+        if random.random() < 0.10:
+            return "2B"  # Likely stays double
+
+    return outcome
+
+
+def _should_pinch_hit(lineup: list[BatterStats], current_batter_idx: int,
+                     inning: int, score_diff: int) -> bool:
+    """Check if pitcher should be pinch hit for (late inning, close game)."""
+    if inning < 7:
+        return False
+
+    batter = lineup[current_batter_idx % len(lineup)]
+
+    # Pitcher batting (low power rating)
+    if batter.power < 35:
+        # Close game (within 3 runs)
+        if abs(score_diff) <= 3:
+            return True
+
+    return False
+
+
+def _should_make_defensive_substitution(lineup: list[BatterStats], inning: int,
+                                       score_diff: int, team_ahead: bool) -> bool:
+    """Check if defensive sub should be made in late innings with a lead."""
+    if not team_ahead:
+        return False
+    if inning < 7:
+        return False
+    if score_diff < 1:
+        return False
+
+    # Higher probability in late innings
+    prob = 0.2 if inning >= 8 else 0.1
+    return random.random() < prob
+
+
 def simulate_game(home_lineup: list[BatterStats], away_lineup: list[BatterStats],
                   home_pitchers: list[PitcherStats], away_pitchers: list[PitcherStats],
                   park: ParkFactors, home_team_id: int = 0, away_team_id: int = 0,
-                  home_strategy: dict = None, away_strategy: dict = None) -> dict:
+                  home_strategy: dict = None, away_strategy: dict = None,
+                  weather: dict = None, game_month: int = None,
+                  home_chemistry: int = 50, away_chemistry: int = 50) -> dict:
     """
     Simulate a full baseball game.
-    Returns dict with full box score data.
+    Returns dict with full box score data and play-by-play.
+
+    Args:
+        weather: dict with temp, wind_direction, wind_speed, humidity, is_day_game
+                If None, will be generated randomly based on game_month
+        home_chemistry: home team chemistry score (0-100)
+        away_chemistry: away team chemistry score (0-100)
     """
-    from .strategy import DEFAULT_STRATEGY, STEAL_FREQUENCY_MULTIPLIER, BUNT_FREQUENCY_CONFIG
+    from .strategy import (
+        DEFAULT_STRATEGY, STEAL_FREQUENCY_MULTIPLIER, BUNT_FREQUENCY_CONFIG,
+        HIT_AND_RUN_MULTIPLIER, SQUEEZE_MULTIPLIER
+    )
 
     if home_strategy is None:
         home_strategy = dict(DEFAULT_STRATEGY)
     if away_strategy is None:
         away_strategy = dict(DEFAULT_STRATEGY)
+
+    # Generate or validate weather
+    if weather is None:
+        weather = _generate_weather(game_month, False)  # is_dome passed separately to weather func
 
     home_score = 0
     away_score = 0
@@ -438,6 +1052,9 @@ def simulate_game(home_lineup: list[BatterStats], away_lineup: list[BatterStats]
 
     home_batter_idx = 0
     away_batter_idx = 0
+
+    # Play-by-play tracking
+    play_by_play = []
 
     # Set up pitchers
     home_pitcher_idx = 0
@@ -449,22 +1066,15 @@ def simulate_game(home_lineup: list[BatterStats], away_lineup: list[BatterStats]
     current_home_pitcher.pitch_order = 1
     current_away_pitcher.pitch_order = 1
 
-    # Track lead changes for W/L decisions
-    home_pitcher_when_lead_taken = None
-    away_pitcher_when_lead_taken = None
-
     def _should_pull_pitcher(p: PitcherStats, inning: int, is_starter: bool,
                              score_diff: int, strategy: dict) -> bool:
         """Decide if pitcher should be replaced."""
         if is_starter:
-            # Use strategy pitch count limit or stamina-based calculation
-            stamina_max = 70 + p.stamina * 0.75  # 85-130 range
+            stamina_max = 70 + p.stamina * 0.75
             max_pitches = min(strategy.get("pitch_count_limit", 100), stamina_max)
             if p.pitches >= max_pitches:
                 return True
-            # Stamina-based inning range: low stamina (30) -> pull after 5,
-            # high stamina (80) -> can go 7+
-            max_innings = 5 + (p.stamina - 30) * 0.04  # 5.0 to 7.0
+            max_innings = 5 + (p.stamina - 30) * 0.04
             pitcher_innings = p.ip_outs / 3
             if pitcher_innings >= max_innings:
                 return True
@@ -473,7 +1083,6 @@ def simulate_game(home_lineup: list[BatterStats], away_lineup: list[BatterStats]
             if p.pitches > 60 and p.er >= 5:
                 return True
         else:
-            # Relievers: usually 1-2 innings max
             max_pitches = 20 + p.stamina * 0.3
             if p.pitches >= max_pitches:
                 return True
@@ -483,62 +1092,46 @@ def simulate_game(home_lineup: list[BatterStats], away_lineup: list[BatterStats]
 
     def _select_reliever(pitchers: list, current_idx: int, inning: int,
                          score_diff: int, pitch_order: int) -> tuple:
-        """Select the right reliever based on game situation.
-        pitchers[0] is the starter, pitchers[1:] are relievers.
-        Reliever roles by position in bullpen:
-          - Last reliever (highest stuff typically): closer
-          - Second to last: setup man
-          - Others: middle/long relief
-        Returns (new_idx, pitcher).
-        """
+        """Select the right reliever based on game situation."""
         available = [(i, p) for i, p in enumerate(pitchers)
                      if i > current_idx and p.pitches == 0]
         if not available:
-            # No fresh arms, try anyone not totally spent
             available = [(i, p) for i, p in enumerate(pitchers)
                          if i > current_idx and p.ip_outs < 9]
         if not available:
             return current_idx, pitchers[current_idx]
 
-        num_relievers = len([p for p in pitchers[1:] if True])
-        closer_idx = len(pitchers) - 1  # last bullpen arm
+        closer_idx = len(pitchers) - 1
         setup_idx = len(pitchers) - 2 if len(pitchers) > 2 else closer_idx
 
-        # Blowout (lead or deficit > 6): use worst available reliever (mop-up)
         if abs(score_diff) > 6:
-            # Mop-up: pick the reliever with lowest stuff (first available)
             pick = min(available, key=lambda x: x[1].stuff)
             pick[1].pitch_order = pitch_order
             return pick
 
-        # Inning 9, leading by 1-3: use closer
         if inning >= 9 and 0 < score_diff <= 3:
             for idx, p in available:
                 if idx == closer_idx:
                     p.pitch_order = pitch_order
                     return idx, p
 
-        # Inning 8: setup man
         if inning == 8:
             for idx, p in available:
                 if idx == setup_idx:
                     p.pitch_order = pitch_order
                     return idx, p
 
-        # Inning 7: next best available
         if inning == 7:
             for idx, p in available:
                 if idx == setup_idx or idx == setup_idx - 1:
                     p.pitch_order = pitch_order
                     return idx, p
 
-        # Innings 5-6, losing or close: long reliever (first available reliever)
         if inning <= 6:
             for idx, p in available:
                 p.pitch_order = pitch_order
                 return idx, p
 
-        # Default: next available
         idx, p = available[0]
         p.pitch_order = pitch_order
         return idx, p
@@ -552,10 +1145,22 @@ def simulate_game(home_lineup: list[BatterStats], away_lineup: list[BatterStats]
         away_strategy.get("bunt_frequency", "normal"), 0.05)
     home_bunt_rate = BUNT_FREQUENCY_CONFIG.get(
         home_strategy.get("bunt_frequency", "normal"), 0.05)
+    away_hit_and_run_mult = HIT_AND_RUN_MULTIPLIER.get(
+        away_strategy.get("hit_and_run_freq", "normal"), 1.0)
+    home_hit_and_run_mult = HIT_AND_RUN_MULTIPLIER.get(
+        home_strategy.get("hit_and_run_freq", "normal"), 1.0)
+    away_squeeze_mult = SQUEEZE_MULTIPLIER.get(
+        away_strategy.get("squeeze_freq", "conservative"), 0.8)
+    home_squeeze_mult = SQUEEZE_MULTIPLIER.get(
+        home_strategy.get("squeeze_freq", "conservative"), 0.8)
+    away_ibb_threshold = away_strategy.get("ibb_threshold", 80)
+    home_ibb_threshold = home_strategy.get("ibb_threshold", 80)
+    away_shift_tendency = away_strategy.get("shift_tendency", 0.7)
+    home_shift_tendency = home_strategy.get("shift_tendency", 0.7)
 
     num_innings = 9
 
-    for inning in range(1, num_innings + 10):  # +10 for extras
+    for inning in range(1, num_innings + 10):
         # ============================================================
         # TOP OF INNING (away bats vs home pitcher)
         # ============================================================
@@ -566,18 +1171,46 @@ def simulate_game(home_lineup: list[BatterStats], away_lineup: list[BatterStats]
         while outs < 3:
             batter = away_lineup[away_batter_idx % len(away_lineup)]
 
-            # --- Stolen base attempt before at-bat ---
+            # Stolen base attempt
             sb_attempt, sb_success, sb_outs = _attempt_stolen_base(
                 bases, outs, away_lineup, current_home_pitcher, away_steal_mult)
             outs += sb_outs
             if outs >= 3:
                 break
 
-            # --- Sacrifice bunt attempt ---
-            if _attempt_sac_bunt(batter, bases, outs, away_bunt_rate):
+            # Hit-and-run attempt (runner on 1st, < 2 outs)
+            hit_and_run = _attempt_hit_and_run(bases, outs, batter, away_hit_and_run_mult)
+
+            # Suicide squeeze attempt (runner on 3rd, < 2 outs)
+            suicide_squeeze = _attempt_suicide_squeeze(bases, outs, batter, away_squeeze_mult)
+
+            # Intentional walk consideration
+            next_batter_idx = (away_batter_idx + 1) % len(away_lineup)
+            next_batter = away_lineup[next_batter_idx]
+            intentional_walk = _attempt_intentional_walk(bases, outs, batter, next_batter, away_ibb_threshold)
+
+            # Sac bunt attempt (lower priority than other strategies)
+            sac_bunt = (not hit_and_run and not suicide_squeeze and not intentional_walk and
+                       _attempt_sac_bunt(batter, bases, outs, away_bunt_rate))
+
+            # Defensive shift deployment
+            use_shift = _attempt_defensive_shift(batter) and random.random() < away_shift_tendency
+
+            if intentional_walk:
+                # IBB: advance batter without pitch
+                batter.bb += 1
+                current_home_pitcher.bb_allowed += 1
+                runs = _advance_runners(bases, "BB", batter.player_id, batter.speed, away_lineup)
+                inning_runs += runs
+                batter.rbi += runs
+                current_home_pitcher.runs_allowed += runs
+                current_home_pitcher.er += runs
+                away_batter_idx += 1
+                continue
+
+            if sac_bunt:
                 outs += 1
                 batter.ab += 1
-                # Advance runners on sac bunt
                 if bases.second:
                     bases.third = bases.second
                     bases.second = 0
@@ -587,18 +1220,102 @@ def simulate_game(home_lineup: list[BatterStats], away_lineup: list[BatterStats]
                 away_batter_idx += 1
                 continue
 
+            if suicide_squeeze:
+                # Squeeze result
+                outcome = _apply_suicide_squeeze(batter, current_home_pitcher, park)
+                if outcome == "SAC":
+                    # Successful squeeze
+                    batter.ab += 1
+                    outs += 1
+                    runs = _advance_runners(bases, "SF", batter.player_id, batter.speed, away_lineup)
+                    inning_runs += runs
+                    batter.rbi += runs
+                    current_home_pitcher.runs_allowed += runs
+                    current_home_pitcher.er += runs
+                    away_batter_idx += 1
+                    continue
+                elif outcome == "SO":
+                    # Failed squeeze - strikeout
+                    batter.ab += 1
+                    batter.so += 1
+                    current_home_pitcher.so_pitched += 1
+                    outs += 1
+                    away_batter_idx += 1
+                    continue
+
             leverage = 1.0 + (0.1 * inning if inning >= 7 else 0)
             if abs(home_score - (away_score + inning_runs)) <= 2 and inning >= 7:
                 leverage = 1.5
 
-            outcome = _resolve_at_bat(batter, current_home_pitcher, park,
-                                      bases.runners_on(), outs, leverage)
+            # Resolve at-bat with count
+            if hit_and_run:
+                # Hit-and-run outcome
+                outcome = _apply_hit_and_run(current_home_pitcher, batter, park)
+                if outcome in ("GO", "FO"):
+                    # Runner might be out on forced play
+                    outs += 1
+                    batter.ab += 1
+                    if outcome == "GO" and bases.first and outs < 3:
+                        runner_speed = 50
+                        for b in away_lineup:
+                            if b.player_id == bases.first:
+                                runner_speed = b.speed
+                                break
+                        dp_chance = _calculate_dp_chance(runner_speed, batter.speed)
+                        if random.random() < dp_chance:
+                            outs += 1
+                            bases.first = 0
+                else:
+                    batter.ab += 1
+                    outcome_to_use = _apply_shift_modifier(outcome) if use_shift else outcome
+                    if outcome_to_use != outcome:
+                        outcome = outcome_to_use
+
+                    if outcome in ("1B", "2B", "3B", "HR"):
+                        batter.hits += 1
+                        current_home_pitcher.hits_allowed += 1
+                        if outcome == "2B":
+                            batter.doubles += 1
+                        elif outcome == "3B":
+                            batter.triples += 1
+                        elif outcome == "HR":
+                            batter.hr += 1
+                            current_home_pitcher.hr_allowed += 1
+                    runs = _advance_runners(bases, outcome, batter.player_id, batter.speed, away_lineup)
+                    inning_runs += runs
+                    batter.rbi += runs
+                    current_home_pitcher.runs_allowed += runs
+                    current_home_pitcher.er += runs
+                away_batter_idx += 1
+                continue
+
+            outcome, pitches = _resolve_at_bat_with_count(
+                batter, current_home_pitcher, park,
+                bases.runners_on(), outs, leverage, weather, home_chemistry)
+
+            # Apply shift modifier if deployed
+            if use_shift and outcome in ("1B", "2B", "3B"):
+                outcome = _apply_shift_modifier(outcome)
 
             if outcome in ("GO", "FO"):
+                # Check for error
+                fielding = 50  # Default
+                if outcome == "GO":
+                    # Shortstop/2B fielding
+                    error_prob = _calculate_error_probability(fielding, is_ground_ball=True)
+                    if random.random() < error_prob:
+                        batter.reached_on_error += 1
+                        runs = _advance_runners(bases, "E", batter.player_id,
+                                              batter.speed, away_lineup)
+                        inning_runs += runs
+                        batter.rbi += runs
+                        current_home_pitcher.runs_allowed += runs
+                        current_home_pitcher.er += runs
+                        away_batter_idx += 1
+                        continue
+
                 outs += 1
-                # Double play chance on GO with runner on first
                 if outcome == "GO" and bases.first and outs < 3:
-                    # Look up runner speed for DP calculation
                     runner_speed = 50
                     for b in away_lineup:
                         if b.player_id == bases.first:
@@ -608,6 +1325,7 @@ def simulate_game(home_lineup: list[BatterStats], away_lineup: list[BatterStats]
                     if random.random() < dp_chance:
                         outs += 1
                         bases.first = 0
+
             elif outcome == "SF":
                 outs += 1
                 batter.sf += 1
@@ -617,11 +1335,13 @@ def simulate_game(home_lineup: list[BatterStats], away_lineup: list[BatterStats]
                 batter.rbi += runs
                 current_home_pitcher.runs_allowed += runs
                 current_home_pitcher.er += runs
+
             elif outcome == "SO":
                 outs += 1
                 batter.ab += 1
                 batter.so += 1
                 current_home_pitcher.so_pitched += 1
+
             elif outcome in ("BB", "HBP"):
                 if outcome == "BB":
                     batter.bb += 1
@@ -634,6 +1354,7 @@ def simulate_game(home_lineup: list[BatterStats], away_lineup: list[BatterStats]
                 batter.rbi += runs
                 current_home_pitcher.runs_allowed += runs
                 current_home_pitcher.er += runs
+
             else:
                 # Hit
                 batter.ab += 1
@@ -659,28 +1380,24 @@ def simulate_game(home_lineup: list[BatterStats], away_lineup: list[BatterStats]
 
             away_batter_idx += 1
 
-            # Check pitcher change
             score_diff_home = home_score - (away_score + inning_runs)
             if _should_pull_pitcher(current_home_pitcher, inning,
                                     current_home_pitcher.is_starter,
                                     score_diff_home, home_strategy):
-                current_home_pitcher.ip_outs += 0  # partial inning handled below
+                current_home_pitcher.ip_outs += 0
                 home_pitcher_idx, current_home_pitcher = _select_reliever(
                     home_pitchers, home_pitcher_idx, inning,
                     score_diff_home, home_pitcher_idx + 2)
 
-        # Record outs for pitcher
         current_home_pitcher.ip_outs += 3
-
         away_score += inning_runs
         innings_away.append(inning_runs)
 
         # ============================================================
         # BOTTOM OF INNING (home bats vs away pitcher)
         # ============================================================
-        # Skip bottom 9+ if home team leads
         if inning >= 9 and home_score > away_score:
-            innings_home.append(None)  # didn't bat
+            innings_home.append(None)
             break
 
         inning_runs = 0
@@ -690,15 +1407,42 @@ def simulate_game(home_lineup: list[BatterStats], away_lineup: list[BatterStats]
         while outs < 3:
             batter = home_lineup[home_batter_idx % len(home_lineup)]
 
-            # --- Stolen base attempt before at-bat ---
             sb_attempt, sb_success, sb_outs = _attempt_stolen_base(
                 bases, outs, home_lineup, current_away_pitcher, home_steal_mult)
             outs += sb_outs
             if outs >= 3:
                 break
 
-            # --- Sacrifice bunt attempt ---
-            if _attempt_sac_bunt(batter, bases, outs, home_bunt_rate):
+            # Hit-and-run attempt
+            hit_and_run = _attempt_hit_and_run(bases, outs, batter, home_hit_and_run_mult)
+
+            # Suicide squeeze attempt
+            suicide_squeeze = _attempt_suicide_squeeze(bases, outs, batter, home_squeeze_mult)
+
+            # Intentional walk consideration
+            next_batter_idx = (home_batter_idx + 1) % len(home_lineup)
+            next_batter = home_lineup[next_batter_idx]
+            intentional_walk = _attempt_intentional_walk(bases, outs, batter, next_batter, home_ibb_threshold)
+
+            # Sac bunt attempt
+            sac_bunt = (not hit_and_run and not suicide_squeeze and not intentional_walk and
+                       _attempt_sac_bunt(batter, bases, outs, home_bunt_rate))
+
+            # Defensive shift deployment
+            use_shift = _attempt_defensive_shift(batter) and random.random() < home_shift_tendency
+
+            if intentional_walk:
+                batter.bb += 1
+                current_away_pitcher.bb_allowed += 1
+                runs = _advance_runners(bases, "BB", batter.player_id, batter.speed, home_lineup)
+                inning_runs += runs
+                batter.rbi += runs
+                current_away_pitcher.runs_allowed += runs
+                current_away_pitcher.er += runs
+                home_batter_idx += 1
+                continue
+
+            if sac_bunt:
                 outs += 1
                 batter.ab += 1
                 if bases.second:
@@ -710,14 +1454,92 @@ def simulate_game(home_lineup: list[BatterStats], away_lineup: list[BatterStats]
                 home_batter_idx += 1
                 continue
 
+            if suicide_squeeze:
+                outcome = _apply_suicide_squeeze(batter, current_away_pitcher, park)
+                if outcome == "SAC":
+                    batter.ab += 1
+                    outs += 1
+                    runs = _advance_runners(bases, "SF", batter.player_id, batter.speed, home_lineup)
+                    inning_runs += runs
+                    batter.rbi += runs
+                    current_away_pitcher.runs_allowed += runs
+                    current_away_pitcher.er += runs
+                    home_batter_idx += 1
+                    continue
+                elif outcome == "SO":
+                    batter.ab += 1
+                    batter.so += 1
+                    current_away_pitcher.so_pitched += 1
+                    outs += 1
+                    home_batter_idx += 1
+                    continue
+
             leverage = 1.0 + (0.1 * inning if inning >= 7 else 0)
             if abs(away_score - (home_score + inning_runs)) <= 2 and inning >= 7:
                 leverage = 1.5
 
-            outcome = _resolve_at_bat(batter, current_away_pitcher, park,
-                                      bases.runners_on(), outs, leverage)
+            if hit_and_run:
+                outcome = _apply_hit_and_run(current_away_pitcher, batter, park)
+                if outcome in ("GO", "FO"):
+                    outs += 1
+                    batter.ab += 1
+                    if outcome == "GO" and bases.first and outs < 3:
+                        runner_speed = 50
+                        for b in home_lineup:
+                            if b.player_id == bases.first:
+                                runner_speed = b.speed
+                                break
+                        dp_chance = _calculate_dp_chance(runner_speed, batter.speed)
+                        if random.random() < dp_chance:
+                            outs += 1
+                            bases.first = 0
+                else:
+                    batter.ab += 1
+                    outcome_to_use = _apply_shift_modifier(outcome) if use_shift else outcome
+                    if outcome_to_use != outcome:
+                        outcome = outcome_to_use
+
+                    if outcome in ("1B", "2B", "3B", "HR"):
+                        batter.hits += 1
+                        current_away_pitcher.hits_allowed += 1
+                        if outcome == "2B":
+                            batter.doubles += 1
+                        elif outcome == "3B":
+                            batter.triples += 1
+                        elif outcome == "HR":
+                            batter.hr += 1
+                            current_away_pitcher.hr_allowed += 1
+                    runs = _advance_runners(bases, outcome, batter.player_id, batter.speed, home_lineup)
+                    inning_runs += runs
+                    batter.rbi += runs
+                    current_away_pitcher.runs_allowed += runs
+                    current_away_pitcher.er += runs
+                home_batter_idx += 1
+                continue
+
+            outcome, pitches = _resolve_at_bat_with_count(
+                batter, current_away_pitcher, park,
+                bases.runners_on(), outs, leverage, weather, away_chemistry)
+
+            # Apply shift modifier if deployed
+            if use_shift and outcome in ("1B", "2B", "3B"):
+                outcome = _apply_shift_modifier(outcome)
 
             if outcome in ("GO", "FO"):
+                fielding = 50
+                if outcome == "GO":
+                    error_prob = _calculate_error_probability(fielding, is_ground_ball=True)
+                    if random.random() < error_prob:
+                        batter.reached_on_error += 1
+                        runs = _advance_runners(bases, "E", batter.player_id,
+                                              batter.speed, home_lineup)
+                        inning_runs += runs
+                        batter.rbi += runs
+                        current_away_pitcher.runs_allowed += runs
+                        current_away_pitcher.er += runs
+                        home_batter_idx += 1
+                        continue
+
                 outs += 1
                 if outcome == "GO" and bases.first and outs < 3:
                     runner_speed = 50
@@ -729,6 +1551,7 @@ def simulate_game(home_lineup: list[BatterStats], away_lineup: list[BatterStats]
                     if random.random() < dp_chance:
                         outs += 1
                         bases.first = 0
+
             elif outcome == "SF":
                 outs += 1
                 batter.sf += 1
@@ -738,11 +1561,13 @@ def simulate_game(home_lineup: list[BatterStats], away_lineup: list[BatterStats]
                 batter.rbi += runs
                 current_away_pitcher.runs_allowed += runs
                 current_away_pitcher.er += runs
+
             elif outcome == "SO":
                 outs += 1
                 batter.ab += 1
                 batter.so += 1
                 current_away_pitcher.so_pitched += 1
+
             elif outcome in ("BB", "HBP"):
                 if outcome == "BB":
                     batter.bb += 1
@@ -755,6 +1580,7 @@ def simulate_game(home_lineup: list[BatterStats], away_lineup: list[BatterStats]
                 batter.rbi += runs
                 current_away_pitcher.runs_allowed += runs
                 current_away_pitcher.er += runs
+
             else:
                 batter.ab += 1
                 batter.hits += 1
@@ -778,13 +1604,10 @@ def simulate_game(home_lineup: list[BatterStats], away_lineup: list[BatterStats]
 
             home_batter_idx += 1
 
-            # Walk-off check
             if inning >= 9 and home_score + inning_runs > away_score:
-                # Count remaining outs
                 current_away_pitcher.ip_outs += outs
                 home_score += inning_runs
                 innings_home.append(inning_runs)
-                # Jump to end
                 num_innings = inning
                 break
 
@@ -800,15 +1623,12 @@ def simulate_game(home_lineup: list[BatterStats], away_lineup: list[BatterStats]
             home_score += inning_runs
             innings_home.append(inning_runs)
 
-        # Check if game is over (9+ innings, not tied)
         if inning >= 9 and home_score != away_score:
             break
 
     # Assign pitcher decisions
     _assign_decisions(home_pitchers, away_pitchers, home_score, away_score,
                       innings_home, innings_away)
-
-    # Runs scored are now tracked in _advance_runners via lineup -- no zeroing needed
 
     return {
         "home_score": home_score,
@@ -821,6 +1641,8 @@ def simulate_game(home_lineup: list[BatterStats], away_lineup: list[BatterStats]
         "away_pitchers": away_pitchers,
         "home_team_id": home_team_id,
         "away_team_id": away_team_id,
+        "play_by_play": play_by_play,
+        "weather": weather,
     }
 
 
@@ -829,30 +1651,25 @@ def _assign_decisions(home_pitchers: list, away_pitchers: list,
                       innings_home: list, innings_away: list):
     """Assign W, L, S decisions to pitchers."""
     if home_score == away_score:
-        return  # tie (shouldn't happen but safety)
+        return
 
     if home_score > away_score:
-        # Home team wins
         winning_pitchers = home_pitchers
         losing_pitchers = away_pitchers
     else:
         winning_pitchers = away_pitchers
         losing_pitchers = home_pitchers
 
-    # Winning pitcher: starter if went 5+ IP and team never trailed after,
-    # otherwise the reliever on record when lead was taken
     winner = winning_pitchers[0]
-    if winner.ip_outs >= 15:  # 5 innings
+    if winner.ip_outs >= 15:
         winner.decision = "W"
     else:
-        # Give W to longest reliever
         for p in winning_pitchers[1:]:
             if p.ip_outs > 0:
                 winner = p
                 break
         winner.decision = "W"
 
-    # Losing pitcher: starter if gave up the lead, otherwise last reliever who gave up runs
     loser = losing_pitchers[0]
     for p in reversed(losing_pitchers):
         if p.er > 0:
@@ -860,7 +1677,6 @@ def _assign_decisions(home_pitchers: list, away_pitchers: list,
             break
     loser.decision = "L"
 
-    # Save: last pitcher on winning team if entered with lead <= 3 and finished
     if len(winning_pitchers) > 1:
         closer = winning_pitchers[-1]
         if closer.ip_outs >= 3 and closer.decision != "W":

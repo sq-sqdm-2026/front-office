@@ -38,6 +38,10 @@
       <span class="header-phase" id="hdr-phase"></span>
     </div>
     <div class="top-bar-right">
+      <button class="btn btn-icon" title="Search (Ctrl+K)" onclick="openGlobalSearch()">🔍</button>
+      <button class="theme-toggle" title="Toggle theme" onclick="toggleTheme()">🌙</button>
+      <button class="btn btn-icon" title="Settings" onclick="openSettingsModal()">⚙️</button>
+      <span class="msg-badge" onclick="showScreen('messages')" title="Messages">💬<span class="badge" id="msg-count" style="display:none"></span></span>
       <button class="btn btn-sim" onclick="simDays(1)">▶ Day</button>
       <button class="btn btn-sim" onclick="simDays(7)">▶▶ Week</button>
     </div>
@@ -47,11 +51,16 @@
   <nav id="main-nav">
     <button class="nav-btn active" data-s="calendar" onclick="showScreen('calendar')">Calendar</button>
     <button class="nav-btn" data-s="roster" onclick="showScreen('roster')">Roster</button>
+    <button class="nav-btn" data-s="transactions" onclick="showScreen('transactions')">Transactions</button>
+    <button class="nav-btn" data-s="lineup" onclick="showScreen('lineup')">Lineup</button>
+    <button class="nav-btn" data-s="depthchart" onclick="showScreen('depthchart')">Depth Chart</button>
     <button class="nav-btn" data-s="standings" onclick="showScreen('standings')">Standings</button>
     <button class="nav-btn" data-s="schedule" onclick="showScreen('schedule')">Schedule</button>
     <button class="nav-btn" data-s="finances" onclick="showScreen('finances')">Finances</button>
     <button class="nav-btn" data-s="trades" onclick="showScreen('trades')">Trades</button>
+    <button class="nav-btn" data-s="draft" onclick="showScreen('draft')">Draft</button>
     <button class="nav-btn" data-s="freeagents" onclick="showScreen('freeagents')">Free Agents</button>
+    <button class="nav-btn" data-s="findplayers" onclick="showScreen('findplayers')">Find Players</button>
     <button class="nav-btn" data-s="leaders" onclick="showScreen('leaders')">Leaders</button>
     <button class="nav-btn" data-s="messages" onclick="showScreen('messages')">Messages</button>
   </nav>
@@ -71,7 +80,86 @@
           <button class="tab-btn" data-tab="injured" onclick="renderRosterTab('injured')">Injured</button>
         </div>
       </div>
+      <div class="filter-bar">
+        <input type="text" class="search-box" id="roster-search" placeholder="Search player..." onkeyup="filterRosterTable()">
+        <select class="search-box" id="roster-pos-filter" onchange="filterRosterTable()" style="flex: 0 1 100px;">
+          <option value="">All Positions</option>
+          <option value="C">C</option>
+          <option value="1B">1B</option>
+          <option value="2B">2B</option>
+          <option value="3B">3B</option>
+          <option value="SS">SS</option>
+          <option value="LF">LF</option>
+          <option value="CF">CF</option>
+          <option value="RF">RF</option>
+          <option value="DH">DH</option>
+          <option value="SP">SP</option>
+          <option value="RP">RP</option>
+        </select>
+      </div>
       <div id="roster-body"></div>
+    </div>
+
+    <!-- DEPTH CHART -->
+    <div id="s-depthchart" class="content-screen">
+      <div class="section-bar"><span class="section-title">Depth Chart</span></div>
+      <div id="depthchart-body"></div>
+    </div>
+
+    <!-- LINEUP MANAGEMENT -->
+    <div id="s-lineup" class="content-screen">
+      <div class="section-bar">
+        <span class="section-title">Lineup Management</span>
+        <div>
+          <button class="btn btn-primary btn-sm" onclick="saveLineup()">Save</button>
+        </div>
+      </div>
+      <div class="section-bar" style="margin-bottom: 12px;">
+        <div class="section-tabs">
+          <button class="tab-btn active" data-tab="vs_rhp" onclick="showLineupConfig('vs_rhp')">vs RHP</button>
+          <button class="tab-btn" data-tab="vs_lhp" onclick="showLineupConfig('vs_lhp')">vs LHP</button>
+          <button class="tab-btn" data-tab="dh" onclick="showLineupConfig('dh')">w/ DH</button>
+          <button class="tab-btn" data-tab="no_dh" onclick="showLineupConfig('no_dh')">w/o DH</button>
+        </div>
+      </div>
+      <div class="section-bar" style="margin-bottom: 12px;">
+        <div class="section-tabs">
+          <button class="tab-btn active" data-tab="batting" onclick="showLineupTab('batting')">Batting Order</button>
+          <button class="tab-btn" data-tab="rotation" onclick="showLineupTab('rotation')">Rotation</button>
+          <button class="tab-btn" data-tab="bullpen" onclick="showLineupTab('bullpen')">Bullpen</button>
+        </div>
+      </div>
+      <div id="lineup-batting" class="lineup-tab"></div>
+      <div id="lineup-rotation" class="lineup-tab" style="display:none;"></div>
+      <div id="lineup-bullpen" class="lineup-tab" style="display:none;"></div>
+    </div>
+
+    <!-- FIND PLAYERS -->
+    <div id="s-findplayers" class="content-screen">
+      <div class="section-bar">
+        <span class="section-title">Find Players</span>
+      </div>
+      <div class="filter-bar">
+        <input type="text" class="search-box" id="find-search" placeholder="Search player name..." onkeyup="searchPlayers()" style="flex: 1;">
+        <select class="search-box" id="find-pos" onchange="searchPlayers()">
+          <option value="">All Positions</option>
+          <option value="C">C</option>
+          <option value="1B">1B</option>
+          <option value="2B">2B</option>
+          <option value="3B">3B</option>
+          <option value="SS">SS</option>
+          <option value="LF">LF</option>
+          <option value="CF">CF</option>
+          <option value="RF">RF</option>
+          <option value="DH">DH</option>
+          <option value="SP">SP</option>
+          <option value="RP">RP</option>
+        </select>
+        <select class="search-box" id="find-team" onchange="searchPlayers()">
+          <option value="">All Teams</option>
+        </select>
+      </div>
+      <div id="find-results"></div>
     </div>
 
     <!-- STANDINGS -->
@@ -97,29 +185,49 @@
 
     <!-- TRADES -->
     <div id="s-trades" class="content-screen">
-      <div class="section-bar"><span class="section-title">Trade Center</span></div>
-      <div class="trade-layout">
-        <div class="trade-panel">
-          <div class="trade-panel-header" id="trade-your-hdr">Your Team</div>
-          <div id="trade-your"></div>
+      <div class="section-bar">
+        <span class="section-title">Trade Center</span>
+        <div class="section-tabs">
+          <button class="tab-btn active" data-tab="trade" onclick="showTradeTab('trade')">Trade Proposals</button>
+          <button class="tab-btn" data-tab="block" onclick="showTradeTab('block')">Trading Block</button>
         </div>
-        <div class="trade-middle">
-          <div class="trade-offer-box">
-            <h3>Offer</h3>
-            <div id="trade-slot-offer" class="trade-slot">Click players to offer...</div>
-            <div class="trade-arrow">⇄</div>
-            <div id="trade-slot-req" class="trade-slot">Click players to request...</div>
-            <button class="btn btn-primary" style="width:100%;margin-top:8px" onclick="submitTrade()">Propose Trade</button>
+      </div>
+      <div id="trade-tab-trade" class="trade-tab">
+        <div class="trade-layout">
+          <div class="trade-panel">
+            <div class="trade-panel-header" id="trade-your-hdr">Your Team</div>
+            <div id="trade-your"></div>
           </div>
-          <div id="trade-resp" class="trade-response"></div>
+          <div class="trade-middle">
+            <div class="trade-offer-box">
+              <h3>Offer</h3>
+              <div id="trade-slot-offer" class="trade-slot">Click players to offer...</div>
+              <div class="trade-arrow">⇄</div>
+              <div id="trade-slot-req" class="trade-slot">Click players to request...</div>
+              <button class="btn btn-primary" style="width:100%;margin-top:8px" onclick="submitTrade()">Propose Trade</button>
+            </div>
+            <div id="trade-resp" class="trade-response"></div>
+          </div>
+          <div class="trade-panel">
+            <div class="trade-panel-header">
+              <select id="trade-sel" onchange="loadTradeTeam()">
+                <option value="">Select team...</option>
+              </select>
+            </div>
+            <div id="trade-other"></div>
+          </div>
         </div>
-        <div class="trade-panel">
-          <div class="trade-panel-header">
-            <select id="trade-sel" onchange="loadTradeTeam()">
-              <option value="">Select team...</option>
-            </select>
+      </div>
+      <div id="trade-tab-block" class="trade-tab" style="display:none;">
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+          <div>
+            <div class="section-title" style="margin-bottom: 8px;">Players On Block</div>
+            <div id="trading-block-list" class="trade-panel" style="max-height: 400px; overflow-y: auto;"></div>
           </div>
-          <div id="trade-other"></div>
+          <div>
+            <div class="section-title" style="margin-bottom: 8px;">Incoming Offers</div>
+            <div id="trading-block-offers" class="trade-panel" style="max-height: 400px; overflow-y: auto;"></div>
+          </div>
         </div>
       </div>
     </div>
@@ -149,18 +257,187 @@
       <div id="msg-body"></div>
     </div>
 
+    <!-- DRAFT -->
+    <div id="s-draft" class="content-screen">
+      <div class="section-bar">
+        <span class="section-title">Amateur Draft</span>
+        <div id="draft-status" style="font-size: 12px; color: var(--text-dim);"></div>
+      </div>
+      <div style="display: grid; grid-template-columns: 2fr 1fr; gap: 16px; padding: 16px;">
+        <div>
+          <div class="section-title" style="margin-bottom: 8px;">Available Prospects</div>
+          <div class="filter-bar">
+            <input type="text" class="search-box" id="draft-search" placeholder="Search prospect..." onkeyup="filterDraftProspects()" style="flex: 1;">
+            <select class="search-box" id="draft-pos-filter" onchange="filterDraftProspects()" style="flex: 0 1 80px;">
+              <option value="">All Pos</option>
+              <option value="C">C</option>
+              <option value="1B">1B</option>
+              <option value="2B">2B</option>
+              <option value="3B">3B</option>
+              <option value="SS">SS</option>
+              <option value="LF">LF</option>
+              <option value="CF">CF</option>
+              <option value="RF">RF</option>
+              <option value="SP">SP</option>
+              <option value="RP">RP</option>
+            </select>
+            <select class="search-box" id="draft-sort" onchange="filterDraftProspects()" style="flex: 0 1 120px;">
+              <option value="rank">Overall Rank</option>
+              <option value="age">Age</option>
+              <option value="position">Position</option>
+            </select>
+          </div>
+          <div id="draft-list" style="margin-top: 12px; max-height: 600px; overflow-y: auto; border: 1px solid var(--border); border-radius: 4px;"></div>
+        </div>
+        <div>
+          <div class="section-title" style="margin-bottom: 8px;">Prospect Details</div>
+          <div id="draft-preview" style="border: 1px solid var(--border); border-radius: 4px; padding: 12px; background: var(--bg-2); min-height: 400px;">
+            <div class="empty-state">Select a prospect to view details</div>
+          </div>
+          <button class="btn btn-primary" id="draft-btn" style="width: 100%; margin-top: 12px; display: none;" onclick="draftSelectedProspect()">DRAFT PLAYER</button>
+        </div>
+      </div>
+      <div class="section-bar" style="margin-top: 16px; padding: 12px 16px; background: var(--bg-2);">
+        <span class="section-title">Already Drafted</span>
+      </div>
+      <div id="draft-results" style="padding: 12px 16px;"></div>
+    </div>
+
+    <!-- TRANSACTIONS -->
+    <div id="s-transactions" class="content-screen">
+      <div class="section-bar">
+        <span class="section-title">Roster Transactions</span>
+        <div style="font-size: 12px; color: var(--text-dim);">
+          <span id="trans-active-count">0</span>/26 Active |
+          <span id="trans-40man-count">0</span>/40 40-Man
+        </div>
+      </div>
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; padding: 16px;">
+        <div>
+          <div class="section-title" style="margin-bottom: 8px;">Active Roster</div>
+          <div class="filter-bar">
+            <input type="text" class="search-box" id="trans-active-search" placeholder="Search player..." onkeyup="filterTransactionsList('active')" style="flex: 1;">
+            <select class="search-box" id="trans-active-pos" onchange="filterTransactionsList('active')" style="flex: 0 1 100px;">
+              <option value="">All Pos</option>
+              <option value="C">C</option>
+              <option value="1B">1B</option>
+              <option value="2B">2B</option>
+              <option value="3B">3B</option>
+              <option value="SS">SS</option>
+              <option value="LF">LF</option>
+              <option value="CF">CF</option>
+              <option value="RF">RF</option>
+              <option value="SP">SP</option>
+              <option value="RP">RP</option>
+            </select>
+          </div>
+          <div id="trans-active-list" style="margin-top: 12px; max-height: 500px; overflow-y: auto; border: 1px solid var(--border); border-radius: 4px;"></div>
+        </div>
+        <div>
+          <div class="section-title" style="margin-bottom: 8px;">Minor League Roster</div>
+          <div class="filter-bar">
+            <input type="text" class="search-box" id="trans-minors-search" placeholder="Search player..." onkeyup="filterTransactionsList('minors')" style="flex: 1;">
+            <select class="search-box" id="trans-minors-pos" onchange="filterTransactionsList('minors')" style="flex: 0 1 100px;">
+              <option value="">All Pos</option>
+              <option value="C">C</option>
+              <option value="1B">1B</option>
+              <option value="2B">2B</option>
+              <option value="3B">3B</option>
+              <option value="SS">SS</option>
+              <option value="LF">LF</option>
+              <option value="CF">CF</option>
+              <option value="RF">RF</option>
+              <option value="SP">SP</option>
+              <option value="RP">RP</option>
+            </select>
+          </div>
+          <div id="trans-minors-list" style="margin-top: 12px; max-height: 500px; overflow-y: auto; border: 1px solid var(--border); border-radius: 4px;"></div>
+        </div>
+      </div>
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; padding: 0 16px;">
+        <div>
+          <div class="section-title" style="margin-bottom: 8px;">Injured List</div>
+          <div id="trans-injured-list" style="border: 1px solid var(--border); border-radius: 4px; max-height: 300px; overflow-y: auto;"></div>
+        </div>
+      </div>
+    </div>
+
   </main>
 
   <!-- Player / Box Score Modal -->
-  <div id="player-modal" class="modal" style="display:none">
+  <div id="player-modal" class="modal" style="display:none" onclick="if(event.target === this) closeModal()">
     <div class="modal-content">
       <button class="modal-close" onclick="closeModal()">&times;</button>
       <div id="player-modal-body"></div>
     </div>
   </div>
 
+  <!-- Player Comparison Modal -->
+  <div id="comparison-modal" class="modal" style="display:none" onclick="if(event.target === this) closeComparisonModal()">
+    <div class="modal-content" style="width: 1000px;">
+      <button class="modal-close" onclick="closeComparisonModal()">&times;</button>
+      <div id="comparison-body"></div>
+    </div>
+  </div>
+
+  <!-- Global Search Modal -->
+  <div id="global-search-modal" class="modal" style="display:none" onclick="if(event.target === this) closeModal()">
+    <div class="modal-content" style="width: 600px;">
+      <div style="padding: 16px; border-bottom: 1px solid var(--border);">
+        <input type="text" id="global-search-input" class="search-box" placeholder="Search players, teams, transactions..." style="width: 100%; margin: 0;" onkeyup="globalSearchChange()" autofocus>
+      </div>
+      <div id="global-search-results" style="padding: 16px; max-height: 500px; overflow-y: auto;">
+        <div class="empty-state">Start typing to search...</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Settings Modal -->
+  <div id="settings-modal" class="modal" style="display:none" onclick="if(event.target === this) closeSettingsModal()">
+    <div class="modal-content" style="width: 500px;">
+      <button class="modal-close" onclick="closeSettingsModal()">&times;</button>
+      <div style="padding: 16px;">
+        <h2>Settings</h2>
+
+        <div style="margin-top: 16px; padding: 12px; border: 1px solid var(--border); border-radius: 4px;">
+          <div style="display: flex; justify-content: space-between; align-items: center;">
+            <div>
+              <h3 style="margin: 0 0 4px 0;">Commissioner Mode</h3>
+              <p style="margin: 0; font-size: 12px; color: var(--text-secondary);">Advanced editing and control</p>
+            </div>
+            <button class="btn btn-primary btn-sm" id="commissioner-toggle-btn" onclick="toggleCommissionerMode()">OFF</button>
+          </div>
+        </div>
+
+        <div style="margin-top: 16px;">
+          <h3>Stat Column Display</h3>
+          <button class="btn btn-primary btn-sm" onclick="openColumnPickerModal('batting')">Edit Batting Columns</button>
+          <button class="btn btn-primary btn-sm" onclick="openColumnPickerModal('pitching')" style="margin-top: 8px;">Edit Pitching Columns</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Column Picker Modal -->
+  <div id="column-picker-modal" class="modal" style="display:none" onclick="if(event.target === this) closeColumnPickerModal()">
+    <div class="modal-content" style="width: 500px;">
+      <button class="modal-close" onclick="closeColumnPickerModal()">&times;</button>
+      <div style="padding: 16px;">
+        <h2 id="column-picker-title">Select Columns</h2>
+        <div id="column-picker-body" style="margin-top: 16px; max-height: 400px; overflow-y: auto;"></div>
+        <div style="margin-top: 16px; display: flex; gap: 8px; justify-content: flex-end;">
+          <button class="btn btn-secondary btn-sm" onclick="closeColumnPickerModal()">Cancel</button>
+          <button class="btn btn-primary btn-sm" onclick="saveColumnConfig()">Save</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast Container -->
+  <div id="toast-container" class="toast-container"></div>
+
   <footer id="status-bar">
-    <span id="ticker">Front Office v0.1 — Phase 1</span>
+    <span id="ticker">Front Office v0.2 (Overhauled UI)</span>
   </footer>
 
 </div>

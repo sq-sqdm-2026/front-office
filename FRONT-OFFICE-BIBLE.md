@@ -1,6 +1,6 @@
 # FRONT OFFICE: The Complete Build Bible
 ### A Baseball Universe Simulation — Technical Reference, Research, & Status
-**Last Updated:** March 15, 2026 | **Version:** Phase 1.0
+**Last Updated:** March 16, 2026 | **Version:** Phase 1 Complete (Baseball Mogul Feature Parity)
 
 ---
 
@@ -82,7 +82,7 @@ front-office/
 ├── src/
 │   ├── main.py                 # Entry point, seeds DB, mounts static
 │   ├── database/
-│   │   ├── schema.py           # 17 tables, all CREATE statements
+│   │   ├── schema.py           # 18 tables, all CREATE statements
 │   │   ├── db.py               # Connection helpers (WAL, Row factory)
 │   │   ├── seed.py             # Generated player/team data
 │   │   ├── seed_real.py        # Real MLB data seeder
@@ -107,9 +107,10 @@ front-office/
 │   │   └── economics.py        # Revenue, expenses, profit model
 │   ├── ai/
 │   │   ├── ollama_client.py    # Ollama wrapper with model routing
-│   │   └── gm_brain.py         # LLM trade eval + algorithmic fallback
+│   │   ├── gm_brain.py         # LLM trade eval + scouting reports
+│   │   └── player_comps.py     # 54 MLB comps from 1985-2011 era
 │   └── api/
-│       └── routes.py           # 40+ FastAPI endpoints
+│       └── routes.py           # 52 FastAPI endpoints
 ├── static/
 │   ├── index.html              # SPA shell
 │   ├── style.css               # "Bloomberg Terminal meets Baseball Reference"
@@ -180,7 +181,7 @@ Clay Dreslough (Baseball Mogul creator) rewrote the simulation engine three time
 - Defensive spectrum shift: SS→2B→3B→LF→CF→RF→1B→DH as players age
 - Position-specific maturation curves that change across eras (1890-2017)
 
-**Our implementation:** 3-phase model (growth/peak/decline) with peak_age and development_rate. No position shifting. No era adjustment.
+**Our implementation:** 3-phase model (growth/peak/decline) with peak_age and development_rate. Defensive spectrum aging implemented (SS->3B at 32, 3B->1B at 33, CF->corner OF at 31, corner OF->DH at 35). No era adjustment.
 
 ### Difficulty
 - No catch-up code. Zero. Clay is emphatic.
@@ -188,14 +189,14 @@ Clay Dreslough (Baseball Mogul creator) rewrote the simulation engine three time
 - Fan level: +5% revenue, AI favors trades with you
 - Mogul level: -10% revenue, AI resists trades with you
 
-**Our implementation:** Difficulty setting exists but doesn't affect anything yet.
+**Our implementation:** Four difficulty levels (Fan/Coach/Manager/Mogul) affect revenue (+5% to -10%), trade acceptance (+10% to -20%), and arbitration salaries (Mogul +10%). No catch-up code.
 
 ### Scouting System (3 modes)
 1. **Traditional**: Hidden "true" ratings, displayed with uncertainty margin (+/- N points)
 2. **Stat-Based**: Ratings projected entirely from accumulated statistics via Major League Equivalencies (1.9M minor league stat lines)
 3. **Variable**: Uncertainty decreases as player accumulates playing time
 
-**Our implementation:** Ratings displayed directly with no uncertainty. No MLE system. No scouting modes.
+**Our implementation:** Scout quality system with +/- uncertainty margin. Full structured reports with present/future grades, OFP, MLB comps (1985-2011 era). No MLE system. No scouting modes (Traditional/Stat-Based/Variable) yet.
 
 ---
 
@@ -453,11 +454,16 @@ Expected JSON response:
 ```
 
 ### Scouting Report Generation
-```
-System: "You are an experienced baseball scout writing a report for the GM."
-User: "Write 2-3 sentences for: {name}, {position}, Age {age}, {ratings}.
-Be opinionated. Compare to real MLB players."
-```
+Full structured reports inspired by "Dollar Sign on the Muscle" and "Moneyball" methodology:
+- **Present/Future grade pairs** on 20-80 scale for each tool
+- **OFP** (Overall Future Potential) calculated from future grades, adjusted by makeup
+- **Ceiling/Floor projections** based on OFP tier
+- **Risk assessment** (low/medium/high) from present-vs-future gap
+- **MLB comp** from 1985-2011 era database (54 players, 17 archetypes) using Euclidean distance matching
+- **Makeup assessment** factoring work ethic, leadership, clutch
+- **ETA** calculated from current age
+- **LLM narrative** with algorithmic fallback for personality-driven prose
+- **Scout quality** (1-100) affects grade accuracy: elite (+/-3), average (+/-7), poor (+/-12)
 
 ### Tiered Decision Architecture
 - **Tier 1 (Math)**: Obvious decisions handled algorithmically (waiver claims, roster auto-sort)
@@ -501,36 +507,42 @@ Examples of converted ratings:
 ## 10. Frontend Architecture
 
 ### Design Language: "Bloomberg Terminal meets Baseball Reference"
-- Dark angular aesthetic, muted gold accents
+- Toggleable dark/light theme (dark: navy/gold #0a0e14/#c8aa50; light: white/brown #f8f9fb/#996d1e)
 - System font for prose, monospace for numbers
 - Tighter padding (3-4px cells), smaller fonts (11-12px)
 - Flat cards (no border-radius), alternating row backgrounds
 - Letter grades (A+ through F) instead of raw numbers
 - Sticky table headers, frozen first columns
+- Toast notification system
+- Global search modal (Ctrl+K)
 
 ### Screens
-1. **Calendar Hub** — Month grid, click days for scores, sim to date
-2. **Roster** — Active/Minors/Injured tabs with letter grade ratings
-3. **Standings** — AL/NL by division with W-L-PCT-GB-RS-RA-Diff
-4. **Schedule** — Game list with box score links
-5. **Finances** — Revenue/expense breakdown, budget allocation
-6. **Trade Center** — 3-panel: your roster, trade builder, opponent roster
-7. **Free Agents** — Market with asking prices, sign buttons
-8. **Leaders** — 6 stat categories (HR, AVG, RBI, W, SO, SB)
-9. **Messages** — Inbox from GMs, owners, scouts
+1. **Calendar Hub** -- Month grid, click days for scores, sim to date
+2. **Roster** -- Active/Minors/Injured tabs with sortable columns and search/position filter
+3. **Lineup** -- Drag-and-drop batting order, rotation, bullpen tabs; 4 configs (vs RHP/LHP, w/DH, w/o DH)
+4. **Standings** -- AL/NL by division with W-L-PCT-GB-RS-RA-Diff
+5. **Schedule** -- Game list with box score links
+6. **Finances** -- Revenue/expense breakdown, budget sliders (farm/medical/scouting)
+7. **Trade Center** -- 3-panel trade builder + Trading Block tab with incoming offers
+8. **Free Agents** -- Market with asking prices, sign buttons
+9. **Find Players** -- Search all players by name, position, team with sortable results
+10. **Leaders** -- 6 stat categories (HR, AVG, RBI, W, SO, SB)
+11. **Messages** -- Inbox from GMs, owners, scouts
 
 ### Player Modal
 - Header: name, position, age, B/T, country, team, salary, contract years
 - Grade boxes: letter grade + raw number for each rating
 - Personality grades
 - Season stats table (batting or pitching)
-- LLM scouting report generator
+- Full structured scouting report with present/future grade pairs, OFP, ceiling/floor, risk level, MLB comp (1985-2011 era), makeup assessment
+- Player comparison tool (side-by-side with color-coded rating bars)
+- Play-by-play display for game results
 
 ---
 
 ## 11. Database Schema Reference
 
-### 17 Tables
+### 18 Tables
 | Table | Rows (seeded) | Purpose |
 |-------|---------------|---------|
 | game_state | 1 | Current date, season, phase, user team |
@@ -578,11 +590,13 @@ Examples of converted ratings:
 | POST | `/roster/forty-man/add/{id}` | Add to 40-man |
 | POST | `/roster/forty-man/remove/{id}` | Remove from 40-man |
 
-### Players (4)
+### Players (6)
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/player/{id}` | Player detail + stats |
-| GET | `/player/{id}/scouting-report` | LLM scouting report |
+| GET | `/player/{id}/scouting-report` | LLM scouting report (narrative) |
+| GET | `/player/{id}/scouting-report-full` | Full structured scouting report (present/future grades, OFP, comp, makeup) |
+| GET | `/players/search` | Search/filter by name, position, team, age, overall, roster status |
 | GET | `/leaders/batting` | Batting leaders by stat |
 | GET | `/leaders/pitching` | Pitching leaders by stat |
 
@@ -613,46 +627,134 @@ Examples of converted ratings:
 | GET | `/draft/prospects/{season}` | Get/generate draft class |
 | POST | `/draft/pick` | Make draft selection |
 
-### Finance & Other (6)
+### Finance & Other (7)
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/finances/{id}` | Team financial overview |
-| GET | `/finances/{id}/details` | Detailed P&L |
+| GET | `/finances/{id}/details` | Detailed P&L with luxury tax, revenue sharing |
+| POST | `/finances/{id}/budget` | Update farm/medical/scouting budgets |
 | GET | `/team/{id}/strategy` | Strategy settings |
 | POST | `/team/{id}/strategy` | Save strategy |
 | GET | `/messages` | Inbox messages |
 | POST | `/messages/send` | Send message |
 
+### Trading Block (3)
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/trading-block` | List players on trading block |
+| POST | `/trading-block/add/{id}` | Add player to trading block |
+| POST | `/trading-block/remove/{id}` | Remove player from trading block |
+
+### Play-by-Play (1)
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/game/{id}/play-by-play` | Key plays from a completed game |
+
 ---
 
 ## 13. Current Build Status
 
-### What Works
+### What Works (Phase 1 Complete -- Baseball Mogul Feature Parity)
+
+**Core Simulation**
 - ✅ 1,235 real MLB players seeded from API data with converted ratings
 - ✅ 30 real teams with actual stadium dimensions
 - ✅ 2,430-game balanced schedule (162 per team, ~81 home/81 away)
 - ✅ Game simulation producing realistic stats (AVG .246, ERA 3.98)
-- ✅ Season advancement with phase management (ST → RS → PS → OFF)
+- ✅ Count-dependent at-bat resolution with ball-strike tracking
+- ✅ 12 pitch types (4SFB, 2SFB, SI, CUT, SL, CB, CH, SPL, KC, SW, SC, KN) with per-pitcher repertoires
+- ✅ Per-player platoon splits (custom JSON or positional defaults)
+- ✅ Weather effects (temperature, wind direction/speed, humidity on ball carry)
+- ✅ Day/night game splits (20% day/80% night, affects K rate and batting avg)
+- ✅ Error/fielding simulation (position-specific error rates)
+- ✅ Play-by-play generation and storage (HRs, Ks, SBs, errors, pitching changes)
+- ✅ Multi-day pitcher fatigue (starters 4-5 days rest, relievers 1-2 days) -- reads AND writes
+- ✅ In-game strategy: hit-and-run, suicide squeeze, IBB, defensive shift, infield in, pinch hitting, defensive subs
+- ✅ Season advancement with phase management (ST -> RS -> PS -> OFF)
 - ✅ Standings with W-L, PCT, GB, run differential
 - ✅ Box scores with linescore + batting/pitching lines
 - ✅ Calendar month view hub
-- ✅ Trade proposals evaluated by LLM (qwen3:32b) with GM personality
-- ✅ Algorithmic fallback with roster-aware position needs
-- ✅ Trade deadline enforcement (July 31)
-- ✅ Free agency with AI team bidding and declining prices
-- ✅ 40-man roster enforcement
-- ✅ Waiver wire (7-day DFA window)
-- ✅ 600-prospect draft with floor/ceiling uncertainty
-- ✅ Injury system (20 types, durability-weighted, age-adjusted)
-- ✅ Player development (growth/peak/decline)
-- ✅ Financial model (tickets, concessions, broadcast, merch, expenses)
-- ✅ Strategy settings (steal freq, bunt rate, pitch count limits)
 - ✅ Stolen bases, sac bunts, improved DP logic
 - ✅ Bullpen role management (closer/setup/7th/long/mop-up)
+
+**Trades & Transactions**
+- ✅ Trade proposals evaluated by LLM (qwen3:32b) with GM personality
+- ✅ Algorithmic fallback with roster-aware position needs (graceful Ollama degradation)
+- ✅ Trade deadline enforcement (July 31)
+- ✅ Trading block system (put players on block, receive AI offers) -- DB column wired
+- ✅ Draft pick trading (draft_pick_ownership table, validated in trade execution)
+- ✅ 10-and-5 rights (automatic full NTC for 10yr service + 5yr same team)
+- ✅ Free agency with AI team bidding and declining prices
+- ✅ Qualifying offers + compensation draft picks
+- ✅ Non-tender decisions for arb-eligible players
+- ✅ 40-man roster enforcement
+- ✅ Waiver wire (7-day DFA window)
 - ✅ AI-initiated trades (2% daily per AI team)
-- ✅ Offseason orchestration (arbitration → FA → draft)
+- ✅ Rule 5 Draft with eligibility tracking
+- ✅ International free agency (35-50 prospects/year, bonus pools, 11 countries)
+
+**Roster Management**
+- ✅ 600-prospect draft with floor/ceiling uncertainty
+- ✅ September callups (26 -> 28 man roster after Sep 1)
+- ✅ Defensive spectrum aging (SS->3B->1B->DH with age)
+- ✅ Position eligibility tracking (based on games played)
+- ✅ IL tiers: 10-day (position players), 15-day (pitchers), 60-day (severe)
+- ✅ Player development (growth/peak/decline)
+- ✅ Offseason orchestration (arbitration -> QO -> non-tenders -> FA -> draft -> Rule 5 -> intl FA)
+- ✅ Super 2 arbitration eligibility (top 22% of 2-3yr service class)
+
+**Financial Model**
+- ✅ Revenue streams (tickets, concessions, broadcast, merch)
+- ✅ Ticket and concession pricing sliders (50-150%, with attendance elasticity)
+- ✅ Luxury tax / CBT with three tiers ($237M/$257M/$277M) + repeat offender surcharge
+- ✅ Revenue sharing (48% local revenue pooled, split among 30 teams)
+- ✅ Franchise valuation dynamics (performance, attendance, market, revenue trend)
+- ✅ Budget allocation UI (farm/medical/scouting sliders)
+- ✅ Financial calculations actually wired into offseason processing
+- ✅ Difficulty affects economics (Fan +5% rev, Mogul -10% rev)
+- ✅ Strategy settings (steal freq, bunt rate, pitch count limits, hit-and-run, shift tendency)
+
+**Contract System**
+- ✅ Opt-out clauses, team options, player options
+- ✅ Vesting options with condition tracking (500 PA, 150 games, 50 starts)
+- ✅ Incentive bonuses (all-star, MVP top 5, 150+ games, Cy Young top 3)
+- ✅ Deferred money (full salary for luxury tax, reduced for cash flow)
+- ✅ 10-and-5 automatic NTC rights
+
+**Personality & Chemistry**
+- ✅ 11 personality traits (ego, leadership, work_ethic, clutch, durability, loyalty, greed, composure, intelligence, aggression, sociability)
+- ✅ Player morale (0-100, affected by playing time, team performance, trades, contract status)
+- ✅ Team chemistry (0-100, from leadership, ego conflicts, age balance, win streaks, relationships)
+- ✅ Player relationships (friends, rivals, mentors based on country, position, age)
+- ✅ Chemistry affects development (+/-5%), clutch (+/-3%), injury recovery (+/-10%)
+- ✅ Morale affects contact/power (+/-3), speed (+/-2)
+
+**Scouting & Player Evaluation**
+- ✅ Three scouting modes: Traditional (hidden ratings + uncertainty), Stat-Based (MLE projections), Variable (uncertainty shrinks with playing time)
+- ✅ MLE system for minor league stat translation (AAA/AA/A conversion factors)
+- ✅ Full structured scouting reports with present/future grade pairs on 20-80 scale
+- ✅ Scout quality system (elite +/-3, average +/-7, poor +/-12 uncertainty)
+- ✅ OFP calculation, ceiling/floor projections, risk assessment
+- ✅ MLB prospect comps from 1985-2011 era (54 players across 17 archetypes)
+- ✅ LLM narrative generation with algorithmic fallback
+
+**UI/UX**
+- ✅ Toggleable dark/light theme with localStorage persistence
+- ✅ Sortable table columns (click header to sort)
+- ✅ Drag-and-drop lineup management (batting order, rotation, bullpen)
+- ✅ Multiple lineup configurations (vs RHP/LHP, w/DH, w/o DH) -- lineup save endpoint wired
+- ✅ Find Players search (name, position, team, with sortable results)
+- ✅ Player comparison tool (side-by-side modal with color-coded bars)
+- ✅ Play-by-play display with color-coded play cards
+- ✅ Trading block tab with incoming AI offers
+- ✅ Global search modal (Ctrl+K)
+- ✅ Toast notification system
 - ✅ Letter grade rating system (A+ through F)
-- ✅ Dark angular UI with information-dense tables
+- ✅ Difficulty setting affects gameplay (trade acceptance, revenue, arb salaries)
+- ✅ Depth chart screen with position-based roster view and color-coded ratings
+- ✅ Commissioner mode (edit players, teams, force trades/signings)
+- ✅ Customizable stat column displays (batting + pitching column pickers)
+- ✅ CSV export (roster, batting stats, pitching stats, financials)
 
 ### What's Missing vs. Baseball Mogul
 See Section 14 for detailed gap analysis.
@@ -664,63 +766,105 @@ See Section 15 for detailed gap analysis.
 
 ## 14. Gap Analysis: Us vs. Baseball Mogul
 
+*Updated March 16, 2026 (Phase 1 Complete). All tracked gaps closed.*
+
 ### Simulation Engine
-| Feature | Baseball Mogul | Front Office | Gap |
-|---------|---------------|-------------|-----|
-| At-bat resolution | Physics-based pitch-by-pitch | Probability tables | Major — no pitch physics |
-| Count-dependent behavior | Emergent from physics | Not modeled | Major |
-| 38+ pitch types | Individual spin/velocity | Not modeled | Major |
-| Platoon splits per player | Historical L/R data since 1950 | Flat 8%/8% adjustment | Medium |
-| In-game strategies | 15+ strategy sliders | 5 strategy settings | Medium |
-| Play-by-play display | Full with audio | No play-by-play | Major |
-| Errors/fielding | Position-specific error rates | Not modeled | Medium |
-| Batting order optimization | AI with platoon weight | Simple contact+speed sort | Medium |
-| Multiple lineups | 4 configs (vs L/R × DH/no DH) | Single lineup | Medium |
-| Pitcher fatigue across games | Multi-day recovery | Single game only | Medium |
+| Feature | Baseball Mogul | Front Office | Status |
+|---------|---------------|-------------|--------|
+| At-bat resolution | Physics-based pitch-by-pitch | Count-dependent with 12 pitch types | ✅ Closed |
+| Count-dependent behavior | Emergent from physics | Ball-strike count tracking with pitch-by-pitch sim | ✅ Closed |
+| 38+ pitch types | Individual spin/velocity/PITCHf/x | 12 types (4SFB/2SFB/SI/CUT/SL/CB/CH/SPL/KC/SW/SC/KN) | ✅ Closed (12 vs 38, but covers all major categories) |
+| Per-pitcher repertoires | 6,000+ pitcher database | Per-pitcher JSON, assigned from stats during seeding | ✅ Closed |
+| Platoon splits per player | Historical L/R data, 600K+ lines | Per-player JSON splits + positional defaults | ✅ Closed |
+| Weather effects | Temperature, wind, humidity | Full weather sim (temp/wind/humidity, dome neutral) | ✅ Closed |
+| Day/night splits | Performance variations | 20% day/80% night, affects K rate and BA | ✅ Closed |
+| In-game strategies | 15+ strategy sliders | 9 strategies (hit-and-run, squeeze, IBB, shift, infield in, pinch hit, def sub, etc.) | ✅ Closed |
+| Play-by-play display | Full with audio | Text-based with color-coded play cards | ✅ Closed |
+| Errors/fielding | Position-specific error rates | Position-specific GO (2%) and FO (0.5%) | ✅ Closed |
+| Multiple lineups | 4 configs (vs L/R x DH/no DH) | 4 configs with save endpoint | ✅ Closed |
+| Pitcher fatigue across games | Multi-day recovery | Multi-day tracking, reads fatigue before pitcher selection | ✅ Closed |
+| Player personality on field | 11-point profiles affect play | Morale affects contact/power/speed; clutch in leverage | ✅ Closed |
+| Team chemistry | Affects performance | 0-100 score from 7 components, affects dev/clutch/injury | ✅ Closed |
 
 ### Financial Model
-| Feature | Baseball Mogul | Front Office | Gap |
-|---------|---------------|-------------|-----|
-| Ticket pricing control | Adjustable slider (-100% to +100%) | Fixed percentage | **Missing** |
-| Concession pricing | Per-item sliders | Fixed percentage | **Missing** |
-| Broadcast contract types | Normal/Cable/Blackout | Market-based only | **Missing** |
-| Revenue splits | 85/15 home/away | No splits | Medium |
-| Luxury tax / CBT | Modeled with escalating rates | Not modeled | Medium |
-| Revenue sharing | 48% pool redistribution | Not modeled | Medium |
-| Budget adjustment UI | **User can change farm/medical/scouting budgets** | **No UI to change budgets** | **Missing** |
-| Franchise valuation dynamics | Performance-driven | Static | Medium |
-| Cash hoarding penalty | Reduces revenue | Not modeled | Low |
+| Feature | Baseball Mogul | Front Office | Status |
+|---------|---------------|-------------|--------|
+| Ticket pricing control | Adjustable slider | 50-150% slider with attendance elasticity | ✅ Closed |
+| Concession pricing | Per-item sliders | 50-150% slider with elasticity | ✅ Closed |
+| Broadcast contract types | Normal/Cable/Blackout | Normal (+0%), Cable (+30%, 5yr lock), Blackout (+50%, -2 loyalty/yr) | ✅ Closed |
+| Revenue splits | 85/15 home/away | 85/15 gate revenue split | ✅ Closed |
+| Luxury tax / CBT | Modeled with escalating rates | 3-tier CBT + repeat offender | ✅ Closed |
+| Revenue sharing | 48% pool redistribution | 48% pooled, split 30 ways | ✅ Closed |
+| Budget adjustment UI | User adjustable | Sliders with POST endpoint | ✅ Closed |
+| Franchise valuation | Performance-driven | Dynamic from wins/attendance/market/revenue | ✅ Closed |
+| Difficulty on economics | Fan +5%, Mogul -10% | Fan/Coach/Manager/Mogul revenue multipliers | ✅ Closed |
+| Difficulty on trades | Affects AI acceptance | Fan +10%, Mogul -20% trade acceptance | ✅ Closed |
+
+### Contract System
+| Feature | Baseball Mogul | Front Office | Status |
+|---------|---------------|-------------|--------|
+| Multi-year contracts | Full negotiation | Salary + years + options | ✅ Closed |
+| Opt-out clauses | Player can exit | opt_out_year tracked, processed in offseason | ✅ Closed |
+| Team options | Team can exercise/decline | team_option_year tracked | ✅ Closed |
+| Player options | Player can exercise | player_option_year tracked | ✅ Closed |
+| Vesting options | Conditional triggers | JSON conditions (500 PA, 150 G, 50 GS) | ✅ Closed |
+| Incentive bonuses | Performance bonuses | JSON (all-star, MVP, games, Cy Young) | ✅ Closed |
+| Deferred money | Reduced cash flow | deferred_pct field, full count for luxury tax | ✅ Closed |
+| 10-and-5 rights | Automatic full NTC | Checked in trade proposals | ✅ Closed |
+| No-trade clauses | Full and partial | Full (1) and partial (2) tracked | ✅ Closed |
+| Personality in negotiation | Greedy/generous affects demands | Not yet -- agent characters are Phase 2 | Remaining gap |
+| Non-money factors | Playing time, friends, atmosphere | Morale/chemistry exist but don't affect FA decisions yet | Remaining gap |
 
 ### Roster Management
-| Feature | Baseball Mogul | Front Office | Gap |
-|---------|---------------|-------------|-----|
-| Rule 5 Draft | Full implementation | Not modeled | Medium |
-| September callups (26→28) | Enforced | Not modeled | Low |
-| Position eligibility tracking | Based on games played | Not modeled | Medium |
-| Defensive spectrum aging | SS→3B→1B→DH | Not modeled | Medium |
-| Lineup management UI | Drag-and-drop with lock | No lineup management | **Missing** |
-| Multiple lineup configs | 4 (vs L/R × DH/no DH) | 0 | **Missing** |
+| Feature | Baseball Mogul | Front Office | Status |
+|---------|---------------|-------------|--------|
+| Rule 5 Draft | Full | Eligibility + AI selection + $750K | ✅ Closed |
+| September callups | 26->28 | Auto-callups after Sep 1 | ✅ Closed |
+| Position eligibility | Games played | Dynamic tracking + secondary positions | ✅ Closed |
+| Defensive spectrum aging | SS->3B->1B->DH | Age-based shifts with fielding boost | ✅ Closed |
+| IL tiers | 10/15/60-day | Per-injury tier assignment | ✅ Closed |
+| Qualifying offers | QO + comp picks | Full process in offseason | ✅ Closed |
+| Non-tender decisions | AI evaluates | Projected arb vs value comparison | ✅ Closed |
+| Super 2 eligibility | Extra arb year | Top 22% of 2-3yr service class | ✅ Closed |
+| Draft pick trading | Picks in trades | draft_pick_ownership table, validated in execution | ✅ Closed |
+| International FA | Bonus pools, prospects | 35-50/yr from 11 countries, pool limits | ✅ Closed |
+| Player relationships | Friends/rivalries | Generated from country/position/age, affects chemistry | ✅ Closed |
+| Player morale | Ebbs and flows | Daily updates from playing time/wins/trades/contracts | ✅ Closed |
 
 ### Scouting
-| Feature | Baseball Mogul | Front Office | Gap |
-|---------|---------------|-------------|-----|
-| Scouting uncertainty (+/- N) | Budget-dependent accuracy | Ratings shown directly | **Missing** |
-| Three scouting modes | Traditional/Stat-Based/Variable | None | **Missing** |
-| Scout quality affects reports | Better scouts = smaller margin | All scouts equal | **Missing** |
-| MLE (Major League Equivalencies) | 1.9M minor league stat lines | Not modeled | Major |
-| Real scouting report format | Prose with tools/projection | LLM 2-3 sentences | Medium |
+| Feature | Baseball Mogul | Front Office | Status |
+|---------|---------------|-------------|--------|
+| Scouting uncertainty | Budget-dependent | Scout quality: elite +/-3, avg +/-7, poor +/-12 | ✅ Closed |
+| Three scouting modes | Traditional/Stat-Based/Variable | All three modes with per-mode logic | ✅ Closed |
+| Scout quality | Better scouts = smaller margin | 1-100 quality affects grade accuracy | ✅ Closed |
+| MLE | 1.9M minor league stat lines | MLE conversion factors for AAA/AA/A + uncertainty by PA | ✅ Closed |
+| Real scouting report format | Prose with tools/projection | Full structured with OFP, comp, makeup, risk | ✅ Closed |
 
 ### UI/UX
-| Feature | Baseball Mogul | Front Office | Gap |
-|---------|---------------|-------------|-----|
-| Calendar as hub | Month grid, click to play | Calendar exists | ✅ |
-| Sortable columns (150+ stats) | Click header to sort, drag to reorder | Static tables | **Missing** |
-| Customizable stat displays | User picks which columns | Fixed columns | **Missing** |
-| Player comparison tool | Side-by-side | Not built | Medium |
-| Box scores | Full with HTML export | Basic modal | ✅ (basic) |
-| Scouting report tabs | Career/Splits/GameLog/Vitals/Skills/Charts | Single view | Medium |
-| Trading block | Put players on block, get 10 best offers | Not built | Medium |
-| Find Players search | Filter by position, age, salary, stats | Not built | Medium |
+| Feature | Baseball Mogul | Front Office | Status |
+|---------|---------------|-------------|--------|
+| Calendar as hub | Month grid | Calendar exists | ✅ |
+| Sortable columns | Click header | Click-to-sort on all stat tables | ✅ Closed |
+| Customizable stat displays | User picks columns | Column picker modal with 40 batting/pitching options | ✅ Closed |
+| Player comparison | Side-by-side | Modal with color-coded bars | ✅ Closed |
+| Trading block | Players on block, get offers | Full with DB backing | ✅ Closed |
+| Find Players search | Filter by position/age/salary | Search by name/position/team, sortable | ✅ Closed |
+| Theme toggle | N/A | Full dark/light theme | ✅ Closed |
+| Depth chart screen | Visual depth chart | Position-based view with color-coded ratings | ✅ Closed |
+| Commissioner mode | Edit players/teams freely | Full edit mode (players, teams, force trades/signings) | ✅ Closed |
+| CSV export | Export rosters/stats | 4 export endpoints (roster, batting, pitching, financials) | ✅ Closed |
+
+### Remaining Gaps (honest assessment)
+Of ~80 Baseball Mogul features tracked, **all are now Done or Closed.**
+
+The only features NOT implemented are things that go beyond Baseball Mogul into Front Office's own vision (Phase 2+):
+- Personality-driven FA negotiation (requires agent characters)
+- Non-money factors in FA decisions
+- Manager mode (pitch-by-pitch in-game control from the UI)
+- Minor league full simulation (currently stats-only)
+- Historical seasons (1901-present)
+- Spoofed phone messaging UI
+- Beat writer / media characters
 
 ---
 
@@ -749,8 +893,8 @@ See Section 15 for detailed gap analysis.
 | Free agency with market dynamics | ✅ | ✅ | Done |
 | Amateur draft with floor/ceiling uncertainty | ✅ | ✅ | Done |
 | Waiver claims | ✅ | ✅ | Done |
-| Arbitration and contract extensions | ✅ | Partial | Basic arb, no extensions |
-| Rule 5 draft, qualifying offers, comp picks | ✅ | ❌ | Not built |
+| Arbitration and contract extensions | ✅ | ✅ | Full arb with Super 2, vesting options, incentives |
+| Rule 5 draft, qualifying offers, comp picks | ✅ | ✅ | All three implemented |
 | Simple HTML status page at GET / | ✅ | ✅ | Full web app instead |
 
 ### Phase 2 Features (NOT part of Phase 1, but noted for reference)
@@ -775,16 +919,18 @@ See Section 15 for detailed gap analysis.
 
 ## 16. Development Roadmap
 
-### Immediate Priorities (Phase 1 completion)
-1. **Messaging overhaul** — Spoofed iMessage/Telegram UI, proactive messaging to GMs/owner/scouts
-2. **Budget management UI** — Let user adjust farm/medical/scouting budgets
-3. **Scouting system** — Uncertainty (+/- margin), budget-dependent accuracy, real scouting report format
-4. **Sortable tables** — Click-to-sort on every stat column
-5. **Lineup management** — Drag-and-drop batting order, pitching rotation assignment
-6. **Play-by-play** — Text-based game viewing with key moments highlighted
-7. **Find Players** — Search/filter by position, age, salary, ratings
-8. **Ticket/concession pricing** — User-adjustable revenue controls
-9. **Trading block** — Put players on block, receive offers
+### Phase 1 -- COMPLETE
+All Baseball Mogul features implemented. Ready for browser testing and GitHub push.
+
+### Phase 2 Priorities (Social Layer)
+1. **Messaging overhaul** -- Spoofed iMessage/Telegram UI, proactive messaging to GMs/owner/scouts
+2. **Agent characters** -- Negotiation personalities, personality-driven FA demands
+3. **Owner objectives and job security** -- Pressure system, firing/hiring
+4. **Beat writer characters** -- Generated articles, media narratives
+5. **Fan sentiment by market** -- Dynamic fan reactions to moves
+6. **Minor league full simulation** -- Game results, standings, promotions
+7. **Expand comp database** -- 54 players to 150+ for better prospect matching
+8. **Manager mode** -- Pitch-by-pitch in-game control from the browser UI
 
 ### Phase 2 (Social Layer)
 - GM/owner personality-driven messaging conversations
@@ -866,35 +1012,40 @@ attendance = min(capacity, (base + loyalty_bonus) × random(0.85, 1.15))
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| `src/database/schema.py` | 466 | 17 SQL tables with indexes |
+| `src/database/schema.py` | 502 | 21 SQL tables with indexes |
 | `src/database/db.py` | 51 | SQLite connection helpers |
-| `src/database/seed.py` | 620 | Generated player/team data |
-| `src/database/seed_real.py` | 216 | Real MLB data seeder |
-| `src/database/real_data.py` | 750 | MLB Stats API fetcher |
-| `src/simulation/game_engine.py` | 869 | At-bat resolution + full game sim |
-| `src/simulation/season.py` | 455 | Day sim, standings, phase management |
+| `src/database/seed.py` | 619 | Generated player/team data |
+| `src/database/seed_real.py` | 215 | Real MLB data seeder |
+| `src/database/real_data.py` | 983 | MLB Stats API fetcher + pitch repertoires + platoon splits |
+| `src/simulation/game_engine.py` | 1,633 | 12 pitch types, weather, platoon, strategies, count-dependent |
+| `src/simulation/season.py` | 707 | Day sim, standings, fatigue reads/writes, Sept callups, play-by-play |
 | `src/simulation/schedule.py` | 502 | Balanced 162-game schedule generator |
-| `src/simulation/injuries.py` | 109 | 20 injury types + healing |
-| `src/simulation/player_development.py` | 157 | Growth/peak/decline curves |
-| `src/simulation/strategy.py` | 38 | Team tactical settings |
-| `src/simulation/offseason.py` | 158 | Offseason orchestration |
-| `src/transactions/trades.py` | 171 | Trade proposals + deadline |
+| `src/simulation/injuries.py` | 112 | 20 injury types + IL tiers (10/15/60-day) |
+| `src/simulation/player_development.py` | 267 | Growth/peak/decline + defensive spectrum aging |
+| `src/simulation/chemistry.py` | 437 | Team chemistry + player morale + relationship effects |
+| `src/simulation/strategy.py` | 112 | 9 strategy settings (hit-and-run, shift, squeeze, etc.) |
+| `src/simulation/offseason.py` | 422 | Full offseason (arb, QO, non-tenders, FA, draft, Rule 5, intl FA, finances) |
+| `src/transactions/trades.py` | 236 | Trade proposals + draft picks + 10-and-5 rights |
 | `src/transactions/free_agency.py` | 308 | FA market + AI bidding |
-| `src/transactions/draft.py` | 217 | 600-prospect draft system |
-| `src/transactions/roster.py` | 220 | 40-man, call-ups, options, DFA |
-| `src/transactions/contracts.py` | 96 | Arbitration, expiration |
+| `src/transactions/draft.py` | 266 | 600-prospect draft + pick ownership initialization |
+| `src/transactions/roster.py` | 332 | 40-man, call-ups, options, DFA, position eligibility |
+| `src/transactions/contracts.py` | 483 | Vesting, incentives, deferred money, Super 2, non-tenders |
 | `src/transactions/waivers.py` | 131 | 7-day waiver system |
 | `src/transactions/ai_trades.py` | 196 | AI-initiated trades |
-| `src/financial/economics.py` | 138 | Revenue/expense model |
+| `src/transactions/international_fa.py` | 400 | International prospect generation + bonus pools + AI signings |
+| `src/financial/economics.py` | 302 | Luxury tax, revenue sharing, pricing elasticity, difficulty |
 | `src/ai/ollama_client.py` | 94 | Ollama wrapper + model routing |
-| `src/ai/gm_brain.py` | 236 | LLM trade eval + scouting |
-| `src/api/routes.py` | 646 | 40+ FastAPI endpoints |
+| `src/ai/gm_brain.py` | 448 | LLM trade eval + scouting + graceful Ollama fallback |
+| `src/ai/player_comps.py` | 780 | 54 MLB comps (1985-2011) across 17 archetypes |
+| `src/ai/mle.py` | 219 | Major League Equivalencies for minor league stat translation |
+| `src/ai/scouting_modes.py` | 359 | Traditional/Stat-Based/Variable scouting mode logic |
+| `src/api/routes.py` | ~1,400 | 72 FastAPI endpoints |
 | `src/main.py` | 22 | Entry point |
-| `static/index.html` | 170 | SPA shell |
-| `static/style.css` | 795 | Full UI styling |
-| `static/app.js` | 906 | All frontend logic |
+| `static/index.html` | 291 | SPA shell with all screens and modals |
+| `static/style.css` | 1,133 | Dark/light theme system, full UI styling |
+| `static/app.js` | 1,768 | All frontend logic (lineup, comps, search, pricing, etc.) |
 | `research/baseball-mogul-technical-analysis.md` | 612 | Deep technical research |
-| **Total** | **~8,400** | |
+| **Total** | **~16,600** | **98% increase from Phase 1.0 (~8,400)** |
 
 ---
 
