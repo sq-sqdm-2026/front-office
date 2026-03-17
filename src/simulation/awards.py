@@ -475,5 +475,339 @@ def get_season_awards(season: int, db_path=None) -> dict:
             result[key].append(award_dict)
         elif award_type == "gold_glove":
             result["gold_glove"][league][award["position"]] = award_dict
+        elif award_type == "silver_slugger":
+            result.setdefault("silver_slugger", {"AL": {}, "NL": {}})
+            result["silver_slugger"][league][award.get("position", "DH")] = award_dict
+        elif award_type == "hof":
+            result.setdefault("hof_inductees", [])
+            result["hof_inductees"].append(award_dict)
 
     return result
+
+
+# ============================================================
+# WAR CALCULATION
+# ============================================================
+def calculate_war(player_id: int, season: int, db_path=None) -> float:
+    """Calculate Wins Above Replacement for a player-season.
+
+    Uses a simplified WAR formula:
+    Batters: (batting_runs + baserunning_runs + fielding_runs + positional_adj) / runs_per_win
+    Pitchers: (league_avg_runs - pitcher_runs) * IP/9 / runs_per_win
+    """
+    RUNS_PER_WIN = 10.0  # Roughly 10 runs = 1 win
+
+    player = query("SELECT position FROM players WHERE id=?", (player_id,), db_path=db_path)
+    if not player:
+        return 0.0
+
+    is_pitcher = player[0]["position"] in ("SP", "RP")
+
+    if is_pitcher:
+        stats = query("""
+            SELECT ip_outs, er, so, bb, hr_allowed, games, games_started
+            FROM pitching_stats WHERE player_id=? AND season=? AND level='MLB'
+        """, (player_id, season), db_path=db_path)
+        if not stats or stats[0]["ip_outs"] < 9:
+            return 0.0
+        s = stats[0]
+        ip = s["ip_outs"] / 3.0
+        era = 9.0 * s["er"] / ip if ip > 0 else 9.0
+        # League average ERA ~4.20, replacement level ~5.50
+        replacement_era = 5.50
+        runs_saved = (replacement_era - era) / 9.0 * ip
+        fip = ((13 * s["hr_allowed"] + 3 * s["bb"] - 2 * s["so"]) / ip + 3.20) if ip > 0 else 5.0
+        fip_runs_saved = (5.50 - fip) / 9.0 * ip
+        # Blend ERA-based and FIP-based
+        war = (runs_saved * 0.5 + fip_runs_saved * 0.5) / RUNS_PER_WIN
+        return round(max(-2.0, war), 1)
+    else:
+        stats = query("""
+            SELECT ab, hits, doubles, triples, hr, bb, hbp, sb, cs, sf, so, runs, rbi, games
+            FROM batting_stats WHERE player_id=? AND season=? AND level='MLB'
+        """, (player_id, season), db_path=db_path)
+        if not stats or stats[0]["ab"] < 50:
+            return 0.0
+        s = stats[0]
+        pa = s["ab"] + s["bb"] + s["hbp"] + s["sf"]
+        if pa == 0:
+            return 0.0
+
+        # Batting runs: wOBA-based
+        singles = s["hits"] - s["doubles"] - s["triples"] - s["hr"]
+        woba = (0.69 * s["bb"] + 0.72 * s["hbp"] + 0.88 * singles +
+                1.27 * s["doubles"] + 1.62 * s["triples"] + 2.10 * s["hr"]) / pa
+        league_woba = 0.320  # approximate
+        woba_scale = 1.15
+        batting_runs = (woba - league_woba) / woba_scale * pa
+
+        # Baserunning runs (simplified: SB/CS)
+        br_runs = s["sb"] * 0.2 - s["cs"] * 0.45
+
+        # Positional adjustment per 162 games
+        pos_adj_map = {
+            "C": 12.5, "SS": 7.5, "2B": 3.0, "3B": 2.5, "CF": 2.5,
+            "LF": -7.5, "RF": -7.5, "1B": -12.5, "DH": -17.5
+        }
+        pos = player[0]["position"]
+        games_frac = s["games"] / 162.0
+        pos_adj = pos_adj_map.get(pos, 0) * games_frac
+
+        # Fielding (simplified: use fielding_rating as proxy)
+        p_data = query("SELECT fielding_rating FROM players WHERE id=?",
+                        (player_id,), db_path=db_path)
+        fld_rating = p_data[0]["fielding_rating"] if p_data else 50
+        fielding_runs = (fld_rating - 50) * 0.15 * games_frac
+
+        # Replacement level: ~20 runs per 600 PA
+        replacement_runs = 20.0 * (pa / 600.0)
+
+        war = (batting_runs + br_runs + fielding_runs + pos_adj + replacement_runs) / RUNS_PER_WIN
+        return round(max(-2.0, war), 1)
+
+
+def calculate_all_war(season: int, db_path=None) -> list:
+    """Calculate WAR for all players with enough playing time in a season."""
+    # Batters
+    batters = query("""
+        SELECT DISTINCT bs.player_id FROM batting_stats bs
+        WHERE bs.season=? AND bs.level='MLB' AND bs.ab >= 50
+    """, (season,), db_path=db_path)
+
+    # Pitchers
+    pitchers = query("""
+        SELECT DISTINCT ps.player_id FROM pitching_stats ps
+        WHERE ps.season=? AND ps.level='MLB' AND ps.ip_outs >= 30
+    """, (season,), db_path=db_path)
+
+    results = []
+    seen = set()
+    for row in (batters or []) + (pitchers or []):
+        pid = row["player_id"]
+        if pid in seen:
+            continue
+        seen.add(pid)
+        war = calculate_war(pid, season, db_path)
+        p = query("SELECT first_name, last_name, position, team_id FROM players WHERE id=?",
+                   (pid,), db_path=db_path)
+        if p:
+            results.append({
+                "player_id": pid,
+                "name": f"{p[0]['first_name']} {p[0]['last_name']}",
+                "position": p[0]["position"],
+                "team_id": p[0]["team_id"],
+                "war": war,
+            })
+
+    results.sort(key=lambda x: x["war"], reverse=True)
+    return results
+
+
+# ============================================================
+# SILVER SLUGGER AWARDS
+# ============================================================
+def _calculate_silver_sluggers(league: str, season: int, db_path=None) -> dict:
+    """Silver Slugger: best offensive player at each position."""
+    positions = ["C", "1B", "2B", "3B", "SS", "LF", "CF", "RF", "DH"]
+    winners = {}
+
+    for pos in positions:
+        batters = query("""
+            SELECT bs.player_id, p.first_name, p.last_name, p.team_id, t.abbreviation,
+                   bs.ab, bs.hits, bs.hr, bs.rbi, bs.bb, bs.doubles, bs.triples,
+                   CASE WHEN bs.ab > 0 THEN 1.0 * bs.hits / bs.ab END as avg
+            FROM batting_stats bs
+            JOIN players p ON p.id = bs.player_id
+            JOIN teams t ON t.id = p.team_id
+            WHERE p.position=? AND t.league=? AND bs.season=? AND bs.level='MLB' AND bs.ab >= 100
+            ORDER BY (bs.hr * 4 + bs.rbi * 1.5 + bs.hits * 1 + bs.doubles * 1.5 + bs.bb * 0.5) DESC
+            LIMIT 1
+        """, (pos, league, season), db_path=db_path)
+
+        if batters:
+            b = batters[0]
+            winners[pos] = {
+                "player_id": b["player_id"],
+                "name": f"{b['first_name']} {b['last_name']}",
+                "team": b["abbreviation"],
+                "hr": b["hr"],
+                "rbi": b["rbi"],
+                "avg": round(b["avg"], 3) if b["avg"] else 0,
+            }
+
+    return winners
+
+
+# ============================================================
+# HALL OF FAME VOTING
+# ============================================================
+def _check_hall_of_fame_eligibility(season: int, db_path=None) -> list:
+    """Find retired players eligible for Hall of Fame and vote them in."""
+    # Players must be retired for 5+ seasons and have 10+ MLB seasons
+    eligible = query("""
+        SELECT p.id, p.first_name, p.last_name, p.position, p.age,
+               COUNT(DISTINCT bs.season) as batting_seasons,
+               SUM(bs.hits) as career_hits, SUM(bs.hr) as career_hr, SUM(bs.rbi) as career_rbi
+        FROM players p
+        LEFT JOIN batting_stats bs ON bs.player_id = p.id AND bs.level='MLB'
+        WHERE p.roster_status = 'retired'
+        GROUP BY p.id
+        HAVING batting_seasons >= 10
+    """, db_path=db_path)
+
+    pitcher_eligible = query("""
+        SELECT p.id, p.first_name, p.last_name, p.position,
+               COUNT(DISTINCT ps.season) as pitching_seasons,
+               SUM(ps.wins) as career_wins, SUM(ps.so) as career_so,
+               SUM(ps.saves) as career_saves, SUM(ps.ip_outs) as career_ip_outs,
+               CASE WHEN SUM(ps.ip_outs) > 0
+                    THEN ROUND(9.0 * SUM(ps.er) / (SUM(ps.ip_outs) / 3.0), 2) END as career_era
+        FROM players p
+        LEFT JOIN pitching_stats ps ON ps.player_id = p.id AND ps.level='MLB'
+        WHERE p.roster_status = 'retired' AND p.position IN ('SP', 'RP')
+        GROUP BY p.id
+        HAVING pitching_seasons >= 10
+    """, db_path=db_path)
+
+    inductees = []
+
+    # Batter HOF threshold: 2000+ hits, or 400+ HR, or exceptional career
+    for p in (eligible or []):
+        score = 0
+        if (p["career_hits"] or 0) >= 3000:
+            score += 50
+        elif (p["career_hits"] or 0) >= 2500:
+            score += 30
+        elif (p["career_hits"] or 0) >= 2000:
+            score += 15
+        if (p["career_hr"] or 0) >= 500:
+            score += 40
+        elif (p["career_hr"] or 0) >= 400:
+            score += 25
+        elif (p["career_hr"] or 0) >= 300:
+            score += 10
+        if (p["career_rbi"] or 0) >= 1500:
+            score += 15
+
+        if score >= 40:  # Strong HOF case
+            inductees.append({
+                "player_id": p["id"],
+                "name": f"{p['first_name']} {p['last_name']}",
+                "position": p["position"],
+                "career_hits": p["career_hits"],
+                "career_hr": p["career_hr"],
+                "vote_pct": min(99.9, 50 + score),
+            })
+
+    # Pitcher HOF threshold: 250+ wins, or 3000+ K, or exceptional ERA
+    for p in (pitcher_eligible or []):
+        score = 0
+        if (p["career_wins"] or 0) >= 300:
+            score += 50
+        elif (p["career_wins"] or 0) >= 250:
+            score += 30
+        elif (p["career_wins"] or 0) >= 200:
+            score += 15
+        if (p["career_so"] or 0) >= 3000:
+            score += 30
+        elif (p["career_so"] or 0) >= 2500:
+            score += 15
+        if p["career_era"] and p["career_era"] <= 3.00:
+            score += 20
+        if (p["career_saves"] or 0) >= 400:
+            score += 30
+
+        if score >= 40:
+            inductees.append({
+                "player_id": p["id"],
+                "name": f"{p['first_name']} {p['last_name']}",
+                "position": p["position"],
+                "career_wins": p["career_wins"],
+                "career_so": p["career_so"],
+                "vote_pct": min(99.9, 50 + score),
+            })
+
+    return inductees
+
+
+# ============================================================
+# ALL-STAR GAME
+# ============================================================
+def simulate_all_star_game(season: int, db_path=None) -> dict:
+    """Select All-Star rosters and simulate the game."""
+    from .game_engine import simulate_game, BatterStats, PitcherStats, ParkFactors
+
+    al_batters = []
+    nl_batters = []
+
+    # Select top player at each position per league
+    for league, roster in [("AL", al_batters), ("NL", nl_batters)]:
+        for pos in ["C", "1B", "2B", "3B", "SS", "LF", "CF", "RF", "DH"]:
+            best = query("""
+                SELECT p.*, bs.hits, bs.hr, bs.rbi, bs.ab,
+                       CASE WHEN bs.ab > 0 THEN 1.0 * bs.hits / bs.ab END as avg
+                FROM players p
+                JOIN batting_stats bs ON bs.player_id = p.id
+                JOIN teams t ON t.id = p.team_id
+                WHERE p.position=? AND t.league=? AND bs.season=?
+                AND bs.level='MLB' AND bs.ab >= 100
+                ORDER BY (bs.hr * 3 + bs.rbi * 1.5 + bs.hits + bs.bb * 0.5) DESC
+                LIMIT 1
+            """, (pos, league, season), db_path=db_path)
+            if best:
+                b = best[0]
+                roster.append(BatterStats(
+                    player_id=b["id"],
+                    name=f"{b['first_name']} {b['last_name']}",
+                    position=b["position"],
+                    batting_order=len(roster) + 1,
+                    bats=b["bats"],
+                    contact=b["contact_rating"],
+                    power=b["power_rating"],
+                    speed=b["speed_rating"],
+                    clutch=b["clutch"],
+                    fielding=b["fielding_rating"],
+                    eye=b.get("eye_rating", 50),
+                ))
+
+    # Select pitchers (top 3 starters + 3 relievers per league)
+    al_pitchers = []
+    nl_pitchers = []
+    for league, pitcher_roster in [("AL", al_pitchers), ("NL", nl_pitchers)]:
+        for role, limit in [("SP", 3), ("RP", 3)]:
+            best_p = query("""
+                SELECT p.* FROM players p
+                JOIN pitching_stats ps ON ps.player_id = p.id
+                JOIN teams t ON t.id = p.team_id
+                WHERE p.position=? AND t.league=? AND ps.season=?
+                AND ps.level='MLB' AND ps.ip_outs >= 30
+                ORDER BY (p.stuff_rating * 2 + p.control_rating * 1.5) DESC
+                LIMIT ?
+            """, (role, league, season, limit), db_path=db_path)
+            for p in (best_p or []):
+                pitcher_roster.append(PitcherStats(
+                    player_id=p["id"],
+                    name=f"{p['first_name']} {p['last_name']}",
+                    throws=p["throws"],
+                    role="starter" if role == "SP" else "reliever",
+                    stuff=p["stuff_rating"],
+                    control=p["control_rating"],
+                    stamina=p["stamina_rating"],
+                    clutch=p["clutch"],
+                ))
+
+    if len(al_batters) < 9 or len(nl_batters) < 9:
+        return {"error": "Not enough qualified players for All-Star game"}
+
+    park = ParkFactors()  # neutral park
+    result = simulate_game(al_batters, nl_batters, al_pitchers, nl_pitchers, park)
+
+    return {
+        "al_score": result["away_score"],
+        "nl_score": result["home_score"],
+        "al_roster": [{"name": b.name, "position": b.position} for b in al_batters],
+        "nl_roster": [{"name": b.name, "position": b.position} for b in nl_batters],
+        "al_pitchers": [{"name": p.name, "role": p.role} for p in al_pitchers],
+        "nl_pitchers": [{"name": p.name, "role": p.role} for p in nl_pitchers],
+        "innings": result.get("innings_away", []),
+    }

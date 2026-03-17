@@ -51,7 +51,9 @@ function toggleTheme() {
 function updateThemeIcon() {
   const theme = document.documentElement.getAttribute('data-theme');
   const btn = document.querySelector('.theme-toggle');
-  if (btn) btn.textContent = theme === 'dark' ? '☀' : '🌙';
+  if (btn) btn.textContent = theme === 'dark' ? '\u2600' : '\uD83C\uDF19';
+  const sidebarBtn = document.getElementById('sidebar-theme-btn');
+  if (sidebarBtn) sidebarBtn.textContent = theme === 'dark' ? '\u2600' : '\u263E';
 }
 
 // ============================================================
@@ -268,11 +270,22 @@ async function loadState() {
     document.getElementById('hdr-date').textContent = fmtDate(STATE.currentDate);
     document.getElementById('hdr-phase').textContent = STATE.phase.replace('_', ' ');
 
+    // Update sidebar elements
+    const sidebarTeam = document.getElementById('sidebar-team-name');
+    if (sidebarTeam) sidebarTeam.textContent = `${STATE.teamCity} ${STATE.teamName}`;
+    const sidebarPhase = document.getElementById('sidebar-phase');
+    if (sidebarPhase) sidebarPhase.textContent = STATE.phase.replace('_', ' ');
+
     const standings = await api('/standings');
     if (standings) {
       for (const teams of Object.values(standings)) {
         const us = teams.find(x => x.team_id === STATE.userTeamId);
-        if (us) { document.getElementById('hdr-record').textContent = `${us.wins}-${us.losses}`; break; }
+        if (us) {
+          document.getElementById('hdr-record').textContent = `${us.wins}-${us.losses}`;
+          const sidebarRecord = document.getElementById('sidebar-record');
+          if (sidebarRecord) sidebarRecord.textContent = `${us.wins}-${us.losses}`;
+          break;
+        }
       }
     }
   }
@@ -342,13 +355,29 @@ function closeGlobalSearch() {
 // ============================================================
 // NAVIGATION
 // ============================================================
+const PAGE_TITLES = {
+  calendar: 'Dashboard', roster: 'Roster', transactions: 'Transactions',
+  lineup: 'Lineup', depthchart: 'Depth Chart', standings: 'Standings',
+  schedule: 'Schedule', playoffs: 'Playoffs', finances: 'Finances',
+  trades: 'Trade Center', draft: 'Draft', freeagents: 'Free Agents',
+  findplayers: 'Find Players', leaders: 'Leaders', messages: 'Messages',
+  gameday: 'Game Day',
+};
+
 function showScreen(name) {
   document.querySelectorAll('.content-screen').forEach(s => s.classList.remove('active'));
+  // Update both old nav-btn and new sidebar nav-item
   document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(b => b.classList.remove('active'));
   const screen = document.getElementById('s-' + name);
   if (screen) screen.classList.add('active');
   const btn = document.querySelector(`.nav-btn[data-s="${name}"]`);
   if (btn) btn.classList.add('active');
+  const navItem = document.querySelector(`.nav-item[data-s="${name}"]`);
+  if (navItem) navItem.classList.add('active');
+  // Update page title in top bar
+  const titleEl = document.getElementById('page-title');
+  if (titleEl) titleEl.textContent = PAGE_TITLES[name] || name;
   const loaders = {
     calendar: loadCalendar, roster: loadRoster, transactions: loadTransactions, lineup: loadLineup, depthchart: loadDepthChart, standings: loadStandings,
     schedule: loadSchedule, playoffs: loadPlayoffs, finances: loadFinances, trades: loadTrades, draft: loadDraft,
@@ -362,8 +391,13 @@ function showScreen(name) {
 // SIM CONTROLS
 // ============================================================
 async function simDays(n) {
-  const btns = document.querySelectorAll('.btn-sim');
-  btns.forEach(b => { b.disabled = true; b.textContent = '...'; });
+  // Disable both old and new sim buttons
+  const oldBtns = document.querySelectorAll('.btn-sim');
+  const dayBtn = document.getElementById('sim-day-btn');
+  const weekBtn = document.getElementById('sim-week-btn');
+  oldBtns.forEach(b => { b.disabled = true; b.textContent = '...'; });
+  if (dayBtn) { dayBtn.disabled = true; dayBtn.textContent = 'Simulating...'; }
+  if (weekBtn) { weekBtn.disabled = true; }
   const r = await post('/sim/advance', { days: n });
   await loadState();
   const ticker = document.getElementById('ticker');
@@ -374,7 +408,9 @@ async function simDays(n) {
   STATE.calYear = d.getFullYear();
   const active = document.querySelector('.content-screen.active');
   if (active) showScreen(active.id.replace('s-', ''));
-  btns.forEach((b, i) => { b.disabled = false; b.textContent = i === 0 ? '▶ Day' : '▶▶ Week'; });
+  oldBtns.forEach((b, i) => { b.disabled = false; b.textContent = i === 0 ? '\u25B6 Day' : '\u25B6\u25B6 Week'; });
+  if (dayBtn) { dayBtn.disabled = false; dayBtn.textContent = '\u25B6 Sim Day'; }
+  if (weekBtn) { weekBtn.disabled = false; weekBtn.textContent = '\u25B6\u25B6 Week'; }
 }
 
 // ============================================================
@@ -416,12 +452,64 @@ async function loadCalendar() {
   const firstDay = new Date(y, m, 1).getDay();
   const daysInMonth = new Date(y, m + 1, 0).getDate();
 
+  // Compute dashboard stats
+  const allPlayed = (games || []).filter(g => g.is_played);
+  let wins = 0, losses = 0;
+  allPlayed.forEach(g => {
+    const isHome = g.home_team_id === STATE.userTeamId;
+    const myScore = isHome ? g.home_score : g.away_score;
+    const theirScore = isHome ? g.away_score : g.home_score;
+    if (myScore > theirScore) wins++; else losses++;
+  });
+
+  // Last 10 streak
+  const last10 = allPlayed.slice(-10);
+  let l10w = 0, l10l = 0;
+  last10.forEach(g => {
+    const isHome = g.home_team_id === STATE.userTeamId;
+    const myScore = isHome ? g.home_score : g.away_score;
+    const theirScore = isHome ? g.away_score : g.home_score;
+    if (myScore > theirScore) l10w++; else l10l++;
+  });
+
+  // Next game
+  const upcoming = (games || []).filter(g => !g.is_played);
+  let nextGameHtml = '<span style="color:var(--text-tertiary)">Off day</span>';
+  if (upcoming.length) {
+    const ng = upcoming[0];
+    const isHome = ng.home_team_id === STATE.userTeamId;
+    const opp = isHome ? ng.away_abbr : ng.home_abbr;
+    nextGameHtml = `${isHome ? 'vs' : '@'} <strong>${opp}</strong>`;
+  }
+
   let calHtml = `
+    <div class="dashboard-grid" style="grid-column: 1 / -1;">
+      <div class="dash-stat-card">
+        <div class="dash-stat-label">Record</div>
+        <div class="dash-stat-value">${wins}-${losses}</div>
+        <div class="dash-stat-sub">${wins + losses > 0 ? (wins / (wins + losses) * 100).toFixed(1) + '% win rate' : 'Season not started'}</div>
+      </div>
+      <div class="dash-stat-card">
+        <div class="dash-stat-label">Last 10</div>
+        <div class="dash-stat-value">${l10w}-${l10l}</div>
+        <div class="dash-stat-sub">${last10.length > 0 ? (l10w >= 7 ? 'Hot streak' : l10w >= 5 ? 'Solid' : l10w >= 3 ? 'Cold stretch' : 'Struggling') : 'No games yet'}</div>
+      </div>
+      <div class="dash-stat-card">
+        <div class="dash-stat-label">Next Game</div>
+        <div class="dash-stat-value" style="font-size: 20px;">${nextGameHtml}</div>
+        <div class="dash-stat-sub">${upcoming.length ? upcoming[0].game_date : ''}</div>
+      </div>
+      <div class="dash-stat-card">
+        <div class="dash-stat-label">Season</div>
+        <div class="dash-stat-value" style="font-size: 20px;">${STATE.season}</div>
+        <div class="dash-stat-sub" style="text-transform: capitalize;">${STATE.phase.replace('_', ' ')}</div>
+      </div>
+    </div>
     <div class="cal-header">
       <div class="cal-nav">
-        <button onclick="navMonth(-1)">◀</button>
+        <button onclick="navMonth(-1)">\u25C0</button>
         <span class="cal-month-label">${monthNames[m]} ${y}</span>
-        <button onclick="navMonth(1)">▶</button>
+        <button onclick="navMonth(1)">\u25B6</button>
       </div>
       <div>
         <button class="btn btn-sm" onclick="navToday()">Today</button>
@@ -1482,6 +1570,11 @@ async function showPlayer(pid) {
       <div class="player-contract">
         <div class="player-salary">${p.annual_salary ? fmt$(p.annual_salary) + '/yr' : 'Pre-Arb'}</div>
         <div class="player-contract-detail">${p.years_remaining ? p.years_remaining + ' yr remaining' : ''}</div>
+        <div style="font-size:10px;margin-top:2px;color:var(--text-dim)">${
+          p.service_years < 3 ? '<span style="color:var(--blue)">Pre-Arbitration</span>' :
+          p.service_years < 6 ? '<span style="color:var(--orange)">Arb-Eligible (Yr ' + Math.min(Math.floor(p.service_years) - 2, 4) + ')</span>' :
+          '<span style="color:var(--green)">FA-Eligible</span>'
+        } | ${(p.service_years || 0).toFixed(1)} service yrs</div>
         ${p.no_trade_clause ? '<div style="color:var(--red);font-size:10px">NO-TRADE CLAUSE</div>' : ''}
         <button class="btn btn-sm" style="margin-top: 6px;" onclick="compareWithPlayer(${p.id})">Compare</button>
       </div>
@@ -1494,6 +1587,9 @@ async function showPlayer(pid) {
     </div>
     <div class="modal-body">
       <div id="player-tab-overview">
+        ${p.is_injured ? `<div style="background:var(--red);color:white;padding:8px 12px;border-radius:4px;margin-bottom:12px;font-size:12px">
+          <strong>INJURED</strong> - ${p.injury_type || 'Unknown injury'} (${p.injury_days_remaining || '?'} days remaining)
+        </div>` : ''}
         <div class="section-title">${isPit ? 'Pitching' : 'Hitting'} Grades</div>
         <div class="grades-row">${gradesHtml}</div>
         <div class="section-title" style="margin-top:12px">Personality</div>
@@ -1956,7 +2052,7 @@ async function submitContractExtension(pid) {
   } else {
     resultDiv.innerHTML = `
       <div style="color:var(--red);font-weight:700;margin-bottom:8px">✗ REJECTED</div>
-      <div style="font-size:12px;color:var(--text)">${r.reason}</div>
+      <div style="font-size:12px;color:var(--text)">${r.reason || 'Player is not interested in an extension at this time.'}</div>
     `;
   }
 }
@@ -2591,6 +2687,7 @@ async function loadFinances() {
       <div class="fin-line"><span>Scouting</span><span>${fmt$(fin.scouting_expenses)}</span></div>
       <div class="fin-line"><span>Stadium Ops</span><span>${fmt$(fin.stadium_expenses)}</span></div>
       <div class="fin-line"><span>Owner Dividends</span><span>${fmt$(fin.owner_dividends)}</span></div>
+      ${fin.luxury_tax > 0 ? `<div class="fin-line" style="color:var(--red)"><span>Luxury Tax (CBT)</span><span>${fmt$(fin.luxury_tax)}</span></div>` : ''}
       <div class="fin-line total"><span>Total Expenses</span><span class="negative">${fmt$(fin.total_expenses)}</span></div>
     </div>
     <div class="card"><h3>Bottom Line</h3>
@@ -2598,6 +2695,13 @@ async function loadFinances() {
       <div class="fin-line"><span>Cash on Hand</span><span>${fmt$(team?.cash)}</span></div>
       <div class="fin-line"><span>Franchise Value</span><span>${fmt$(team?.franchise_value)}</span></div>
       <div class="fin-line"><span>Avg Attendance</span><span>${(fin.attendance_avg || 0).toLocaleString()}</span></div>
+      <div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border)">
+        <div style="font-size:9px;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:4px">Luxury Tax Thresholds</div>
+        <div class="fin-line" style="font-size:11px"><span>1st Threshold (20%)</span><span>$237M</span></div>
+        <div class="fin-line" style="font-size:11px"><span>2nd Threshold (32%)</span><span>$257M</span></div>
+        <div class="fin-line" style="font-size:11px"><span>3rd Threshold (50%+)</span><span>$277M</span></div>
+        <div class="fin-line" style="font-size:11px;font-weight:700"><span>Your Payroll</span><span class="${fin.payroll > 237000000 ? 'negative' : ''}">${fmt$(fin.payroll)}</span></div>
+      </div>
     </div>
     <div class="card"><h3>Budget Allocations</h3>
       <div class="slider-group">
@@ -3091,7 +3195,7 @@ async function submitFANegotiation(pid) {
   } else {
     resultDiv.innerHTML = `
       <div style="color:var(--red);font-weight:700;margin-bottom:8px">✗ REJECTED</div>
-      <div style="font-size:12px;color:var(--text)">${result.reason}</div>
+      <div style="font-size:12px;color:var(--text)">${result.reason || 'Player declined the offer.'}</div>
     `;
   }
 }
@@ -3150,11 +3254,13 @@ async function loadMessages() {
   const msgs = await api('/messages?unread_only=false') || [];
   const unreadCount = msgs.filter(m => !m.is_read).length;
   const badge = document.getElementById('msg-count');
+  const sidebarBadge = document.getElementById('sidebar-msg-count');
   if (unreadCount > 0) {
-    badge.textContent = unreadCount;
-    badge.style.display = 'block';
+    if (badge) { badge.textContent = unreadCount; badge.style.display = 'block'; }
+    if (sidebarBadge) { sidebarBadge.textContent = unreadCount; sidebarBadge.style.display = 'flex'; }
   } else {
-    badge.style.display = 'none';
+    if (badge) badge.style.display = 'none';
+    if (sidebarBadge) sidebarBadge.style.display = 'none';
   }
   if (!msgs.length) {
     el.innerHTML = '<div class="empty-state">Inbox empty. Messages from GMs, your owner, agents, and scouts will appear here.</div>';
@@ -4204,6 +4310,73 @@ async function loadTransactions() {
   renderTransactionsList('active');
   renderTransactionsList('minors');
   renderTransactionsList('injured');
+
+  // Load waiver wire and league transactions
+  loadWaiverWire();
+  loadLeagueTransactions();
+}
+
+async function loadWaiverWire() {
+  const el = document.getElementById('trans-waivers-list');
+  if (!el) return;
+  const waivers = await api('/waivers');
+  if (!waivers || !waivers.length) {
+    el.innerHTML = '<div class="empty-state" style="padding:12px;font-size:11px">No players currently on waivers</div>';
+    return;
+  }
+  let html = '';
+  for (const w of waivers) {
+    const isPitch = w.position === 'SP' || w.position === 'RP';
+    const mainRating = isPitch ? w.stuff_rating : w.contact_rating;
+    html += `
+      <div style="padding:8px 12px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center">
+        <div style="flex:1">
+          <div style="font-weight:500;cursor:pointer" onclick="showPlayer(${w.player_id})">${w.first_name} ${w.last_name}</div>
+          <div style="font-size:10px;color:var(--text-dim)">${w.position} | Age ${w.age} | from ${w.original_team_abbr || '?'} | Expires: ${w.expiry_date}</div>
+        </div>
+        <div style="text-align:right;margin-right:12px;color:var(--accent);font-weight:600">${mainRating}</div>
+        <button class="btn btn-primary btn-sm" style="padding:2px 8px;font-size:10px" onclick="claimWaiverPlayer(${w.player_id}, '${w.first_name} ${w.last_name}')">Claim</button>
+      </div>`;
+  }
+  el.innerHTML = html;
+}
+
+async function claimWaiverPlayer(pid, name) {
+  const r = await post('/waivers/claim/' + pid, {});
+  if (r?.success) {
+    showToast('Claimed ' + name + ' off waivers!', 'success');
+    loadTransactions();
+  } else {
+    showToast(r?.detail || 'Failed to claim player', 'error');
+  }
+}
+
+async function loadLeagueTransactions() {
+  const el = document.getElementById('trans-league-log');
+  if (!el) return;
+  const txns = await api('/transactions/recent?limit=50');
+  if (!txns || !txns.length) {
+    el.innerHTML = '<div class="empty-state" style="padding:12px;font-size:11px">No transactions yet</div>';
+    return;
+  }
+  let html = '';
+  for (const t of txns) {
+    const typeLabel = {
+      'trade': 'Trade', 'waiver_claim': 'Waiver Claim', 'free_agent_signing': 'FA Signing',
+      'dfa': 'DFA', 'release': 'Released', 'call_up': 'Call Up', 'option': 'Optioned',
+      'contract_extension': 'Extension', 'il_placement': 'Placed on IL', 'il_activation': 'Activated from IL'
+    }[t.transaction_type] || t.transaction_type;
+    const playerName = t.first_name ? `${t.first_name} ${t.last_name}` : '';
+    html += `
+      <div style="padding:6px 12px;border-bottom:1px solid var(--border);font-size:11px;display:flex;gap:8px;align-items:center">
+        <span style="color:var(--text-muted);min-width:70px">${t.transaction_date || ''}</span>
+        <span style="background:var(--bg-2);padding:1px 6px;border-radius:2px;font-size:10px;min-width:80px;text-align:center">${typeLabel}</span>
+        <span style="color:var(--accent);min-width:30px">${t.abbreviation || ''}</span>
+        <span style="font-weight:500">${playerName}</span>
+        <span style="color:var(--text-dim);flex:1">${t.details || ''}</span>
+      </div>`;
+  }
+  el.innerHTML = html;
 }
 
 function filterTransactionsList(tab) {
@@ -4267,6 +4440,7 @@ function renderTransactionsList(tab, search = '', pos = '') {
           <div style="font-weight: 500; cursor: pointer;" onclick="showPlayer(${p.id})">${p.first_name} ${p.last_name}</div>
           <div style="font-size: 10px; color: var(--text-dim);">
             <span>${p.position}</span> | <span>Age ${p.age}</span> | <span>${salary}</span>
+            ${p.is_injured ? ` | <span style="color:var(--red)">${p.injury_type || 'Injured'} (${p.injury_days_remaining || '?'}d)</span>` : ''}
           </div>
         </div>
         <div style="text-align: right; margin-right: 12px; color: var(--accent); font-weight: 600;">${mainRating}</div>

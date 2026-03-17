@@ -123,6 +123,66 @@ def seed_real_database(db_path: str = None):
                 VALUES (?, ?, ?, ?, ?, ?, ?)
             """, (player_id, team_id, contract_years, contract_years,
                   salary, ntc, "2026-01-15"))
+
+            # Insert historical stats if available
+            if p.get("hitting_stats"):
+                stats = p["hitting_stats"]
+                conn.execute("""
+                    INSERT OR IGNORE INTO batting_stats (
+                        player_id, team_id, season, level, games, pa, ab, runs, hits,
+                        doubles, triples, hr, rbi, bb, so, sb, cs, hbp, sf)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    player_id, team_id, 2024, "MLB",
+                    int(stats.get("gamesPlayed", 0)),
+                    int(stats.get("plateAppearances", 0)),
+                    int(stats.get("atBats", 0)),
+                    int(stats.get("runs", 0)),
+                    int(stats.get("hits", 0)),
+                    int(stats.get("doubles", 0)),
+                    int(stats.get("triples", 0)),
+                    int(stats.get("homeRuns", 0)),
+                    int(stats.get("rbi", 0)),
+                    int(stats.get("baseOnBalls", 0)),
+                    int(stats.get("strikeOuts", 0)),
+                    int(stats.get("stolenBases", 0)),
+                    int(stats.get("caughtStealing", 0)),
+                    int(stats.get("hitByPitch", 0)),
+                    int(stats.get("sacFlies", 0))
+                ))
+
+            if p.get("pitching_stats"):
+                stats = p["pitching_stats"]
+                ip_str = stats.get("inningsPitched", "0.0")
+                try:
+                    ip_parts = str(ip_str).split(".")
+                    ip_outs = int(ip_parts[0]) * 3 + (int(ip_parts[1]) if len(ip_parts) > 1 else 0)
+                except (ValueError, IndexError):
+                    ip_outs = 0
+
+                conn.execute("""
+                    INSERT OR IGNORE INTO pitching_stats (
+                        player_id, team_id, season, level, games, games_started, wins,
+                        losses, saves, ip_outs, hits_allowed, runs_allowed, er, bb, so,
+                        hr_allowed, pitches)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    player_id, team_id, 2024, "MLB",
+                    int(stats.get("gamesPitched", 0)),
+                    int(stats.get("gamesStarted", 0)),
+                    int(stats.get("wins", 0)),
+                    int(stats.get("losses", 0)),
+                    int(stats.get("saves", 0)),
+                    ip_outs,
+                    int(stats.get("hits", 0)),
+                    int(stats.get("runs", 0)),
+                    int(stats.get("earnedRuns", 0)),
+                    int(stats.get("baseOnBalls", 0)),
+                    int(stats.get("strikeOuts", 0)),
+                    int(stats.get("homeRuns", 0)),
+                    int(stats.get("pitches", 0))
+                ))
+
             total_players += 1
 
         print(f"  {abbr}: {len(roster)} real players loaded")

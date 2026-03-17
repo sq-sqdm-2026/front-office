@@ -26,6 +26,40 @@ def init_db(db_path: str = None):
     conn.close()
 
 
+def migrate_add_eye_rating(db_path: str = None):
+    """Add eye_rating, eye_potential, fielding stats, and postseason flags."""
+    conn = get_connection(db_path)
+    cursor = conn.cursor()
+    cursor.execute("PRAGMA table_info(players)")
+    columns = {row[1] for row in cursor.fetchall()}
+
+    if "eye_rating" not in columns:
+        conn.execute("ALTER TABLE players ADD COLUMN eye_rating INTEGER NOT NULL DEFAULT 50")
+    if "eye_potential" not in columns:
+        conn.execute("ALTER TABLE players ADD COLUMN eye_potential INTEGER NOT NULL DEFAULT 50")
+
+    # Add fielding columns to batting_lines
+    cursor.execute("PRAGMA table_info(batting_lines)")
+    bl_columns = {row[1] for row in cursor.fetchall()}
+    for col in ["putouts", "assists", "errors"]:
+        if col not in bl_columns:
+            conn.execute(f"ALTER TABLE batting_lines ADD COLUMN {col} INTEGER NOT NULL DEFAULT 0")
+
+    # Add postseason flag to stats tables
+    cursor.execute("PRAGMA table_info(batting_stats)")
+    bs_columns = {row[1] for row in cursor.fetchall()}
+    if "is_postseason" not in bs_columns:
+        conn.execute("ALTER TABLE batting_stats ADD COLUMN is_postseason INTEGER NOT NULL DEFAULT 0")
+
+    cursor.execute("PRAGMA table_info(pitching_stats)")
+    ps_columns = {row[1] for row in cursor.fetchall()}
+    if "is_postseason" not in ps_columns:
+        conn.execute("ALTER TABLE pitching_stats ADD COLUMN is_postseason INTEGER NOT NULL DEFAULT 0")
+
+    conn.commit()
+    conn.close()
+
+
 def migrate_add_broadcast_stadium_columns(db_path: str = None):
     """Add broadcast deal and stadium upgrade columns if they don't exist."""
     conn = get_connection(db_path)

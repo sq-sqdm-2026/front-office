@@ -1154,6 +1154,57 @@ async def calculate_awards(season: int):
 
 
 # ============================================================
+# WAR LEADERBOARD
+# ============================================================
+@app.get("/war/{season}")
+async def war_leaderboard(season: int, limit: int = 50):
+    """WAR leaderboard for a season."""
+    from ..simulation.awards import calculate_all_war
+    results = calculate_all_war(season)
+    return results[:limit]
+
+
+@app.get("/war/{season}/{player_id}")
+async def player_war(season: int, player_id: int):
+    """WAR for a specific player in a season."""
+    from ..simulation.awards import calculate_war
+    war = calculate_war(player_id, season)
+    return {"player_id": player_id, "season": season, "war": war}
+
+
+# ============================================================
+# ALL-STAR GAME
+# ============================================================
+@app.post("/all-star/{season}")
+async def run_all_star_game(season: int):
+    """Simulate the All-Star Game for a season."""
+    from ..simulation.awards import simulate_all_star_game
+    return simulate_all_star_game(season)
+
+
+# ============================================================
+# SILVER SLUGGER & HALL OF FAME
+# ============================================================
+@app.get("/silver-slugger/{season}")
+async def silver_slugger(season: int):
+    """Silver Slugger awards for a season."""
+    from ..simulation.awards import _calculate_silver_sluggers
+    al = _calculate_silver_sluggers("AL", season)
+    nl = _calculate_silver_sluggers("NL", season)
+    return {"AL": al, "NL": nl}
+
+
+@app.get("/hall-of-fame")
+async def hall_of_fame():
+    """Check Hall of Fame eligible players and their voting."""
+    from ..simulation.awards import _check_hall_of_fame_eligibility
+    state = query("SELECT season FROM game_state WHERE id=1")
+    season = state[0]["season"] if state else 2026
+    inductees = _check_hall_of_fame_eligibility(season)
+    return {"inductees": inductees, "season": season}
+
+
+# ============================================================
 # ROSTER MANAGEMENT
 # ============================================================
 @app.get("/roster/{team_id}")
@@ -1202,6 +1253,109 @@ async def roster_dfa(player_id: int):
 async def roster_release(player_id: int):
     """Release a player from the team (becomes a free agent)."""
     return release_player(player_id)
+
+
+@app.get("/waivers")
+async def get_waiver_wire():
+    """Get all players currently on waivers (pending claims)."""
+    players = query("""
+        SELECT wc.*, p.first_name, p.last_name, p.position, p.age,
+               p.contact_rating, p.power_rating, p.speed_rating,
+               p.fielding_rating, p.arm_rating, p.stuff_rating,
+               p.control_rating, p.stamina_rating,
+               t.abbreviation as original_team_abbr, t.city, t.name as team_name
+        FROM waiver_claims wc
+        JOIN players p ON p.id = wc.player_id
+        LEFT JOIN teams t ON t.id = wc.original_team_id
+        WHERE wc.status = 'pending'
+        ORDER BY wc.expiry_date ASC
+    """)
+    return players or []
+
+
+@app.post("/waivers/claim/{player_id}")
+async def claim_waiver_player(player_id: int):
+    """User claims a player off waivers."""
+    state = query("SELECT user_team_id FROM game_state WHERE id=1")
+    if not state:
+        raise HTTPException(400, "No game state")
+    user_team_id = state[0]["user_team_id"]
+
+    # Check waiver exists
+    waiver = query("""
+        SELECT wc.id, p.first_name, p.last_name
+        FROM waiver_claims wc
+        JOIN players p ON p.id = wc.player_id
+        WHERE wc.player_id = ? AND wc.status = 'pending'
+    """, (player_id,))
+    if not waiver:
+        raise HTTPException(404, "Player not on waivers")
+
+    # Check 40-man space
+    forty_man = query("""
+        SELECT COUNT(*) as c FROM players
+        WHERE team_id=? AND roster_status IN ('active', 'injured_dl')
+    """, (user_team_id,))
+    if forty_man and forty_man[0]["c"] >= 40:
+        raise HTTPException(400, "40-man roster is full. Make room first.")
+
+    # Claim the player
+    execute("UPDATE players SET team_id=?, roster_status='active', on_forty_man=1 WHERE id=?",
+            (user_team_id, player_id))
+    execute("UPDATE waiver_claims SET status='claimed', claiming_team_id=? WHERE player_id=? AND status='pending'",
+            (user_team_id, player_id))
+    execute("UPDATE contracts SET team_id=? WHERE player_id=?",
+            (user_team_id, player_id))
+
+    name = f"{waiver[0]['first_name']} {waiver[0]['last_name']}"
+    import json as _json
+    execute("""
+        INSERT INTO transactions (transaction_date, transaction_type, details_json, team1_id, player_ids)
+        VALUES (date('now'), 'waiver_claim', ?, ?, ?)
+    """, (_json.dumps({"action": "claimed", "player_name": name}), user_team_id, str(player_id)))
+
+    return {"success": True, "name": name, "message": f"Claimed {name} off waivers"}
+
+
+@app.get("/transactions/recent")
+async def get_recent_transactions(limit: int = Query(default=50, le=200)):
+    """Get recent league-wide transactions."""
+    import json as _json
+    txns = query("""
+        SELECT tr.id, tr.transaction_date, tr.transaction_type, tr.details_json,
+               tr.team1_id, tr.team2_id, tr.player_ids,
+               t.abbreviation, t.city, t.name as team_name
+        FROM transactions tr
+        LEFT JOIN teams t ON t.id = tr.team1_id
+        ORDER BY tr.transaction_date DESC, tr.id DESC
+        LIMIT ?
+    """, (limit,))
+
+    # Enrich with player names
+    results = []
+    for t in (txns or []):
+        entry = dict(t)
+        # Try to get player name from player_ids
+        player_ids_str = t.get("player_ids", "")
+        if player_ids_str:
+            try:
+                pid = int(player_ids_str.split(",")[0].strip())
+                p = query("SELECT first_name, last_name, position FROM players WHERE id=?", (pid,))
+                if p:
+                    entry["first_name"] = p[0]["first_name"]
+                    entry["last_name"] = p[0]["last_name"]
+                    entry["position"] = p[0]["position"]
+            except (ValueError, IndexError):
+                pass
+        # Extract details from JSON
+        try:
+            details = _json.loads(t.get("details_json", "{}"))
+            entry["details"] = details.get("player_name", details.get("action", ""))
+        except (ValueError, TypeError):
+            entry["details"] = ""
+        results.append(entry)
+
+    return results
 
 
 class ILRequest(BaseModel):
@@ -1604,6 +1758,165 @@ async def pitching_leaders(stat: str = "wins", limit: int = 10):
 
 
 # ============================================================
+# ALL-TIME CAREER LEADERS
+# ============================================================
+@app.get("/leaders/all-time/batting")
+async def alltime_batting_leaders(stat: str = "hr", limit: int = 25):
+    """Career all-time batting leaders across all seasons."""
+    valid_stats = {"hr", "hits", "rbi", "sb", "bb", "doubles", "triples", "runs", "ab"}
+    if stat not in valid_stats:
+        raise HTTPException(400, f"Invalid stat. Use: {valid_stats}")
+    return query(f"""
+        SELECT p.id as player_id, p.first_name, p.last_name, p.position,
+               t.abbreviation as current_team,
+               COUNT(DISTINCT bs.season) as seasons,
+               SUM(bs.games) as games,
+               SUM(bs.ab) as ab, SUM(bs.hits) as hits, SUM(bs.hr) as hr,
+               SUM(bs.rbi) as rbi, SUM(bs.bb) as bb, SUM(bs.sb) as sb,
+               SUM(bs.runs) as runs, SUM(bs.doubles) as doubles, SUM(bs.triples) as triples,
+               CASE WHEN SUM(bs.ab) > 0
+                    THEN ROUND(1.0 * SUM(bs.hits) / SUM(bs.ab), 3) END as avg
+        FROM batting_stats bs
+        JOIN players p ON p.id = bs.player_id
+        LEFT JOIN teams t ON t.id = p.team_id
+        WHERE bs.level = 'MLB'
+        GROUP BY bs.player_id
+        HAVING SUM(bs.ab) >= 50
+        ORDER BY SUM(bs.{stat}) DESC
+        LIMIT ?
+    """, (limit,))
+
+
+@app.get("/leaders/all-time/pitching")
+async def alltime_pitching_leaders(stat: str = "wins", limit: int = 25):
+    """Career all-time pitching leaders across all seasons."""
+    valid_stats = {"wins", "so", "saves", "er", "ip_outs", "games", "games_started"}
+    if stat not in valid_stats:
+        raise HTTPException(400, f"Invalid stat. Use: {valid_stats}")
+    return query(f"""
+        SELECT p.id as player_id, p.first_name, p.last_name, p.position,
+               t.abbreviation as current_team,
+               COUNT(DISTINCT ps.season) as seasons,
+               SUM(ps.games) as games, SUM(ps.games_started) as games_started,
+               SUM(ps.wins) as wins, SUM(ps.losses) as losses,
+               SUM(ps.saves) as saves, SUM(ps.ip_outs) as ip_outs,
+               SUM(ps.er) as er, SUM(ps.so) as so, SUM(ps.bb) as bb,
+               SUM(ps.hr_allowed) as hr_allowed,
+               CASE WHEN SUM(ps.ip_outs) > 0
+                    THEN ROUND(9.0 * SUM(ps.er) / (SUM(ps.ip_outs) / 3.0), 2) END as era
+        FROM pitching_stats ps
+        JOIN players p ON p.id = ps.player_id
+        LEFT JOIN teams t ON t.id = p.team_id
+        WHERE ps.level = 'MLB'
+        GROUP BY ps.player_id
+        HAVING SUM(ps.ip_outs) >= 9
+        ORDER BY SUM(ps.{stat}) DESC
+        LIMIT ?
+    """, (limit,))
+
+
+# ============================================================
+# HEAD-TO-HEAD PLAYER COMPARISON
+# ============================================================
+@app.get("/players/compare/{player1_id}/{player2_id}")
+async def compare_players(player1_id: int, player2_id: int):
+    """Side-by-side comparison of two players."""
+    p1 = query("SELECT * FROM players WHERE id=?", (player1_id,))
+    p2 = query("SELECT * FROM players WHERE id=?", (player2_id,))
+    if not p1 or not p2:
+        raise HTTPException(404, "Player not found")
+
+    p1_batting = query("""
+        SELECT season, games, ab, hits, hr, rbi, bb, so, sb,
+               CASE WHEN ab > 0 THEN ROUND(1.0 * hits / ab, 3) END as avg
+        FROM batting_stats WHERE player_id=? AND level='MLB'
+        ORDER BY season DESC
+    """, (player1_id,))
+    p2_batting = query("""
+        SELECT season, games, ab, hits, hr, rbi, bb, so, sb,
+               CASE WHEN ab > 0 THEN ROUND(1.0 * hits / ab, 3) END as avg
+        FROM batting_stats WHERE player_id=? AND level='MLB'
+        ORDER BY season DESC
+    """, (player2_id,))
+    p1_pitching = query("""
+        SELECT season, games, wins, losses, saves, ip_outs, er, so, bb,
+               CASE WHEN ip_outs > 0 THEN ROUND(9.0 * er / (ip_outs / 3.0), 2) END as era
+        FROM pitching_stats WHERE player_id=? AND level='MLB'
+        ORDER BY season DESC
+    """, (player1_id,))
+    p2_pitching = query("""
+        SELECT season, games, wins, losses, saves, ip_outs, er, so, bb,
+               CASE WHEN ip_outs > 0 THEN ROUND(9.0 * er / (ip_outs / 3.0), 2) END as era
+        FROM pitching_stats WHERE player_id=? AND level='MLB'
+        ORDER BY season DESC
+    """, (player2_id,))
+
+    return {
+        "player1": dict(p1[0]),
+        "player2": dict(p2[0]),
+        "player1_batting": p1_batting,
+        "player2_batting": p2_batting,
+        "player1_pitching": p1_pitching,
+        "player2_pitching": p2_pitching,
+    }
+
+
+# ============================================================
+# PROSPECT RANKINGS
+# ============================================================
+@app.get("/prospects/rankings")
+async def prospect_rankings(team_id: int = None, limit: int = 50):
+    """Organization or league-wide prospect rankings with OFP."""
+    team_filter = "AND p.team_id = ?" if team_id else ""
+    params = (team_id, limit) if team_id else (limit,)
+
+    prospects = query(f"""
+        SELECT p.id, p.first_name, p.last_name, p.age, p.position,
+               p.team_id, t.abbreviation,
+               p.contact_rating, p.power_rating, p.speed_rating,
+               p.fielding_rating, p.arm_rating, p.eye_rating,
+               p.contact_potential, p.power_potential, p.speed_potential,
+               p.fielding_potential, p.arm_potential,
+               p.stuff_rating, p.control_rating, p.stamina_rating,
+               p.stuff_potential, p.control_potential, p.stamina_potential,
+               p.roster_status, p.development_rate
+        FROM players p
+        LEFT JOIN teams t ON t.id = p.team_id
+        WHERE p.roster_status IN ('minors_aaa', 'minors_aa', 'minors_low')
+        AND p.age <= 25
+        {team_filter}
+        ORDER BY (
+            CASE WHEN p.position IN ('SP', 'RP')
+                THEN (p.stuff_potential + p.control_potential + p.stamina_potential) * 0.6
+                     + (p.stuff_rating + p.control_rating + p.stamina_rating) * 0.4
+                ELSE (p.contact_potential + p.power_potential + p.speed_potential + p.fielding_potential) * 0.5
+                     + (p.contact_rating + p.power_rating + p.speed_rating + p.fielding_rating) * 0.3
+                     + p.arm_potential * 0.2
+            END
+        ) DESC
+        LIMIT ?
+    """, params)
+
+    # Calculate OFP (Overall Future Potential) on 20-80 scale for each prospect
+    results = []
+    for i, pr in enumerate(prospects or []):
+        p = dict(pr)
+        if p["position"] in ("SP", "RP"):
+            ofp = int((p["stuff_potential"] + p["control_potential"] + p["stamina_potential"]) / 3 * 0.7
+                      + (p["stuff_rating"] + p["control_rating"] + p["stamina_rating"]) / 3 * 0.3)
+        else:
+            ofp = int((p["contact_potential"] + p["power_potential"] + p["speed_potential"]
+                        + p["fielding_potential"] + p["arm_potential"]) / 5 * 0.6
+                       + (p["contact_rating"] + p["power_rating"] + p["speed_rating"]
+                          + p["fielding_rating"] + p["arm_rating"]) / 5 * 0.4)
+        p["ofp"] = min(80, max(20, ofp))
+        p["rank"] = i + 1
+        results.append(p)
+
+    return results
+
+
+# ============================================================
 # COMPREHENSIVE STATS ENDPOINTS (for stat browser)
 # ============================================================
 @app.get("/stats/all-batters")
@@ -1962,7 +2275,8 @@ async def auto_generate_lineup(team_id: int):
                 role = "MR"  # Middle relief
 
             bullpen.append({
-                "player_id": p["id"],
+                "id": p["id"],
+                "name": f"{p['first_name']} {p['last_name']}",
                 "role": role
             })
 

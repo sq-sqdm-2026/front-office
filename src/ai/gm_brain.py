@@ -216,12 +216,91 @@ def _algorithmic_trade_eval(gm: dict, offered: list, requested: list,
 
     accept = ratio >= threshold
 
+    # Generate structured counter-offer if rejected
+    counter_offer = None
+    if not accept and team_id:
+        counter_offer = _generate_counter_offer(
+            offered, requested, offered_value, requested_value,
+            threshold, team_id, gm, needs, _player_value, db_path
+        )
+
     return {
         "accept": accept,
         "reasoning": f"Algorithmic: value ratio {ratio:.2f} vs threshold {threshold:.2f}",
-        "counter_offer": None if accept else "Need more value coming back",
-        "emotional_reaction": "neutral",
-        "message_to_gm": "Deal." if accept else "We'd need more to make this work.",
+        "counter_offer": counter_offer,
+        "emotional_reaction": "neutral" if accept else ("frustrated" if ratio < 0.5 else "interested"),
+        "message_to_gm": "Deal." if accept else (
+            counter_offer.get("message", "We'd need more to make this work.") if counter_offer
+            else "We'd need more to make this work."
+        ),
+    }
+
+
+def _generate_counter_offer(offered, requested, offered_val, requested_val,
+                             threshold, team_id, gm, needs, value_fn, db_path=None):
+    """Generate a structured counter-offer with specific player suggestions."""
+    value_gap = requested_val * threshold - offered_val
+
+    if value_gap <= 0:
+        return None
+
+    # Look for players on the proposing team that could fill the gap
+    # (proposing team = the team that sent the offer, their players are in 'offered')
+    proposing_team_id = offered[0]["team_id"] if offered else None
+    if not proposing_team_id:
+        return {"message": "We'd need significantly more value coming back.", "players_wanted": []}
+
+    # Find available players from proposing team we'd want
+    available = query("""
+        SELECT p.*, c.annual_salary, c.years_remaining FROM players p
+        LEFT JOIN contracts c ON c.player_id = p.id
+        WHERE p.team_id=? AND p.roster_status='active'
+        AND p.id NOT IN ({})
+        ORDER BY p.contact_rating + p.power_rating + p.stuff_rating DESC
+        LIMIT 20
+    """.format(",".join(str(p["id"]) for p in offered) if offered else "0"),
+        (proposing_team_id,), db_path=db_path)
+
+    if not available:
+        return {"message": "We'd need more talent to make this work.", "players_wanted": []}
+
+    # Score each available player and find ones that fill the value gap
+    candidates = []
+    for p in available:
+        p_val = value_fn(dict(p), for_team=True)
+        pos = p["position"]
+        # Prefer players at positions of need
+        need_bonus = 1.0
+        if needs and pos in needs and needs[pos] < 150:
+            need_bonus = 1.3
+        candidates.append((p, p_val * need_bonus, p_val))
+
+    candidates.sort(key=lambda x: x[1], reverse=True)
+
+    # Pick the minimum set of players to close the value gap
+    players_wanted = []
+    remaining_gap = value_gap
+    for player, adj_val, raw_val in candidates:
+        if remaining_gap <= 0:
+            break
+        players_wanted.append({
+            "id": player["id"],
+            "name": f"{player['first_name']} {player['last_name']}",
+            "position": player["position"],
+            "age": player["age"],
+        })
+        remaining_gap -= raw_val
+        if len(players_wanted) >= 2:
+            break  # Don't ask for too many extra players
+
+    if not players_wanted:
+        return {"message": "The value isn't there for us.", "players_wanted": []}
+
+    names = " and ".join(p["name"] for p in players_wanted)
+    return {
+        "message": f"We like the framework, but we'd need you to include {names} to make this work.",
+        "players_wanted": players_wanted,
+        "value_gap": round(value_gap, 1),
     }
 
 

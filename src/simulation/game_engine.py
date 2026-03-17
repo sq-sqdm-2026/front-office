@@ -29,7 +29,9 @@ class BatterStats:
     speed: int
     clutch: int
     fielding: int = 50
+    eye: int = 50  # plate discipline: ability to draw walks & lay off pitches
     morale: int = 50  # 0-100 morale rating
+    is_home: bool = False  # home field advantage flag
     platoon_split_json: str = None  # JSON with platoon splits
     # Game accumulators
     ab: int = 0
@@ -47,6 +49,8 @@ class BatterStats:
     sf: int = 0
     errors_committed: int = 0
     reached_on_error: int = 0
+    putouts: int = 0
+    assists: int = 0
 
 
 @dataclass
@@ -302,15 +306,29 @@ def _platoon_adjustment(batter_bats: str, pitcher_throws: str,
 def _fatigue_modifier(pitcher: PitcherStats) -> float:
     """Pitcher effectiveness degrades with pitch count.
     Stamina rating determines when fatigue kicks in.
+    Uses a two-phase curve: gradual decline then steep drop-off.
     """
-    # Stamina 80 = 120+ pitches before major fatigue
-    # Stamina 30 = 60 pitches before major fatigue
-    fatigue_threshold = 40 + pitcher.stamina * 1.0  # 60-120 range
-    if pitcher.pitches < fatigue_threshold:
+    # Phase 1 threshold: mild fatigue begins
+    # Stamina 80 = ~105 pitches, Stamina 30 = ~60 pitches
+    mild_threshold = 40 + pitcher.stamina * 0.8  # 64-104 range
+
+    # Phase 2 threshold: severe fatigue (arm is dead)
+    # Stamina 80 = ~120 pitches, Stamina 30 = ~75 pitches
+    severe_threshold = mild_threshold + 15
+
+    if pitcher.pitches < mild_threshold:
         return 1.0
-    overage = pitcher.pitches - fatigue_threshold
-    # Each pitch over threshold degrades by ~1%
-    return max(0.6, 1.0 - overage * 0.01)
+
+    overage = pitcher.pitches - mild_threshold
+
+    if pitcher.pitches < severe_threshold:
+        # Phase 1: gradual decline, ~1.5% per pitch over threshold
+        return max(0.75, 1.0 - overage * 0.015)
+    else:
+        # Phase 2: steep drop-off, ~3% per pitch - pitcher is gassed
+        severe_overage = pitcher.pitches - severe_threshold
+        base = max(0.75, 1.0 - (severe_threshold - mild_threshold) * 0.015)
+        return max(0.40, base - severe_overage * 0.03)
 
 
 def _pitch_characteristics(pitch_type: str) -> dict:
@@ -472,11 +490,18 @@ def _resolve_pitch(batter: BatterStats, pitcher: PitcherStats, count: list,
     pitch_type = _select_pitch_type(pitcher, count, is_strikeout_sit)
     pitch_mod = _pitch_type_modifier(pitch_type, count[0] > count[1])
 
+    # Home field advantage: slight boost to home batters (~2% contact/power, better eye)
+    home_boost = 1.02 if batter.is_home else 1.0
+
     # Control rating with chemistry modifier determines zone accuracy
     adjusted_control = _apply_chemistry_control_modifier(pitcher.control, pitcher_team_chemistry)
     pitcher_control_mod = _rating_to_prob(int(adjusted_control * fatigue), 1.0)
     pitcher_stuff_mod = _rating_to_prob(int(pitcher.stuff * fatigue), 1.0) * pitch_mod["strikeout"]
-    batter_contact_mod = _rating_to_prob(batter.contact, 1.0) * contact_mod
+    batter_contact_mod = _rating_to_prob(batter.contact, 1.0) * contact_mod * home_boost
+
+    # Eye/plate discipline factor: affects zone recognition and chase rate
+    # High eye = better at recognizing balls (more walks, fewer Ks on bad pitches)
+    eye_mod = _rating_to_prob(batter.eye, 1.0)  # 0.6-1.4 range
 
     # Strike zone probability (affected by control and count)
     in_zone_prob = 0.65 * pitcher_control_mod
@@ -490,15 +515,19 @@ def _resolve_pitch(batter: BatterStats, pitcher: PitcherStats, count: list,
         return "ball"
 
     # Pitch in zone: swing or take?
-    swing_prob = 0.55 + (50 - batter.contact) * 0.005 + count[1] * 0.1
+    # High-eye batters are more selective (lower swing rate on marginal pitches)
+    # Low-eye batters chase more aggressively
+    eye_swing_adj = (50 - batter.eye) * 0.003  # high eye = less swing, low = more swing
+    swing_prob = 0.55 + (50 - batter.contact) * 0.005 + count[1] * 0.1 + eye_swing_adj
     swing_prob = max(0.3, min(0.9, swing_prob))
 
     if random.random() > swing_prob:
         return "called_strike"
 
     # Batter swings
-    # Swinging strike vs contact
-    contact_prob = _rating_to_prob(batter.contact, 0.65) * pitch_mod["contact"]
+    # Swinging strike vs contact (eye helps avoid chasing bad pitches that sneak into zone)
+    eye_contact_bonus = 1.0 + (batter.eye - 50) * 0.002  # high eye = slightly better contact
+    contact_prob = _rating_to_prob(batter.contact, 0.65) * pitch_mod["contact"] * eye_contact_bonus
     contact_prob = max(0.2, min(0.95, contact_prob))
 
     if random.random() > contact_prob:
@@ -526,9 +555,12 @@ def _resolve_batted_ball(batter: BatterStats, pitcher: PitcherStats, park: ParkF
     # Apply morale modifiers to contact and power ratings
     morale_contact_mult, morale_power_mult = _apply_morale_modifier(batter)
 
+    # Home field advantage: slight power and contact boost for home batters
+    home_boost = 1.02 if batter.is_home else 1.0
+
     pitcher_stuff_mod = _rating_to_prob(int(pitcher.stuff * fatigue), 1.0)
-    batter_contact_mod = _rating_to_prob(batter.contact * morale_contact_mult, 1.0) * contact_mod
-    batter_power_mod = _rating_to_prob(batter.power * morale_power_mult, 1.0) * power_mod
+    batter_contact_mod = _rating_to_prob(batter.contact * morale_contact_mult, 1.0) * contact_mod * home_boost
+    batter_power_mod = _rating_to_prob(batter.power * morale_power_mult, 1.0) * power_mod * home_boost
     batter_speed_mod = _rating_to_prob(batter.speed, 1.0)
 
     # Base probabilities
@@ -781,6 +813,36 @@ def _calculate_error_probability(fielding_rating: int, is_ground_ball: bool = Tr
         base_rate = 0.005 * (2.0 - fielding_rating / 50)
 
     return max(0.0, min(0.15, base_rate))
+
+
+def _assign_fielding_credit(outcome: str, defensive_lineup: list, outs_recorded: int = 1):
+    """Assign putouts and assists to fielders based on the play type."""
+    if not defensive_lineup or outs_recorded < 1:
+        return
+    # Pick a fielder based on play type
+    infielders = [b for b in defensive_lineup if b.position in ("SS", "2B", "3B", "1B", "C")]
+    outfielders = [b for b in defensive_lineup if b.position in ("LF", "CF", "RF")]
+    first_basemen = [b for b in defensive_lineup if b.position == "1B"]
+
+    if outcome == "GO":
+        # Ground out: infielder gets assist, 1B gets putout
+        if infielders:
+            random.choice(infielders).assists += 1
+        if first_basemen:
+            first_basemen[0].putouts += 1
+        elif infielders:
+            infielders[0].putouts += 1
+    elif outcome == "FO":
+        # Fly out: outfielder gets putout
+        if outfielders:
+            random.choice(outfielders).putouts += 1
+        elif infielders:
+            random.choice(infielders).putouts += 1
+    elif outcome == "SO":
+        # Strikeout: catcher gets putout
+        catchers = [b for b in defensive_lineup if b.position == "C"]
+        if catchers:
+            catchers[0].putouts += 1
 
 
 def _attempt_stolen_base(bases: BaseState, outs: int, lineup: list[BatterStats],
@@ -1041,6 +1103,12 @@ def simulate_game(home_lineup: list[BatterStats], away_lineup: list[BatterStats]
     if away_strategy is None:
         away_strategy = dict(DEFAULT_STRATEGY)
 
+    # Mark home/away batters for home field advantage
+    for b in home_lineup:
+        b.is_home = True
+    for b in away_lineup:
+        b.is_home = False
+
     # Generate or validate weather
     if weather is None:
         weather = _generate_weather(game_month, False)  # is_dome passed separately to weather func
@@ -1070,7 +1138,13 @@ def simulate_game(home_lineup: list[BatterStats], away_lineup: list[BatterStats]
     def _should_pull_pitcher(p: PitcherStats, inning: int, is_starter: bool,
                              score_diff: int, strategy: dict) -> bool:
         """Decide if pitcher should be replaced."""
+        # HARD CEILING - no pitcher should ever exceed these limits
+        STARTER_HARD_CAP = 130   # Absolute max for any starter
+        RELIEVER_HARD_CAP = 55   # Absolute max for any reliever
+
         if is_starter:
+            if p.pitches >= STARTER_HARD_CAP:
+                return True
             stamina_max = 70 + p.stamina * 0.75
             max_pitches = min(strategy.get("pitch_count_limit", 100), stamina_max)
             if p.pitches >= max_pitches:
@@ -1084,6 +1158,8 @@ def simulate_game(home_lineup: list[BatterStats], away_lineup: list[BatterStats]
             if p.pitches > 60 and p.er >= 5:
                 return True
         else:
+            if p.pitches >= RELIEVER_HARD_CAP:
+                return True
             max_pitches = 25 + (p.stamina - 30) * 0.4
             if p.pitches >= max_pitches:
                 return True
@@ -1103,6 +1179,14 @@ def simulate_game(home_lineup: list[BatterStats], away_lineup: list[BatterStats]
             available = [(i, p) for i, p in enumerate(pitchers)
                          if i != current_idx and p.ip_outs < 9]
         if not available:
+            # Emergency: everyone is exhausted. Pick whoever has thrown fewest pitches
+            # (excluding current pitcher only if there IS someone else)
+            emergency = [(i, p) for i, p in enumerate(pitchers) if i != current_idx]
+            if emergency:
+                pick = min(emergency, key=lambda x: x[1].pitches)
+                pick[1].pitch_order = pitch_order
+                return pick
+            # Truly solo pitcher (only 1 on roster) - they have to keep going
             return current_idx, pitchers[current_idx]
 
         closer_idx = len(pitchers) - 1
@@ -1179,6 +1263,16 @@ def simulate_game(home_lineup: list[BatterStats], away_lineup: list[BatterStats]
 
         while outs < 3:
             batter = away_lineup[away_batter_idx % len(away_lineup)]
+
+            # Pinch-hit check: replace weak hitters in high-leverage late-inning spots
+            if _should_pinch_hit(away_lineup, away_batter_idx, inning,
+                                  (away_score + inning_runs) - home_score):
+                # Find best available bench bat (weakest current lineup member replaced)
+                bench = [b for b in away_lineup if b.ab == 0 and b.bb == 0 and b.hbp == 0
+                         and b.player_id != batter.player_id and b.power > batter.power]
+                if bench:
+                    ph = max(bench, key=lambda b: b.contact + b.power)
+                    batter = ph  # Use pinch hitter for this at-bat
 
             # Stolen base attempt
             sb_attempt, sb_success, sb_outs = _attempt_stolen_base(
@@ -1324,6 +1418,7 @@ def simulate_game(home_lineup: list[BatterStats], away_lineup: list[BatterStats]
                         continue
 
                 outs += 1
+                _assign_fielding_credit(outcome, home_lineup)
                 if outcome == "GO" and bases.first and outs < 3:
                     runner_speed = 50
                     for b in away_lineup:
@@ -1334,6 +1429,7 @@ def simulate_game(home_lineup: list[BatterStats], away_lineup: list[BatterStats]
                     if random.random() < dp_chance:
                         outs += 1
                         bases.first = 0
+                        _assign_fielding_credit("GO", home_lineup)  # DP: extra fielding credit
 
             elif outcome == "SF":
                 outs += 1
@@ -1350,6 +1446,7 @@ def simulate_game(home_lineup: list[BatterStats], away_lineup: list[BatterStats]
                 batter.ab += 1
                 batter.so += 1
                 current_home_pitcher.so_pitched += 1
+                _assign_fielding_credit("SO", home_lineup)
 
             elif outcome in ("BB", "HBP"):
                 if outcome == "BB":
@@ -1415,6 +1512,15 @@ def simulate_game(home_lineup: list[BatterStats], away_lineup: list[BatterStats]
 
         while outs < 3:
             batter = home_lineup[home_batter_idx % len(home_lineup)]
+
+            # Pinch-hit check for home team
+            if _should_pinch_hit(home_lineup, home_batter_idx, inning,
+                                  home_score + inning_runs - away_score):
+                bench = [b for b in home_lineup if b.ab == 0 and b.bb == 0 and b.hbp == 0
+                         and b.player_id != batter.player_id and b.power > batter.power]
+                if bench:
+                    ph = max(bench, key=lambda b: b.contact + b.power)
+                    batter = ph
 
             sb_attempt, sb_success, sb_outs = _attempt_stolen_base(
                 bases, outs, home_lineup, current_away_pitcher, home_steal_mult)
@@ -1550,6 +1656,7 @@ def simulate_game(home_lineup: list[BatterStats], away_lineup: list[BatterStats]
                         continue
 
                 outs += 1
+                _assign_fielding_credit(outcome, away_lineup)
                 if outcome == "GO" and bases.first and outs < 3:
                     runner_speed = 50
                     for b in home_lineup:
@@ -1560,6 +1667,7 @@ def simulate_game(home_lineup: list[BatterStats], away_lineup: list[BatterStats]
                     if random.random() < dp_chance:
                         outs += 1
                         bases.first = 0
+                        _assign_fielding_credit("GO", away_lineup)
 
             elif outcome == "SF":
                 outs += 1
@@ -1576,6 +1684,7 @@ def simulate_game(home_lineup: list[BatterStats], away_lineup: list[BatterStats]
                 batter.ab += 1
                 batter.so += 1
                 current_away_pitcher.so_pitched += 1
+                _assign_fielding_credit("SO", away_lineup)
 
             elif outcome in ("BB", "HBP"):
                 if outcome == "BB":

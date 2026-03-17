@@ -53,10 +53,11 @@ if not db_file.exists():
         seed_database()
 else:
     # DB already exists -- just make sure schema is up to date
-    from src.database.db import init_db, migrate_add_broadcast_stadium_columns
+    from src.database.db import init_db, migrate_add_broadcast_stadium_columns, migrate_add_eye_rating
     init_db()
     # Apply any pending migrations
     migrate_add_broadcast_stadium_columns()
+    migrate_add_eye_rating()
 
 # Ensure minimum free agents exist
 try:

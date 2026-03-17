@@ -96,6 +96,7 @@ CREATE TABLE IF NOT EXISTS players (
     speed_rating INTEGER NOT NULL DEFAULT 50,
     fielding_rating INTEGER NOT NULL DEFAULT 50,
     arm_rating INTEGER NOT NULL DEFAULT 50,
+    eye_rating INTEGER NOT NULL DEFAULT 50,  -- plate discipline: walks, chase rate
     -- Pitching ratings (only meaningful for pitchers)
     stuff_rating INTEGER NOT NULL DEFAULT 20,  -- pitch quality/movement
     control_rating INTEGER NOT NULL DEFAULT 20,  -- ability to throw strikes
@@ -106,6 +107,7 @@ CREATE TABLE IF NOT EXISTS players (
     speed_potential INTEGER NOT NULL DEFAULT 50,
     fielding_potential INTEGER NOT NULL DEFAULT 50,
     arm_potential INTEGER NOT NULL DEFAULT 50,
+    eye_potential INTEGER NOT NULL DEFAULT 50,
     stuff_potential INTEGER NOT NULL DEFAULT 20,
     control_potential INTEGER NOT NULL DEFAULT 20,
     stamina_potential INTEGER NOT NULL DEFAULT 20,
@@ -231,6 +233,10 @@ CREATE TABLE IF NOT EXISTS batting_lines (
     cs INTEGER NOT NULL DEFAULT 0,
     hbp INTEGER NOT NULL DEFAULT 0,
     sf INTEGER NOT NULL DEFAULT 0,
+    -- Fielding stats
+    putouts INTEGER NOT NULL DEFAULT 0,
+    assists INTEGER NOT NULL DEFAULT 0,
+    errors INTEGER NOT NULL DEFAULT 0,
     FOREIGN KEY (schedule_id) REFERENCES schedule(id),
     FOREIGN KEY (player_id) REFERENCES players(id),
     FOREIGN KEY (team_id) REFERENCES teams(id)
@@ -284,6 +290,7 @@ CREATE TABLE IF NOT EXISTS batting_stats (
     cs INTEGER NOT NULL DEFAULT 0,
     hbp INTEGER NOT NULL DEFAULT 0,
     sf INTEGER NOT NULL DEFAULT 0,
+    is_postseason INTEGER NOT NULL DEFAULT 0,  -- 0=regular season, 1=playoffs
     UNIQUE(player_id, team_id, season, level),
     FOREIGN KEY (player_id) REFERENCES players(id),
     FOREIGN KEY (team_id) REFERENCES teams(id)
@@ -313,6 +320,7 @@ CREATE TABLE IF NOT EXISTS pitching_stats (
     complete_games INTEGER NOT NULL DEFAULT 0,
     shutouts INTEGER NOT NULL DEFAULT 0,
     quality_starts INTEGER NOT NULL DEFAULT 0,
+    is_postseason INTEGER NOT NULL DEFAULT 0,  -- 0=regular season, 1=playoffs
     UNIQUE(player_id, team_id, season, level),
     FOREIGN KEY (player_id) REFERENCES players(id),
     FOREIGN KEY (team_id) REFERENCES teams(id)

@@ -395,12 +395,32 @@ def _hitting_ratings(stats: dict, position: str, age: int) -> dict:
     arm_base = ARM_BASE.get(position, 45)
     arm = _clamp(arm_base + random.randint(-5, 5))
 
+    # Eye / plate discipline: based on BB rate (BB/PA)
+    # League average BB% ~8.5%, elite ~15%+
+    bb_rate = _safe_float(stats.get("baseOnBalls", 0)) / max(1, pa)
+    if bb_rate >= 0.150:
+        eye = 80
+    elif bb_rate >= 0.120:
+        eye = 70
+    elif bb_rate >= 0.100:
+        eye = 60
+    elif bb_rate >= 0.080:
+        eye = 50
+    elif bb_rate >= 0.060:
+        eye = 40
+    elif bb_rate >= 0.040:
+        eye = 35
+    else:
+        eye = 30
+    eye = _clamp(eye + random.randint(-3, 3))
+
     return {
         "contact_rating": contact,
         "power_rating": power,
         "speed_rating": speed,
         "fielding_rating": fielding,
         "arm_rating": arm,
+        "eye_rating": eye,
     }
 
 
@@ -518,6 +538,7 @@ def _default_hitting_ratings(position: str, age: int) -> dict:
             "speed_rating": _clamp(random.randint(25, 40)),
             "fielding_rating": _clamp(FIELDING_BASE.get(position, 35) + random.randint(-5, 5)),
             "arm_rating": _clamp(ARM_BASE.get(position, 40) + random.randint(-5, 5)),
+            "eye_rating": _clamp(random.randint(20, 30)),
         }
 
     # Position player without stats -- likely young/prospect or injured
@@ -534,6 +555,7 @@ def _default_hitting_ratings(position: str, age: int) -> dict:
         "speed_rating": _clamp(base + random.randint(-5, 5) - max(0, (age - 30) * 3)),
         "fielding_rating": _clamp(FIELDING_BASE.get(position, 45) + random.randint(-8, 8)),
         "arm_rating": _clamp(ARM_BASE.get(position, 45) + random.randint(-8, 8)),
+        "eye_rating": _clamp(base + random.randint(-8, 8)),
     }
 
 
@@ -564,6 +586,20 @@ def _build_player_dict(details: dict, roster_entry: dict) -> dict:
     # If the roster says SP/RP but player detail says something else, prefer roster
     if roster_entry["position"] in ("SP", "RP"):
         position = roster_entry["position"]
+
+    # Detect SP vs RP from pitching stats when position is generic "SP" (from "P" mapping)
+    # or when roster data might be wrong. Use games started vs games pitched ratio.
+    if position in ("SP", "RP") and details.get("pitching_stats"):
+        ps = details["pitching_stats"]
+        gs = _safe_float(ps.get("gamesStarted"), 0)
+        gp = _safe_float(ps.get("gamesPitched", ps.get("gamesPlayed", 0)), 0)
+        if gp > 0:
+            start_ratio = gs / gp
+            if start_ratio < 0.3:
+                position = "RP"
+            elif start_ratio > 0.7:
+                position = "SP"
+            # Between 0.3-0.7: keep whatever was set (swing roles, openers, etc.)
 
     age = details["age"]
     is_pitcher = position in ("SP", "RP")

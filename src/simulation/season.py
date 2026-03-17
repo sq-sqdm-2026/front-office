@@ -89,8 +89,13 @@ def get_standings(season: int = None, db_path: str = None) -> dict:
     return standings
 
 
-def _load_team_lineup(team_id: int, db_path: str = None) -> tuple:
-    """Load a team's active batters and pitchers from the database."""
+def _load_team_lineup(team_id: int, db_path: str = None, opposing_pitcher_throws: str = None) -> tuple:
+    """Load a team's active batters and pitchers from the database.
+
+    Args:
+        opposing_pitcher_throws: 'L' or 'R' for auto-platoon optimization.
+            If provided, lineup is optimized against that handedness.
+    """
     batters_data = query("""
         SELECT p.*, c.annual_salary FROM players p
         LEFT JOIN contracts c ON c.player_id = p.id
@@ -107,12 +112,37 @@ def _load_team_lineup(team_id: int, db_path: str = None) -> tuple:
         ORDER BY p.position ASC, p.stuff_rating + p.control_rating DESC
     """, (team_id,), db_path=db_path)
 
-    # Build batting order (simplified auto-sort)
-    lineup = []
-    sorted_batters = sorted(batters_data,
-        key=lambda b: (b["speed_rating"] * 0.3 + b["contact_rating"] * 0.7),
-        reverse=True)
+    # Auto-platoon: sort batters to favor opposite-hand hitters vs opposing pitcher
+    def _platoon_value(b):
+        base = b["speed_rating"] * 0.3 + b["contact_rating"] * 0.7
+        if opposing_pitcher_throws:
+            bats = b["bats"]
+            # Switch hitters get a small bonus vs anyone
+            if bats == "S":
+                base += 3
+            # Opposite hand gets platoon advantage
+            elif (opposing_pitcher_throws == "L" and bats == "R") or \
+                 (opposing_pitcher_throws == "R" and bats == "L"):
+                base += 5
+            # Same hand gets slight penalty
+            elif (opposing_pitcher_throws == "L" and bats == "L") or \
+                 (opposing_pitcher_throws == "R" and bats == "R"):
+                base -= 3
+            # Factor in platoon split data if available
+            if b.get("platoon_split_json"):
+                try:
+                    splits = json.loads(b["platoon_split_json"])
+                    key = "vs_lhp" if opposing_pitcher_throws == "L" else "vs_rhp"
+                    if key in splits:
+                        base += splits[key].get("contact", 0) * 0.3 + splits[key].get("power", 0) * 0.2
+                except:
+                    pass
+        return base
 
+    sorted_batters = sorted(batters_data, key=_platoon_value, reverse=True)
+
+    # Build batting order
+    lineup = []
     for i, b in enumerate(sorted_batters[:9]):
         lineup.append(BatterStats(
             player_id=b["id"],
@@ -125,6 +155,7 @@ def _load_team_lineup(team_id: int, db_path: str = None) -> tuple:
             speed=b["speed_rating"],
             clutch=b["clutch"],
             fielding=b["fielding_rating"],
+            eye=b.get("eye_rating", 50),
             morale=b["morale"],
         ))
 
@@ -149,6 +180,19 @@ def _load_team_lineup(team_id: int, db_path: str = None) -> tuple:
     pitchers = []
     starters = [p for p in pitchers_data if p["position"] == "SP"]
     relievers = [p for p in pitchers_data if p["position"] == "RP"]
+
+    # EMERGENCY: If team has no RPs (e.g. DB hasn't been reseeded after SP/RP fix),
+    # convert excess SPs into relievers so the team has a functional bullpen.
+    # Keep top 5 SPs as starters, use the rest as emergency relievers.
+    if not relievers and len(starters) > 5:
+        sorted_sp = sorted(starters, key=lambda p: p["stuff_rating"] + p["control_rating"], reverse=True)
+        starters = sorted_sp[:5]
+        relievers = sorted_sp[5:]
+    elif not relievers and len(starters) > 1:
+        # Very few pitchers: keep 1 as starter, rest become relievers
+        sorted_sp = sorted(starters, key=lambda p: p["stuff_rating"] + p["control_rating"], reverse=True)
+        starters = sorted_sp[:1]
+        relievers = sorted_sp[1:]
 
     # Select today's starter using the rotation system (enforces rest days)
     starter_id = _rotate_starter(team_id, db_path)
@@ -558,8 +602,16 @@ def sim_day(game_date: str = None, db_path: str = None) -> list:
         home_id = game["home_team_id"]
         away_id = game["away_team_id"]
 
+        # First pass: load pitchers to determine starter handedness
         home_lineup, home_pitchers = _load_team_lineup(home_id, db_path)
         away_lineup, away_pitchers = _load_team_lineup(away_id, db_path)
+
+        # Auto-platoon: reload lineups optimized against opposing starter's hand
+        home_starter_throws = home_pitchers[0].throws if home_pitchers else "R"
+        away_starter_throws = away_pitchers[0].throws if away_pitchers else "R"
+        away_lineup, _ = _load_team_lineup(away_id, db_path, opposing_pitcher_throws=home_starter_throws)
+        home_lineup, _ = _load_team_lineup(home_id, db_path, opposing_pitcher_throws=away_starter_throws)
+
         park = _get_park_factors(home_id, db_path)
 
         # September callups: expand active roster temporarily
@@ -588,6 +640,7 @@ def sim_day(game_date: str = None, db_path: str = None) -> list:
                         speed=callup["speed_rating"],
                         clutch=callup["clutch"],
                         fielding=callup["fielding_rating"],
+                        eye=callup.get("eye_rating", 50),
                     ))
 
         if not home_lineup or not away_lineup or not home_pitchers or not away_pitchers:
