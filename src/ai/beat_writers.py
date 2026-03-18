@@ -659,3 +659,272 @@ def get_unread_article_count(team_id: int) -> int:
         (team_id,)
     )
     return result[0]["cnt"] if result else 0
+
+
+# ============================================================
+# NATIONAL BEAT WRITER CHARACTERS
+# ============================================================
+
+NATIONAL_WRITERS = [
+    {
+        "name": "Marcus Webb",
+        "outlet": "The Baseball Insider",
+        "personality": "insider",
+        "writing_style": "narrative",
+        "credibility": 85,
+        "access_level": 90,
+        "bias": 0.0,
+        "follower_count": 220000,
+    },
+    {
+        "name": "Dr. Sarah Chen",
+        "outlet": "Diamond Analytics",
+        "personality": "analyst",
+        "writing_style": "stats_heavy",
+        "credibility": 82,
+        "access_level": 60,
+        "bias": 0.0,
+        "follower_count": 180000,
+    },
+    {
+        "name": "Bill 'Buck' Morrison",
+        "outlet": "The Daily Diamond",
+        "personality": "homer",
+        "writing_style": "narrative",
+        "credibility": 72,
+        "access_level": 70,
+        "bias": 0.2,
+        "follower_count": 95000,
+    },
+    {
+        "name": "Jake Ryder",
+        "outlet": "BaseballBuzz.com",
+        "personality": "provocateur",
+        "writing_style": "hot_takes",
+        "credibility": 55,
+        "access_level": 50,
+        "bias": -0.1,
+        "follower_count": 310000,
+    },
+    {
+        "name": "Elena Vasquez",
+        "outlet": "Associated Press Sports",
+        "personality": "skeptic",
+        "writing_style": "longform",
+        "credibility": 90,
+        "access_level": 75,
+        "bias": 0.0,
+        "follower_count": 150000,
+    },
+]
+
+
+def ensure_national_writers_exist(db_path: str = None):
+    """Insert the 5 national beat writers if they don't exist.
+    National writers have team_id=NULL (they cover the whole league)."""
+    for w in NATIONAL_WRITERS:
+        existing = query(
+            "SELECT id FROM beat_writers WHERE name=? AND team_id IS NULL",
+            (w["name"],), db_path=db_path,
+        )
+        if existing:
+            continue
+        execute(
+            """INSERT INTO beat_writers
+               (team_id, name, outlet, personality, writing_style,
+                credibility, access_level, bias, follower_count)
+               VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (w["name"], w["outlet"], w["personality"], w["writing_style"],
+             w["credibility"], w["access_level"], w["bias"], w["follower_count"]),
+            db_path=db_path,
+        )
+
+
+# ============================================================
+# POWER RANKINGS TEMPLATES (national coverage)
+# ============================================================
+
+POWER_RANKINGS_HEADLINES = {
+    "insider": [
+        "Insider Power Rankings: My Sources Say These Teams Are for Real",
+        "Weekly Rankings: What Rival Execs Are Really Thinking",
+    ],
+    "analyst": [
+        "Data-Driven Power Rankings: Week of {game_date}",
+        "Statistically-Adjusted Power Rankings Update",
+    ],
+    "homer": [
+        "Power Rankings: Who's Got the Look of a Winner?",
+        "My Power Rankings — And Yes, I Stand By Them",
+    ],
+    "provocateur": [
+        "CONTROVERSIAL Power Rankings That Will Make You FURIOUS",
+        "My Power Rankings Will BREAK the Internet",
+    ],
+    "skeptic": [
+        "Weekly Power Rankings: {game_date}",
+        "Power Rankings: Separating Contenders From Pretenders",
+    ],
+}
+
+POWER_RANKINGS_INTROS = {
+    "insider": "Here are this week's power rankings, informed by conversations with executives around the league:\n\n",
+    "analyst": "This week's power rankings use a composite of run differential, strength of schedule, and projected ROS performance:\n\n",
+    "homer": "Every week I rank the teams based on who passes the eye test. Here's where things stand:\n\n",
+    "provocateur": "Ready to disagree? Good. Here are my power rankings and I'm NOT apologizing:\n\n",
+    "skeptic": "Here are this week's MLB power rankings based on overall record and recent performance:\n\n",
+}
+
+
+def _generate_power_rankings_article(writer: dict, game_date: str, season: int, db_path: str = None) -> dict:
+    """Generate a power rankings article using current standings."""
+    teams = query("SELECT id, city, name, abbreviation FROM teams", db_path=db_path)
+    if not teams:
+        return None
+
+    team_records = []
+    for t in teams:
+        record = _get_team_record(t["id"])
+        w, l = record["wins"], record["losses"]
+        total = w + l
+        pct = w / total if total > 0 else 0.5
+        team_records.append({"team": t, "w": w, "l": l, "pct": pct})
+
+    team_records.sort(key=lambda x: x["pct"], reverse=True)
+
+    personality = writer.get("personality", "skeptic")
+    headlines = POWER_RANKINGS_HEADLINES.get(personality, POWER_RANKINGS_HEADLINES["skeptic"])
+    headline = random.choice(headlines).format(game_date=game_date)
+    intro = POWER_RANKINGS_INTROS.get(personality, POWER_RANKINGS_INTROS["skeptic"])
+
+    lines = []
+    for i, tr in enumerate(team_records[:10], 1):
+        t = tr["team"]
+        lines.append(f"{i}. {t['city']} {t['name']} ({tr['w']}-{tr['l']})")
+
+    body = intro + "\n".join(lines)
+
+    return {
+        "headline": headline,
+        "body": body,
+        "writer": writer.get("name", "Staff"),
+        "outlet": writer.get("outlet", "League News"),
+        "type": "power_rankings",
+        "sentiment": "neutral",
+    }
+
+
+# ============================================================
+# DAILY ARTICLE GENERATION (all teams, called from sim loop)
+# ============================================================
+
+def generate_all_daily_articles(game_date: str, db_path: str = None) -> list:
+    """
+    Generate 2-4 articles across the league for a given game date.
+    This is the main entry point called from the sim advance loop.
+
+    Generates articles from both team beat writers and national writers.
+    Returns list of generated article dicts.
+    """
+    # Ensure national writers exist
+    try:
+        ensure_national_writers_exist(db_path)
+    except Exception:
+        pass  # Table might not exist yet
+
+    # Check if articles already exist for this date
+    try:
+        existing = query(
+            "SELECT COUNT(*) as cnt FROM articles WHERE game_date = ?",
+            (game_date,), db_path=db_path,
+        )
+        if existing and existing[0]["cnt"] >= 2:
+            return []
+    except Exception:
+        return []
+
+    state = query("SELECT season, phase, user_team_id FROM game_state WHERE id=1", db_path=db_path)
+    if not state:
+        return []
+    season = state[0]["season"]
+    phase = state[0]["phase"]
+    user_team_id = state[0].get("user_team_id")
+
+    all_articles = []
+    num_target = random.randint(2, 4)
+
+    # 1) Always try to generate articles for the user's team first
+    if user_team_id:
+        team_articles = generate_daily_articles(user_team_id, game_date)
+        all_articles.extend(team_articles or [])
+
+    # 2) Pick 1-2 other random teams for coverage
+    other_teams = query(
+        "SELECT id FROM teams WHERE id != ? ORDER BY RANDOM() LIMIT 2",
+        (user_team_id or 0,), db_path=db_path,
+    )
+    for t in (other_teams or []):
+        if len(all_articles) >= num_target:
+            break
+        team_articles = generate_daily_articles(t["id"], game_date)
+        all_articles.extend(team_articles or [])
+
+    # 3) Weekly power rankings on Mondays from a national writer
+    try:
+        from datetime import date
+        d = date.fromisoformat(game_date)
+        if d.weekday() == 0 and phase == "regular_season":
+            national_writers = query(
+                "SELECT * FROM beat_writers WHERE team_id IS NULL ORDER BY RANDOM() LIMIT 1",
+                db_path=db_path,
+            )
+            if national_writers:
+                pr_article = _generate_power_rankings_article(
+                    national_writers[0], game_date, season, db_path
+                )
+                if pr_article:
+                    execute(
+                        """INSERT INTO articles (writer_id, team_id, game_date, headline, body,
+                           article_type, sentiment) VALUES (?, NULL, ?, ?, ?, ?, ?)""",
+                        (national_writers[0]["id"], game_date, pr_article["headline"],
+                         pr_article["body"], "power_rankings", "neutral"),
+                        db_path=db_path,
+                    )
+                    all_articles.append(pr_article)
+    except Exception:
+        pass
+
+    return all_articles
+
+
+def get_all_articles(limit: int = 30, db_path: str = None) -> list:
+    """Get recent articles across all teams with writer info."""
+    try:
+        articles = query(
+            """SELECT a.*, bw.name as writer_name, bw.outlet, bw.personality as writer_personality
+               FROM articles a
+               LEFT JOIN beat_writers bw ON a.writer_id = bw.id
+               ORDER BY a.game_date DESC, a.id DESC
+               LIMIT ?""",
+            (limit,), db_path=db_path,
+        )
+        return articles or []
+    except Exception:
+        return []
+
+
+def get_articles_for_team(team_id: int, limit: int = 20, db_path: str = None) -> list:
+    """Get recent articles for a specific team with writer info."""
+    try:
+        articles = query(
+            """SELECT a.*, bw.name as writer_name, bw.outlet, bw.personality as writer_personality
+               FROM articles a
+               LEFT JOIN beat_writers bw ON a.writer_id = bw.id
+               WHERE a.team_id = ?
+               ORDER BY a.game_date DESC, a.id DESC
+               LIMIT ?""",
+            (team_id, limit), db_path=db_path,
+        )
+        return articles or []
+    except Exception:
+        return []
