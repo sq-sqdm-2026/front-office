@@ -21,6 +21,7 @@ const STATE = {
   _rotationData: null,
   sortStates: {},
   teams: [],
+  spoilerFree: JSON.parse(localStorage.getItem('fo-spoiler-free') || 'false'),
   ratingScale: '20-80',
   ratingThresholds: { elite: 65, good: 50, avg: 35 },
   statsPage: {
@@ -31,6 +32,132 @@ const STATE = {
     minPA: 0
   }
 };
+
+// ============================================================
+// SPOILER-FREE MODE (hide scores until you watch)
+// ============================================================
+function toggleSpoilerFree() {
+  STATE.spoilerFree = !STATE.spoilerFree;
+  localStorage.setItem('fo-spoiler-free', JSON.stringify(STATE.spoilerFree));
+  showToast(STATE.spoilerFree ? 'Spoiler-free mode ON - scores hidden until watched' : 'Spoiler-free mode OFF', 'info');
+  const active = document.querySelector('.content-screen.active');
+  if (active) showScreen(active.id.replace('s-', ''));
+}
+
+function isGameWatched(scheduleId) {
+  const watched = JSON.parse(localStorage.getItem('fo-watched-games') || '[]');
+  return watched.includes(scheduleId);
+}
+
+function markGameWatched(scheduleId) {
+  const watched = JSON.parse(localStorage.getItem('fo-watched-games') || '[]');
+  if (!watched.includes(scheduleId)) {
+    watched.push(scheduleId);
+    localStorage.setItem('fo-watched-games', JSON.stringify(watched));
+  }
+}
+
+function revealScore(scheduleId) {
+  markGameWatched(scheduleId);
+  loadCalendar();
+}
+
+// ============================================================
+// JAZZ: VISUAL EFFECTS ENGINE
+// ============================================================
+
+/** Launch confetti particles (for wins, milestones) */
+function launchConfetti(count = 40, colors = ['#c8a44e','#e63946','#4a90d9','#2d8b46','#ffe66d','#fff']) {
+  const container = document.createElement('div');
+  container.className = 'confetti-container';
+  document.body.appendChild(container);
+  for (let i = 0; i < count; i++) {
+    const p = document.createElement('div');
+    p.className = 'confetti';
+    p.style.left = Math.random() * 100 + '%';
+    p.style.background = colors[Math.floor(Math.random() * colors.length)];
+    p.style.setProperty('--fall-duration', (2 + Math.random() * 2) + 's');
+    p.style.animationDelay = Math.random() * 0.8 + 's';
+    p.style.width = (4 + Math.random() * 6) + 'px';
+    p.style.height = (4 + Math.random() * 6) + 'px';
+    p.style.borderRadius = Math.random() > 0.5 ? '50%' : '0';
+    container.appendChild(p);
+  }
+  setTimeout(() => container.remove(), 5000);
+}
+
+/** Show a milestone overlay (big moment) */
+function showMilestone(icon, title, desc, duration = 3000) {
+  const overlay = document.createElement('div');
+  overlay.className = 'milestone-overlay';
+  overlay.innerHTML = `
+    <div class="milestone-card">
+      <div class="milestone-icon">${icon}</div>
+      <div class="milestone-title">${title}</div>
+      <div class="milestone-desc">${desc}</div>
+    </div>`;
+  overlay.onclick = () => overlay.remove();
+  document.body.appendChild(overlay);
+  setTimeout(() => { if (overlay.parentNode) overlay.remove(); }, duration);
+}
+
+/** Show phase transition (Opening Day, Postseason, etc.) */
+function showPhaseTransition(title, subtitle, duration = 2500) {
+  const overlay = document.createElement('div');
+  overlay.className = 'phase-transition';
+  overlay.innerHTML = `
+    <div>
+      <div class="phase-title">${title}</div>
+      <div class="phase-subtitle">${subtitle}</div>
+    </div>`;
+  overlay.onclick = () => overlay.remove();
+  document.body.appendChild(overlay);
+  setTimeout(() => { if (overlay.parentNode) overlay.remove(); }, duration);
+}
+
+/** Build the live score ticker at the bottom */
+function buildScoreTicker(games) {
+  let ticker = document.getElementById('live-score-ticker');
+  if (!ticker) {
+    ticker = document.createElement('div');
+    ticker.id = 'live-score-ticker';
+    ticker.className = 'score-ticker';
+    document.body.appendChild(ticker);
+  }
+  if (!games || !games.length) { ticker.style.display = 'none'; return; }
+  ticker.style.display = 'flex';
+  // Duplicate for seamless scroll
+  const items = games.map(g => {
+    const won = g.home_score > g.away_score;
+    return `<div class="score-ticker-item">
+      <span class="ticker-team">${g.away_abbr || '???'}</span>
+      <span class="ticker-score">${g.away_score ?? '-'}</span>
+      <span style="color:#555">@</span>
+      <span class="ticker-team">${g.home_abbr || '???'}</span>
+      <span class="ticker-score">${g.home_score ?? '-'}</span>
+      <span class="ticker-final">F</span>
+    </div>`;
+  }).join('');
+  ticker.innerHTML = `<div class="score-ticker-inner">${items}${items}</div>`;
+}
+
+/** Flash the ticker bar with win/loss color */
+function flashTicker(won) {
+  const ticker = document.getElementById('ticker');
+  if (!ticker) return;
+  ticker.classList.remove('ticker-win', 'ticker-loss');
+  void ticker.offsetWidth; // reflow
+  ticker.classList.add(won ? 'ticker-win' : 'ticker-loss');
+}
+
+/** Add streak fire/ice class to dashboard */
+function applyStreakEffects(streakType, streakCount) {
+  const card = document.querySelector('.dash-stat-card:nth-child(3)');
+  if (!card) return;
+  card.classList.remove('streak-fire', 'streak-ice');
+  if (streakCount >= 5 && streakType === 'W') card.classList.add('streak-fire');
+  else if (streakCount >= 5 && streakType === 'L') card.classList.add('streak-ice');
+}
 
 // ============================================================
 // THEME SYSTEM
@@ -525,16 +652,48 @@ async function simDays(n) {
     } else {
       ticker.textContent = `Simulated ${n}d, ${regGames} games | ${fmtDate(r.new_date)}`;
     }
+
+    // Build live score ticker from today's games
+    if (r.game_results && r.game_results.length) {
+      buildScoreTicker(r.game_results);
+      // Flash ticker for user's team result
+      const userGame = r.game_results.find(g =>
+        g.home_team_id === STATE.userTeamId || g.away_team_id === STATE.userTeamId);
+      if (userGame) {
+        const isHome = userGame.home_team_id === STATE.userTeamId;
+        const won = isHome ? userGame.home_score > userGame.away_score : userGame.away_score > userGame.home_score;
+        flashTicker(won);
+        if (won) {
+          showToast('Victory! ' + (isHome ? userGame.away_abbr : userGame.home_abbr) + ' defeated', 'success');
+        }
+      }
+    }
+
     // Show roster trim notification on Opening Day
     if (r.offseason) {
       const trim = r.offseason.find(e => e.type === 'opening_day_roster_trim');
       if (trim && trim.teams_trimmed && trim.teams_trimmed.length > 0) {
+        showPhaseTransition('PLAY BALL!', `Opening Day ${STATE.season} - ${trim.teams_trimmed.length} teams ready`);
         showToast(`Opening Day: ${trim.teams_trimmed.length} teams trimmed rosters to 26`, 'info');
       }
       // All-Star Game result
       const asg = r.offseason.find(e => e.type === 'all_star_game');
       if (asg && !asg.error) {
+        showMilestone('\u2B50', 'ALL-STAR GAME', `AL ${asg.al_score} - NL ${asg.nl_score}`);
         showToast(`All-Star Game: AL ${asg.al_score}, NL ${asg.nl_score}`, 'info');
+      }
+      // Postseason start
+      const playoffs = r.offseason.find(e => e.type === 'postseason_start');
+      if (playoffs) {
+        showPhaseTransition('POSTSEASON', 'October baseball begins');
+        launchConfetti(30);
+      }
+      // World Series
+      const ws = r.offseason.find(e => e.type === 'world_series_winner');
+      if (ws) {
+        const isUser = ws.team_id === STATE.userTeamId;
+        showMilestone(isUser ? '\uD83C\uDFC6' : '\u26BE', isUser ? 'WORLD CHAMPIONS!' : 'World Series Champion', ws.team_name || 'Champions');
+        if (isUser) launchConfetti(100);
       }
     }
   }
@@ -596,14 +755,39 @@ async function autoSimTick() {
       const total = stGames + regGames;
       ticker.textContent = `${fmtDate(r.new_date)} | ${total} game${total !== 1 ? 's' : ''} played`;
 
+      // Live score ticker
+      if (r.game_results && r.game_results.length) {
+        buildScoreTicker(r.game_results);
+        const userGame = r.game_results.find(g =>
+          g.home_team_id === STATE.userTeamId || g.away_team_id === STATE.userTeamId);
+        if (userGame) {
+          const isHome = userGame.home_team_id === STATE.userTeamId;
+          const won = isHome ? userGame.home_score > userGame.away_score : userGame.away_score > userGame.home_score;
+          flashTicker(won);
+        }
+      }
+
       // Show key events
       if (r.offseason) {
         const trim = r.offseason.find(e => e.type === 'opening_day_roster_trim');
-        if (trim) showToast(`Opening Day: ${trim.teams_trimmed?.length || 0} teams trimmed rosters`, 'info');
+        if (trim) {
+          showPhaseTransition('PLAY BALL!', `Opening Day ${STATE.season}`);
+          showToast(`Opening Day: ${trim.teams_trimmed?.length || 0} teams trimmed rosters`, 'info');
+        }
         const asg = r.offseason.find(e => e.type === 'all_star_game');
-        if (asg && !asg.error) showToast(`All-Star Game: AL ${asg.al_score}, NL ${asg.nl_score}`, 'info');
+        if (asg && !asg.error) {
+          showMilestone('\u2B50', 'ALL-STAR GAME', `AL ${asg.al_score} - NL ${asg.nl_score}`);
+        }
         const recal = r.offseason.find(e => e.type === 'ratings_recalibrated');
         if (recal) showToast('Ratings recalibrated for new season', 'info');
+        const playoffs = r.offseason.find(e => e.type === 'postseason_start');
+        if (playoffs) showPhaseTransition('POSTSEASON', 'October baseball begins');
+        const ws = r.offseason.find(e => e.type === 'world_series_winner');
+        if (ws) {
+          const isUser = ws.team_id === STATE.userTeamId;
+          showMilestone(isUser ? '\uD83C\uDFC6' : '\u26BE', isUser ? 'WORLD CHAMPIONS!' : 'World Series Champion', ws.team_name || '');
+          if (isUser) { stopAutoSim(); launchConfetti(100); }
+        }
       }
 
       // Refresh visible screen
@@ -750,6 +934,7 @@ async function loadCalendar() {
       <div class="card" style="flex:1">
         <h3>Recent Results</h3>
         ${(() => {
+          if (STATE.spoilerFree) return '<div style="color:var(--text-tertiary);font-size:12px;font-style:italic">\uD83D\uDD12 Spoiler-free mode - scores hidden</div>';
           const recent = (games || []).filter(g => g.is_played).sort((a, b) => b.game_date > a.game_date ? 1 : -1).slice(0, 5);
           if (!recent.length) return '<div style="color:var(--text-tertiary);font-size:12px">No games played yet</div>';
           return recent.map(g => {
@@ -791,6 +976,7 @@ async function loadCalendar() {
       </div>
       <div>
         <button class="btn btn-sm" onclick="navToday()">Today</button>
+        <button class="btn btn-sm" onclick="toggleSpoilerFree()" title="Toggle spoiler-free mode" style="margin-left:6px;${STATE.spoilerFree ? 'background:var(--gold);color:#111' : ''}">${STATE.spoilerFree ? '\uD83D\uDD12 No Spoilers' : '\uD83D\uDC41 Spoilers OK'}</button>
       </div>
     </div>
     <div class="cal-grid">
@@ -817,12 +1003,21 @@ async function loadCalendar() {
         const myScore = isHome ? g.home_score : g.away_score;
         const theirScore = isHome ? g.away_score : g.home_score;
         const won = myScore > theirScore;
-        content += `<div class="cal-game" onclick="showBoxScore(${g.id})">
-          <span class="ha">${ha}</span> <span class="opp">${opp}</span><br>
-          <span class="${won ? 'win' : 'loss'}">${won ? 'W' : 'L'}</span>
-          <span class="score">${myScore}-${theirScore}</span>
-          <span class="retro-watch-btn" onclick="event.stopPropagation();watchGame(${g.id},'${g.home_abbr}','${g.away_abbr}')" title="Watch 8-bit replay">\uD83C\uDFAE</span>
-        </div>`;
+        const hidden = STATE.spoilerFree && !isGameWatched(g.id);
+        if (hidden) {
+          content += `<div class="cal-game cal-game-hidden">
+            <span class="ha">${ha}</span> <span class="opp">${opp}</span><br>
+            <span class="retro-watch-btn" onclick="event.stopPropagation();watchGame(${g.id},'${g.home_abbr}','${g.away_abbr}')" title="Watch 8-bit replay" style="font-size:14px;opacity:1">\uD83C\uDFAE Watch</span>
+            <span class="spoiler-reveal" onclick="event.stopPropagation();revealScore(${g.id})" title="Reveal score" style="font-size:9px;color:var(--text-tertiary);cursor:pointer;margin-left:4px">reveal</span>
+          </div>`;
+        } else {
+          content += `<div class="cal-game" onclick="showBoxScore(${g.id})">
+            <span class="ha">${ha}</span> <span class="opp">${opp}</span><br>
+            <span class="${won ? 'win' : 'loss'}">${won ? 'W' : 'L'}</span>
+            <span class="score">${myScore}-${theirScore}</span>
+            <span class="retro-watch-btn" onclick="event.stopPropagation();watchGame(${g.id},'${g.home_abbr}','${g.away_abbr}')" title="Watch 8-bit replay">\uD83C\uDFAE</span>
+          </div>`;
+        }
       } else {
         content += `<div class="cal-game">
           <span class="ha">${ha}</span> <span class="opp">${opp}</span>
@@ -3662,7 +3857,7 @@ async function loadTradeTeam() {
 
 function tradeRoster(players, action) {
   return `<table style="font-size:11px">
-    ${players.map(p => `<tr style="cursor:pointer" onclick="toggleTrade(${p.id},'${p.first_name} ${p.last_name}','${p.position}','${action}')">
+    ${players.map(p => `<tr style="cursor:pointer" onclick="toggleTrade(${p.id},'${p.first_name} ${p.last_name}','${p.position}','${action}',${p.annual_salary || 0})">
       <td class="text-col" style="font-size:11px">${p.first_name} ${p.last_name}</td>
       <td class="c">${p.position}</td><td class="r">${p.age}</td>
       <td class="r">${p.annual_salary ? fmt$(p.annual_salary) : 'min'}</td>
@@ -3670,20 +3865,33 @@ function tradeRoster(players, action) {
   </table>`;
 }
 
-function toggleTrade(id, name, pos, action) {
+function toggleTrade(id, name, pos, action, salary) {
   const list = action === 'offer' ? STATE.tradeOffer : STATE.tradeRequest;
   const idx = list.findIndex(p => p.id === id);
-  if (idx >= 0) list.splice(idx, 1); else list.push({ id, name, pos });
+  if (idx >= 0) list.splice(idx, 1); else list.push({ id, name, pos, salary });
   updateTradeSlots();
 }
 
 function updateTradeSlots() {
+  const chipHtml = (p, action) => {
+    const sal = p.salary ? ` $${(p.salary / 1e6).toFixed(1)}M` : '';
+    return `<span class="trade-chip" onclick="toggleTrade(${p.id},'${p.name}','${p.pos}','${action}',${p.salary || 0})">${p.name} (${p.pos}${sal}) x</span>`;
+  };
   document.getElementById('trade-slot-offer').innerHTML = STATE.tradeOffer.length
-    ? STATE.tradeOffer.map(p => `<span class="trade-chip" onclick="toggleTrade(${p.id},'${p.name}','${p.pos}','offer')">${p.name} (${p.pos}) x</span>`).join('')
+    ? STATE.tradeOffer.map(p => chipHtml(p, 'offer')).join('')
     : 'Click players to offer...';
   document.getElementById('trade-slot-req').innerHTML = STATE.tradeRequest.length
-    ? STATE.tradeRequest.map(p => `<span class="trade-chip" onclick="toggleTrade(${p.id},'${p.name}','${p.pos}','req')">${p.name} (${p.pos}) x</span>`).join('')
+    ? STATE.tradeRequest.map(p => chipHtml(p, 'req')).join('')
     : 'Click players to request...';
+
+  // Show salary totals
+  const offerSal = STATE.tradeOffer.reduce((s, p) => s + (p.salary || 0), 0);
+  const reqSal = STATE.tradeRequest.reduce((s, p) => s + (p.salary || 0), 0);
+  const salaryInfo = document.getElementById('trade-salary-info');
+  if (salaryInfo) {
+    salaryInfo.innerHTML = (offerSal || reqSal) ?
+      `<span style="font-size:10px;color:var(--text-tertiary)">Sending: $${(offerSal/1e6).toFixed(1)}M | Receiving: $${(reqSal/1e6).toFixed(1)}M | Net: ${(reqSal-offerSal) >= 0 ? '+' : ''}$${((reqSal-offerSal)/1e6).toFixed(1)}M</span>` : '';
+  }
 }
 
 async function submitTrade() {

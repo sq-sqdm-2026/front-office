@@ -360,6 +360,7 @@
                 <div id="trade-slot-offer" class="trade-slot">Click players to offer...</div>
                 <div class="trade-arrow">&#8644;</div>
                 <div id="trade-slot-req" class="trade-slot">Click players to request...</div>
+                <div id="trade-salary-info" style="text-align:center;margin-top:4px"></div>
                 <button class="btn btn-primary" style="width:100%;margin-top:8px" onclick="submitTrade()">Propose Trade</button>
               </div>
               <div id="trade-resp" class="trade-response"></div>
@@ -627,6 +628,8 @@
         <button onclick="retroPlayPause()" id="retro-play-btn" style="background:#4a90d9;color:#fff;border:none;padding:6px 16px;border-radius:4px;cursor:pointer;font-family:monospace">&#9654; Play</button>
         <button onclick="retroSpeed()" id="retro-speed-btn" style="background:#333;color:#fff;border:none;padding:6px 16px;border-radius:4px;cursor:pointer;font-family:monospace">1x</button>
         <button onclick="retroSkip()" style="background:#333;color:#fff;border:none;padding:6px 16px;border-radius:4px;cursor:pointer;font-family:monospace">Skip &#9654;&#9654;</button>
+        <button onclick="toggleRetroMusic()" id="retro-music-btn" style="background:#333;color:#fff;border:none;padding:6px 12px;border-radius:4px;cursor:pointer;font-family:monospace" title="Toggle Music">&#128266;</button>
+        <button onclick="showRetroMessagePanel()" style="background:#2d8a4e;color:#fff;border:none;padding:6px 12px;border-radius:4px;cursor:pointer;font-family:monospace" title="In-Game Messages">&#128172; Chat</button>
       </div>
     </div>
   </div>
