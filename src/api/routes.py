@@ -278,6 +278,19 @@ try:
 except Exception:
     pass
 
+# --- Schema migration: add priority and category columns to messages ---
+for _msg_col in [
+    "ALTER TABLE messages ADD COLUMN priority TEXT DEFAULT 'normal'",
+    "ALTER TABLE messages ADD COLUMN category TEXT DEFAULT 'general'",
+]:
+    try:
+        _conn = get_connection()
+        _conn.execute(_msg_col)
+        _conn.commit()
+        _conn.close()
+    except Exception:
+        pass  # Column already exists
+
 
 # ============================================================
 # FRONTEND
@@ -841,6 +854,11 @@ async def get_player(player_id: int):
     player_data = player[0].copy()
     if user_team_id:
         player_data = get_displayed_ratings(player_data, user_team_id, season)
+
+    # Apply asymmetric information filtering for other teams' players
+    if user_team_id and player_data.get("team_id") != user_team_id:
+        info_level = get_player_info_level(user_team_id, player_id)
+        player_data = apply_info_uncertainty(player_data, info_level)
 
     # Get season stats
     batting = query("""
