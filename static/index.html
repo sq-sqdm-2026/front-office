@@ -857,8 +857,21 @@
             <div class="settings-helper">These models enable advanced features like text-to-speech podcasts and image generation.</div>
             <div class="settings-option-details" style="margin-top:12px">
               <div class="settings-option-item">
-                <strong>Orpheus TTS 3B</strong> &mdash; Audio podcast rendering (converts podcast scripts to speech)
-                <div style="color:var(--text-muted);font-size:11px;margin-top:2px">Not yet integrated &bull; Requires separate TTS server setup</div>
+                <strong>Orpheus TTS 3B</strong> &mdash; Audio podcast rendering (converts weekly podcast scripts to realistic multi-voice audio)
+                <div style="color:var(--text-muted);font-size:11px;margin-top:2px"><code>ollama pull orpheus-3b</code> &bull; ~1.7GB &bull; Text-to-speech model for podcast audio</div>
+                <div style="color:var(--text-muted);font-size:11px">Used for: Weekly podcast audio, game broadcast commentary</div>
+              </div>
+              <div class="settings-option-item">
+                <strong>Stable Diffusion (via ComfyUI)</strong> &mdash; AI-generated player portraits and baseball card art
+                <div style="color:var(--text-muted);font-size:11px;margin-top:2px">Requires separate ComfyUI installation &bull; <code>pip install comfyui</code></div>
+                <div style="color:var(--text-muted);font-size:11px">Recommended model: <code>sd3.5-medium</code> (~4GB) or <code>sdxl-turbo</code> (~6GB)</div>
+                <div style="color:var(--text-muted);font-size:11px">Used for: Photorealistic player headshots, baseball card designs</div>
+                <div style="color:var(--text-muted);font-size:11px;margin-top:4px"><em>Note: Without this, the game uses procedural pixel-art SVG portraits instead</em></div>
+              </div>
+              <div class="settings-option-item">
+                <strong>Kokoro TTS</strong> &mdash; Alternative lightweight TTS for game broadcast play-by-play
+                <div style="color:var(--text-muted);font-size:11px;margin-top:2px"><code>pip install kokoro</code> &bull; ~300MB &bull; Fast, runs on CPU</div>
+                <div style="color:var(--text-muted);font-size:11px">Used for: Real-time play-by-play audio during 8-bit game viewer</div>
               </div>
             </div>
           </div>
