@@ -10,3 +10,4 @@ mlb_cache.json
 /tmp/
 front-office-v2.docx
 front_office_prompt.pdf
+.claude/
