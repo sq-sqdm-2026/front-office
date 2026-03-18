@@ -4120,32 +4120,167 @@ async function generatePodcast() {
 
 
 // ============================================================
-// MESSAGES
+// MESSAGES (Priority Inbox)
 // ============================================================
+let _msgPriorityFilter = null; // null = all, or 'urgent'|'important'|'normal'|'low'
+let _msgSelectedId = null;
+
 async function loadMessages() {
-  const el = document.getElementById('msg-body');
-  const msgs = await api('/messages?unread_only=false') || [];
-  const unreadCount = msgs.filter(m => !m.is_read).length;
+  // Fetch messages and priority counts in parallel
+  const priorityParam = _msgPriorityFilter ? `&priority=${_msgPriorityFilter}` : '';
+  const [msgs, priorities] = await Promise.all([
+    api(`/messages?unread_only=false${priorityParam}`),
+    api('/messages/priorities')
+  ]);
+  const allMsgs = msgs || [];
+
+  // Update sidebar badge with total unread count
+  const totalUnread = allMsgs.filter(m => !m.is_read).length;
   const badge = document.getElementById('msg-count');
   const sidebarBadge = document.getElementById('sidebar-msg-count');
-  if (unreadCount > 0) {
-    if (badge) { badge.textContent = unreadCount; badge.style.display = 'block'; }
-    if (sidebarBadge) { sidebarBadge.textContent = unreadCount; sidebarBadge.style.display = 'flex'; }
+  if (totalUnread > 0) {
+    if (badge) { badge.textContent = totalUnread; badge.style.display = 'block'; }
+    if (sidebarBadge) { sidebarBadge.textContent = totalUnread; sidebarBadge.style.display = 'flex'; }
   } else {
     if (badge) badge.style.display = 'none';
     if (sidebarBadge) sidebarBadge.style.display = 'none';
   }
-  if (!msgs.length) {
-    el.innerHTML = '<div class="empty-state">Inbox empty. Messages from GMs, your owner, agents, and scouts will appear here.</div>';
+
+  // Build priority filter tabs
+  const filterContainer = document.getElementById('chat-contacts');
+  if (!filterContainer) return;
+
+  // Build filter tabs HTML
+  const prio = priorities || { urgent: {total:0,unread:0}, important: {total:0,unread:0}, normal: {total:0,unread:0}, low: {total:0,unread:0} };
+  const totalAll = (prio.urgent?.unread||0) + (prio.important?.unread||0) + (prio.normal?.unread||0) + (prio.low?.unread||0);
+
+  const tabs = [
+    { key: null, label: 'All', unread: totalAll },
+    { key: 'urgent', label: 'Urgent', unread: prio.urgent?.unread || 0 },
+    { key: 'important', label: 'Important', unread: prio.important?.unread || 0 },
+    { key: 'normal', label: 'Normal', unread: prio.normal?.unread || 0 },
+  ];
+
+  let headerHtml = `<div class="chat-contacts-header"><span class="section-title">Messages</span></div>`;
+  headerHtml += `<div class="priority-filter-tabs">`;
+  tabs.forEach(t => {
+    const active = _msgPriorityFilter === t.key ? 'active' : '';
+    const badgeHtml = t.unread > 0 ? `<span class="tab-badge">${t.unread}</span>` : '';
+    headerHtml += `<button class="priority-tab ${active}" onclick="setMsgPriorityFilter(${t.key === null ? 'null' : "'" + t.key + "'"})">
+      ${t.label}${badgeHtml}
+    </button>`;
+  });
+  headerHtml += `</div>`;
+
+  // Build contact list (each message as a contact item)
+  const contactList = document.getElementById('chat-contact-list');
+  if (!allMsgs.length) {
+    filterContainer.innerHTML = headerHtml + `<div class="chat-contact-list" id="chat-contact-list">
+      <div class="empty-state">Inbox empty. Messages from GMs, your owner, agents, and scouts will appear here.</div>
+    </div>`;
+    // Clear conversation panel
+    const convHeader = document.getElementById('chat-conv-header');
+    const chatMsgs = document.getElementById('chat-messages');
+    if (convHeader) convHeader.innerHTML = '<span class="chat-conv-name">Select a conversation</span>';
+    if (chatMsgs) chatMsgs.innerHTML = '<div class="empty-state">Select a message to view</div>';
     return;
   }
-  el.innerHTML = msgs.map(m => `
-    <div class="msg-item ${m.is_read ? '' : 'unread'}">
-      <span class="msg-from">${m.sender_name}</span>
-      <span class="msg-date">${m.game_date}</span>
-      <div class="msg-body">${m.body}</div>
-    </div>
-  `).join('');
+
+  let contactsHtml = '';
+  allMsgs.forEach(m => {
+    const priority = m.priority || 'normal';
+    const isUnread = !m.is_read;
+    const isActive = _msgSelectedId === m.id;
+    const dotClass = (priority === 'urgent' || priority === 'important') ? `<span class="priority-dot ${priority}"></span>` : '';
+    const preview = (m.body || '').substring(0, 60) + ((m.body || '').length > 60 ? '...' : '');
+    const category = m.category || 'general';
+    const categoryLabel = category.replace(/_/g, ' ');
+
+    let badgeHtml = '';
+    if (isUnread) {
+      const badgeClass = priority === 'urgent' ? ' urgent' : priority === 'important' ? ' important' : '';
+      badgeHtml = `<span class="chat-unread-badge${badgeClass}">1</span>`;
+    }
+
+    contactsHtml += `
+      <div class="chat-contact-item ${isActive ? 'active' : ''} ${isUnread ? 'unread' : ''}"
+           onclick="selectMessage(${m.id})">
+        <div class="chat-contact-info">
+          <div class="chat-contact-name">${dotClass}${m.sender_name || 'System'}
+            <span class="msg-category">${categoryLabel}</span>
+          </div>
+          <div class="chat-contact-preview">${m.subject || preview}</div>
+        </div>
+        <div class="chat-contact-meta">
+          <span class="chat-contact-date">${m.game_date || ''}</span>
+          ${badgeHtml}
+        </div>
+      </div>`;
+  });
+
+  filterContainer.innerHTML = headerHtml + `<div class="chat-contact-list" id="chat-contact-list">${contactsHtml}</div>`;
+
+  // If a message is selected, show it in the conversation panel
+  if (_msgSelectedId) {
+    const selected = allMsgs.find(m => m.id === _msgSelectedId);
+    if (selected) renderMessageConversation(selected);
+  }
+}
+
+function setMsgPriorityFilter(priority) {
+  _msgPriorityFilter = priority;
+  loadMessages();
+}
+
+async function selectMessage(msgId) {
+  _msgSelectedId = msgId;
+  // Mark as read
+  await post(`/messages/${msgId}/read`, {});
+  loadMessages();
+}
+
+function renderMessageConversation(msg) {
+  const convHeader = document.getElementById('chat-conv-header');
+  const chatMsgs = document.getElementById('chat-messages');
+  const inputArea = document.getElementById('chat-input-area');
+  if (!convHeader || !chatMsgs) return;
+
+  const priority = msg.priority || 'normal';
+  const dotHtml = (priority === 'urgent' || priority === 'important')
+    ? `<span class="priority-dot ${priority}"></span>` : '';
+  const category = (msg.category || 'general').replace(/_/g, ' ');
+
+  convHeader.innerHTML = `
+    <span class="chat-conv-name">${dotHtml}${msg.subject || msg.sender_name || 'Message'}
+      <span class="msg-category">${category}</span>
+    </span>
+    <span class="msg-date" style="float:right;">${msg.game_date || ''}</span>`;
+
+  chatMsgs.innerHTML = `
+    <div class="msg-item priority-${priority}">
+      <span class="msg-from">${msg.sender_name || 'System'}</span>
+      <span class="msg-date">${msg.game_date || ''}</span>
+      <div class="msg-body" style="margin-top:8px; white-space:pre-wrap;">${msg.body || ''}</div>
+    </div>`;
+
+  // Show input area for messages that allow responses
+  if (inputArea) {
+    inputArea.style.display = msg.requires_response ? 'flex' : 'none';
+  }
+}
+
+async function sendChatMessage() {
+  const input = document.getElementById('chat-input');
+  if (!input || !input.value.trim()) return;
+  const body = input.value.trim();
+  input.value = '';
+  // Send as user message (recipient is the sender of current conversation)
+  await post('/messages/send', {
+    recipient_type: 'system',
+    recipient_id: 0,
+    body: body
+  });
+  loadMessages();
 }
 
 // ============================================================
