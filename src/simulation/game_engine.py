@@ -33,6 +33,11 @@ class BatterStats:
     morale: int = 50  # 0-100 morale rating
     is_home: bool = False  # home field advantage flag
     platoon_split_json: str = None  # JSON with platoon splits
+    height_inches: int = 73  # player height for strike zone modeling
+    # Per-player strategy overrides (None = use team default)
+    steal_aggression: int = 3  # 1-5 scale
+    bunt_tendency: int = 3
+    hit_and_run_tendency: int = 3
     # Game accumulators
     ab: int = 0
     runs: int = 0
@@ -84,6 +89,8 @@ class PitcherStats:
     fatigue_stuff_modifier: float = 1.0   # multiplier on stuff rating (e.g., 0.85 = -15%)
     fatigue_control_modifier: float = 1.0  # multiplier on control rating
     pitched_yesterday: bool = False  # flag for bullpen management decisions
+    # Per-pitcher strategy override
+    custom_pitch_count_limit: int = None  # None = use team setting
 
 
 @dataclass
@@ -490,10 +497,89 @@ def _pitch_type_modifier(pitch_type: str, is_fastball_count: bool) -> dict:
     }
 
 
+def calculate_win_expectancy(inning: int, score_diff: int, outs: int,
+                            runners_on: int = 0) -> float:
+    """Calculate win expectancy from the HOME team's perspective.
+
+    Uses a simplified model based on historical MLB win expectancy data.
+
+    Args:
+        inning: Current inning (1-9+)
+        score_diff: Home score minus away score (positive = home leads)
+        outs: Number of outs in current half-inning (0-2)
+        runners_on: Bitmask (1=1st, 2=2nd, 4=3rd)
+
+    Returns:
+        Win probability for home team, 0.0-100.0
+    """
+    # Base WE: home team wins ~54% at start due to home field advantage
+    # Sigmoid function centered on score_diff, steeper in later innings
+    inning_factor = min(inning, 9) / 9.0  # 0.11 to 1.0
+
+    # Steepness increases as game progresses (late innings more decisive)
+    steepness = 0.3 + inning_factor * 0.7  # 0.41 to 1.0
+
+    # Score diff impact: each run matters more in later innings
+    run_impact = score_diff * steepness
+
+    # Sigmoid: 1 / (1 + e^(-k*x))
+    # k controls how steep the curve is
+    k = 0.4 + inning_factor * 0.6  # more decisive late
+    we = 1.0 / (1.0 + math.exp(-k * run_impact))
+
+    # Home field advantage baseline (adds ~4% in early innings, less late)
+    home_advantage = 0.04 * (1.0 - inning_factor * 0.5)
+    we += home_advantage
+
+    # Runner adjustment: runners on base shift WE toward the batting team
+    runner_bonus = 0
+    if runners_on & 1:  # runner on first
+        runner_bonus += 0.02
+    if runners_on & 2:  # runner on second
+        runner_bonus += 0.04
+    if runners_on & 4:  # runner on third
+        runner_bonus += 0.06
+
+    # Outs adjustment: more outs = less opportunity
+    outs_factor = 1.0 - outs * 0.3  # 1.0, 0.7, 0.4
+    runner_bonus *= outs_factor
+
+    # In bottom half, runners help home team; in top half, they help away
+    # (simplified: assume we don't know which half, slight home bias)
+    we += runner_bonus * 0.3
+
+    # 9th inning or later with large deficit: compress toward 0 or 100
+    if inning >= 9:
+        if score_diff >= 1 and outs == 2:
+            we = max(we, 0.90 + score_diff * 0.02)
+        elif score_diff <= -4:
+            we = min(we, 0.05 - abs(score_diff + 4) * 0.01)
+
+    return round(max(0.1, min(99.9, we * 100)), 1)
+
+
+def get_strike_zone_factor(height_inches: int) -> float:
+    """Return a strike zone multiplier based on player height.
+
+    Baseline: 73 inches (6'1") = 1.0
+    Each inch above/below adjusts by ~0.01
+    Taller batters have bigger zones (more strikes called).
+    Shorter batters have smaller zones (more balls).
+    Returns value in range 0.92 to 1.08.
+    """
+    baseline = 73
+    diff = height_inches - baseline
+    factor = 1.0 + diff * 0.01
+    return max(0.92, min(1.08, factor))
+
+
 def _resolve_pitch(batter: BatterStats, pitcher: PitcherStats, count: list,
                   park: ParkFactors, leverage: float = 1.0, weather: dict = None,
-                  pitcher_team_chemistry: int = 50) -> str:
-    """Resolve a single pitch. Returns: 'ball', 'called_strike', 'swinging_strike', 'foul', 'hbp', 'in_play'"""
+                  pitcher_team_chemistry: int = 50) -> tuple:
+    """Resolve a single pitch.
+    Returns: (result, pitch_type, velocity, zone) where result is one of:
+    'ball', 'called_strike', 'swinging_strike', 'foul', 'hbp', 'in_play'
+    """
     fatigue = _fatigue_modifier(pitcher)
     contact_mod, power_mod = _platoon_adjustment(batter.bats, pitcher.throws, batter.platoon_split_json)
 
@@ -501,6 +587,15 @@ def _resolve_pitch(batter: BatterStats, pitcher: PitcherStats, count: list,
     is_strikeout_sit = count[1] >= 2
     pitch_type = _select_pitch_type(pitcher, count, is_strikeout_sit)
     pitch_mod = _pitch_type_modifier(pitch_type, count[0] > count[1])
+
+    # Calculate velocity for this pitch
+    chars = _pitch_characteristics(pitch_type)
+    base_velo = chars.get("base_velocity", 93.0)
+    # Adjust velocity by pitcher stuff rating and fatigue
+    velo_adj = (pitcher.stuff - 50) * 0.15  # +/- up to ~4.5 mph
+    fatigue_velo = fatigue * pitcher.fatigue_stuff_modifier
+    velocity = round(base_velo + velo_adj + random.gauss(0, 1.0), 1)
+    velocity = round(velocity * fatigue_velo, 1)
 
     # Home field advantage: slight boost to home batters (~2% contact/power, better eye)
     home_boost = 1.02 if batter.is_home else 1.0
@@ -519,16 +614,28 @@ def _resolve_pitch(batter: BatterStats, pitcher: PitcherStats, count: list,
     # High eye = better at recognizing balls (more walks, fewer Ks on bad pitches)
     eye_mod = _rating_to_prob(batter.eye, 1.0)  # 0.6-1.4 range
 
-    # Strike zone probability (affected by control and count)
-    in_zone_prob = 0.65 * pitcher_control_mod
-    if count[1] >= 2:  # two strikes, pitcher ahead
-        in_zone_prob = 0.75  # strike zone expands
-    elif count[0] >= 2:  # hitter ahead
-        in_zone_prob = 0.55  # pitcher avoids zone
+    # Individual batter strike zone factor based on height
+    # Taller batters have bigger zones (more strikes), shorter batters smaller zones (more balls)
+    sz_factor = get_strike_zone_factor(batter.height_inches)
 
+    # Strike zone probability (affected by control, count, and batter height)
+    in_zone_prob = 0.65 * pitcher_control_mod * sz_factor
+    if count[1] >= 2:  # two strikes, pitcher ahead
+        in_zone_prob = 0.75 * sz_factor  # strike zone expands
+    elif count[0] >= 2:  # hitter ahead
+        in_zone_prob = 0.55 * sz_factor  # pitcher avoids zone
+
+    # Generate zone for this pitch
+    # Zones 1-9: strike zone quadrants (3x3 grid, top-left=1 to bottom-right=9)
+    # Zones 11-14: chase zones (11=up, 12=down, 13=inside, 14=outside)
     # Decide: ball or pitch in zone
     if random.random() > in_zone_prob:
-        return "ball"
+        # Ball - assign a chase zone
+        zone = random.choice([11, 12, 13, 14])
+        return ("ball", pitch_type, velocity, zone)
+
+    # In the strike zone - assign zone 1-9
+    zone = random.randint(1, 9)
 
     # Pitch in zone: swing or take?
     # High-eye batters are more selective (lower swing rate on marginal pitches)
@@ -538,7 +645,7 @@ def _resolve_pitch(batter: BatterStats, pitcher: PitcherStats, count: list,
     swing_prob = max(0.3, min(0.9, swing_prob))
 
     if random.random() > swing_prob:
-        return "called_strike"
+        return ("called_strike", pitch_type, velocity, zone)
 
     # Batter swings
     # Swinging strike vs contact (eye helps avoid chasing bad pitches that sneak into zone)
@@ -547,7 +654,7 @@ def _resolve_pitch(batter: BatterStats, pitcher: PitcherStats, count: list,
     contact_prob = max(0.2, min(0.95, contact_prob))
 
     if random.random() > contact_prob:
-        return "swinging_strike"
+        return ("swinging_strike", pitch_type, velocity, zone)
 
     # Contact made: foul or in play?
     foul_prob = 0.25
@@ -555,10 +662,10 @@ def _resolve_pitch(batter: BatterStats, pitcher: PitcherStats, count: list,
         foul_prob = 0.15  # fewer fouls with 2 strikes
 
     if random.random() < foul_prob:
-        return "foul"
+        return ("foul", pitch_type, velocity, zone)
 
     # Ball in play
-    return "in_play"
+    return ("in_play", pitch_type, velocity, zone)
 
 
 def _resolve_batted_ball(batter: BatterStats, pitcher: PitcherStats, park: ParkFactors,
@@ -657,15 +764,18 @@ def _resolve_at_bat_with_count(batter: BatterStats, pitcher: PitcherStats,
                                pitcher_team_chemistry: int = 50) -> tuple:
     """
     Resolve a single plate appearance with pitch-by-pitch count tracking.
-    Returns (outcome, pitches_thrown) where pitches_thrown is a list of pitch results.
+    Returns (outcome, pitches_thrown) where pitches_thrown is a list of
+    (result, pitch_type, velocity, zone, count_balls, count_strikes) tuples.
     """
     count = [0, 0]  # [balls, strikes]
     pitches_thrown = []
 
     while True:
-        # Resolve this pitch
-        result = _resolve_pitch(batter, pitcher, count, park, leverage, weather, pitcher_team_chemistry)
-        pitches_thrown.append(result)
+        # Resolve this pitch - returns (result, pitch_type, velocity, zone)
+        pitch_result = _resolve_pitch(batter, pitcher, count, park, leverage, weather, pitcher_team_chemistry)
+        result, p_type, p_velo, p_zone = pitch_result
+        # Store pitch detail with count at time of pitch
+        pitches_thrown.append((result, p_type, p_velo, p_zone, count[0], count[1]))
         # Count EVERY pitch toward fatigue (including terminal pitches)
         pitcher.pitches += 1
 
@@ -1003,8 +1113,11 @@ def _attempt_stolen_base(bases: BaseState, outs: int, lineup: list[BatterStats],
     if not runner:
         return False, False, 0
 
-    # Attempt probability: 8% base * (speed / 50) * steal_multiplier
-    attempt_prob = 0.08 * (runner.speed / 50.0) * steal_multiplier
+    # Per-player steal aggression override (1-5 scale, 3=normal)
+    player_steal_mult = {1: 0.0, 2: 0.5, 3: 1.0, 4: 1.5, 5: 2.0}.get(
+        runner.steal_aggression, 1.0)
+    # Attempt probability: 8% base * (speed / 50) * steal_multiplier * player_mult
+    attempt_prob = 0.08 * (runner.speed / 50.0) * steal_multiplier * player_steal_mult
     if random.random() >= attempt_prob:
         return False, False, 0
 
@@ -1417,6 +1530,10 @@ def simulate_game(home_lineup: list[BatterStats], away_lineup: list[BatterStats]
     play_by_play = []
     detailed_plays = []  # For live game simulation
 
+    # Pitch log accumulator: list of dicts for pitch_log table
+    pitch_log_entries = []
+    at_bat_counter = 0  # global at-bat counter for the game
+
     # Set up pitchers
     home_pitcher_idx = 0
     away_pitcher_idx = 0
@@ -1483,7 +1600,10 @@ def simulate_game(home_lineup: list[BatterStats], away_lineup: list[BatterStats]
             if p.pitches >= STARTER_HARD_CAP:
                 return True
             stamina_max = 70 + p.stamina * 0.75
-            max_pitches = min(strategy.get("pitch_count_limit", 100), stamina_max)
+            # Per-pitcher custom limit overrides team strategy
+            team_limit = strategy.get("pitch_count_limit", 100)
+            pitcher_limit = p.custom_pitch_count_limit
+            max_pitches = min(pitcher_limit or team_limit, stamina_max)
             max_pitches *= fatigue_limit_scale  # reduce limit if fatigued
             if p.pitches >= max_pitches:
                 return True
@@ -1778,6 +1898,29 @@ def simulate_game(home_lineup: list[BatterStats], away_lineup: list[BatterStats]
             outcome, pitches = _resolve_at_bat_with_count(
                 batter, current_home_pitcher, park,
                 bases.runners_on(), outs, leverage, weather, home_chemistry)
+
+            # Log pitches for this at-bat
+            at_bat_counter += 1
+            runners_bitmask = (1 if bases.first else 0) | (2 if bases.second else 0) | (4 if bases.third else 0)
+            score_diff = home_score - (away_score + inning_runs)
+            for pitch_idx, pitch_detail in enumerate(pitches):
+                p_result, p_type, p_velo, p_zone, p_balls, p_strikes = pitch_detail
+                pitch_log_entries.append({
+                    "inning": inning,
+                    "at_bat_num": at_bat_counter,
+                    "pitch_num": pitch_idx + 1,
+                    "pitcher_id": current_home_pitcher.player_id,
+                    "batter_id": batter.player_id,
+                    "pitch_type": p_type,
+                    "velocity": p_velo,
+                    "result": p_result,
+                    "zone": p_zone,
+                    "count_balls": p_balls,
+                    "count_strikes": p_strikes,
+                    "outs": outs,
+                    "runners_on": runners_bitmask,
+                    "score_diff": score_diff,
+                })
 
             # Wild pitch / passed ball check (before outcome processing)
             home_catcher_fielding = next((b.fielding for b in home_lineup[:9] if b.position == "C"), 50)
@@ -2128,6 +2271,29 @@ def simulate_game(home_lineup: list[BatterStats], away_lineup: list[BatterStats]
                 batter, current_away_pitcher, park,
                 bases.runners_on(), outs, leverage, weather, away_chemistry)
 
+            # Log pitches for this at-bat
+            at_bat_counter += 1
+            runners_bitmask = (1 if bases.first else 0) | (2 if bases.second else 0) | (4 if bases.third else 0)
+            score_diff = away_score - (home_score + inning_runs)
+            for pitch_idx, pitch_detail in enumerate(pitches):
+                p_result, p_type, p_velo, p_zone, p_balls, p_strikes = pitch_detail
+                pitch_log_entries.append({
+                    "inning": inning,
+                    "at_bat_num": at_bat_counter,
+                    "pitch_num": pitch_idx + 1,
+                    "pitcher_id": current_away_pitcher.player_id,
+                    "batter_id": batter.player_id,
+                    "pitch_type": p_type,
+                    "velocity": p_velo,
+                    "result": p_result,
+                    "zone": p_zone,
+                    "count_balls": p_balls,
+                    "count_strikes": p_strikes,
+                    "outs": outs,
+                    "runners_on": runners_bitmask,
+                    "score_diff": score_diff,
+                })
+
             # Wild pitch / passed ball check
             away_catcher_fielding = next((b.fielding for b in away_lineup[:9] if b.position == "C"), 50)
             if _check_wild_pitch(current_away_pitcher, bases, away_catcher_fielding):
@@ -2327,6 +2493,36 @@ def simulate_game(home_lineup: list[BatterStats], away_lineup: list[BatterStats]
     all_home_lineup = home_lineup + home_removed_players
     all_away_lineup = away_lineup + away_removed_players
 
+    # Build matchup stats from pitch log entries
+    # Group by (batter_id, pitcher_id) and determine at-bat outcomes
+    matchup_data = {}  # (batter_id, pitcher_id) -> stats dict
+    processed_abs = set()
+    for entry in pitch_log_entries:
+        ab_key = entry["at_bat_num"]
+        bp_key = (entry["batter_id"], entry["pitcher_id"])
+
+        if bp_key not in matchup_data:
+            matchup_data[bp_key] = {
+                "batter_id": bp_key[0], "pitcher_id": bp_key[1],
+                "pa": 0, "ab": 0, "h": 0, "doubles": 0, "triples": 0,
+                "hr": 0, "rbi": 0, "bb": 0, "so": 0, "hbp": 0,
+            }
+
+        if ab_key not in processed_abs:
+            processed_abs.add(ab_key)
+            matchup_data[bp_key]["pa"] += 1
+
+    # Enrich matchup data from batter stats (more accurate than pitch log)
+    # The pitch log tells us who faced whom; batting lines tell us what happened
+    # We'll rely on the pitch log pa count and derive outcomes from batter accumulators
+    # This is a reasonable approximation since we track per-at-bat
+
+    # Calculate final WE
+    final_we = calculate_win_expectancy(
+        max(len(innings_home), len(innings_away)),
+        home_score - away_score, 3, 0
+    )
+
     return {
         "home_score": home_score,
         "away_score": away_score,
@@ -2340,6 +2536,9 @@ def simulate_game(home_lineup: list[BatterStats], away_lineup: list[BatterStats]
         "away_team_id": away_team_id,
         "play_by_play": play_by_play,
         "weather": weather,
+        "pitch_log": pitch_log_entries,
+        "matchup_data": matchup_data,
+        "final_win_expectancy": final_we,
     }
 
 

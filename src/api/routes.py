@@ -3,7 +3,7 @@ Front Office - API Routes
 All FastAPI endpoints for the baseball simulation.
 """
 from pathlib import Path
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, UploadFile, File
 from fastapi.responses import HTMLResponse, FileResponse
 from pydantic import BaseModel
 from ..database.db import query, execute, get_connection
@@ -205,6 +205,44 @@ async def sim_game_live():
                   p.ip_outs, p.hits_allowed, p.runs_allowed, p.er,
                   p.bb_allowed, p.so_pitched, p.hr_allowed, p.pitches,
                   p.is_starter, p.decision))
+
+    # Save pitch log entries
+    state_for_season = query("SELECT season FROM game_state WHERE id=1")
+    current_season = state_for_season[0]["season"] if state_for_season else 2026
+    pitch_log = result.get("pitch_log", [])
+    for pl in pitch_log:
+        conn.execute("""
+            INSERT INTO pitch_log (game_id, inning, at_bat_num, pitch_num,
+                pitcher_id, batter_id, pitch_type, velocity, result, zone,
+                count_balls, count_strikes, outs, runners_on, score_diff, season)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (game["id"], pl["inning"], pl["at_bat_num"], pl["pitch_num"],
+              pl["pitcher_id"], pl["batter_id"], pl["pitch_type"], pl["velocity"],
+              pl["result"], pl["zone"], pl["count_balls"], pl["count_strikes"],
+              pl["outs"], pl["runners_on"], pl["score_diff"], current_season))
+
+    # Save matchup stats
+    matchup_data = result.get("matchup_data", {})
+    for (batter_id, pitcher_id), mstats in matchup_data.items():
+        conn.execute("""
+            INSERT INTO matchup_stats (batter_id, pitcher_id, season, pa, ab, h,
+                doubles, triples, hr, rbi, bb, so, hbp)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(batter_id, pitcher_id, season) DO UPDATE SET
+                pa = pa + excluded.pa,
+                ab = ab + excluded.ab,
+                h = h + excluded.h,
+                doubles = doubles + excluded.doubles,
+                triples = triples + excluded.triples,
+                hr = hr + excluded.hr,
+                rbi = rbi + excluded.rbi,
+                bb = bb + excluded.bb,
+                so = so + excluded.so,
+                hbp = hbp + excluded.hbp
+        """, (batter_id, pitcher_id, current_season,
+              mstats["pa"], mstats["ab"], mstats["h"],
+              mstats["doubles"], mstats["triples"], mstats["hr"],
+              mstats["rbi"], mstats["bb"], mstats["so"], mstats["hbp"]))
 
     conn.commit()
     conn.close()
@@ -3041,6 +3079,397 @@ async def set_stat_columns(req: StatColumnConfig):
 
 
 # ============================================================
+# PITCH DATA ENDPOINTS
+# ============================================================
+@app.get("/pitch-log/pitcher/{pitcher_id}/summary")
+async def pitcher_pitch_summary(pitcher_id: int, season: int = None,
+                                 vs_team: int = None, situation: str = None):
+    """Aggregated pitch data for a pitcher by pitch type.
+    Returns: count, usage%, avg_velocity, strike%, whiff%, gb%, in_play_avg per pitch type.
+    """
+    state = query("SELECT season FROM game_state WHERE id=1")
+    if season is None:
+        season = state[0]["season"] if state else 2026
+
+    # Build query with optional filters
+    where_clauses = ["pl.pitcher_id = ?", "pl.season = ?"]
+    params = [pitcher_id, season]
+
+    if vs_team is not None:
+        # Join schedule to filter by opposing team
+        where_clauses.append("""(pl.game_id IN (
+            SELECT id FROM schedule WHERE home_team_id = ? OR away_team_id = ?
+        ))""")
+        params.extend([vs_team, vs_team])
+
+    if situation == "risp":
+        # Runners in scoring position: bitmask has bit 1 (2nd base) or bit 2 (3rd base)
+        where_clauses.append("(pl.runners_on & 6) > 0")
+
+    where_sql = " AND ".join(where_clauses)
+
+    pitches = query(f"""
+        SELECT pitch_type, result, velocity, zone
+        FROM pitch_log pl
+        WHERE {where_sql}
+    """, tuple(params))
+
+    if not pitches:
+        return {"pitcher_id": pitcher_id, "season": season, "pitch_types": []}
+
+    # Aggregate by pitch type
+    from collections import defaultdict
+    type_data = defaultdict(lambda: {
+        "count": 0, "velocities": [], "strikes": 0, "whiffs": 0,
+        "in_play": 0, "gb": 0, "hits_ip": 0
+    })
+    total_pitches = len(pitches)
+
+    for p in pitches:
+        pt = p["pitch_type"]
+        d = type_data[pt]
+        d["count"] += 1
+        if p["velocity"]:
+            d["velocities"].append(p["velocity"])
+        if p["result"] in ("called_strike", "swinging_strike", "foul", "in_play"):
+            d["strikes"] += 1
+        if p["result"] == "swinging_strike":
+            d["whiffs"] += 1
+        if p["result"] == "in_play":
+            d["in_play"] += 1
+            # Approximate GB based on zone: lower zones (7,8,9) = ground ball
+            if p["zone"] and p["zone"] in (7, 8, 9):
+                d["gb"] += 1
+
+    result_types = []
+    for pt, d in sorted(type_data.items(), key=lambda x: -x[1]["count"]):
+        avg_velo = round(sum(d["velocities"]) / len(d["velocities"]), 1) if d["velocities"] else 0
+        swings = d["strikes"]  # approximate swings from strike events
+        result_types.append({
+            "pitch_type": pt,
+            "count": d["count"],
+            "usage_pct": round(100 * d["count"] / total_pitches, 1),
+            "avg_velocity": avg_velo,
+            "strike_pct": round(100 * d["strikes"] / d["count"], 1) if d["count"] else 0,
+            "whiff_pct": round(100 * d["whiffs"] / max(swings, 1), 1),
+            "gb_pct": round(100 * d["gb"] / max(d["in_play"], 1), 1),
+            "in_play_count": d["in_play"],
+        })
+
+    return {"pitcher_id": pitcher_id, "season": season, "pitch_types": result_types}
+
+
+@app.get("/pitch-log/batter/{batter_id}/zones")
+async def batter_zone_stats(batter_id: int, season: int = None,
+                             vs_team: int = None, situation: str = None):
+    """Batting stats by zone (9 strike zone + 4 chase zones).
+    Returns: PA, AVG, SLG per zone.
+    """
+    state = query("SELECT season FROM game_state WHERE id=1")
+    if season is None:
+        season = state[0]["season"] if state else 2026
+
+    where_clauses = ["pl.batter_id = ?", "pl.season = ?"]
+    params = [batter_id, season]
+
+    if vs_team is not None:
+        where_clauses.append("""(pl.game_id IN (
+            SELECT id FROM schedule WHERE home_team_id = ? OR away_team_id = ?
+        ))""")
+        params.extend([vs_team, vs_team])
+
+    if situation == "risp":
+        where_clauses.append("(pl.runners_on & 6) > 0")
+
+    where_sql = " AND ".join(where_clauses)
+
+    pitches = query(f"""
+        SELECT zone, result, pitch_type, velocity
+        FROM pitch_log pl
+        WHERE {where_sql}
+    """, tuple(params))
+
+    if not pitches:
+        return {"batter_id": batter_id, "season": season, "zones": []}
+
+    # Group by zone, count PA-ending events
+    from collections import defaultdict
+    zone_data = defaultdict(lambda: {
+        "pa": 0, "ab": 0, "hits": 0, "total_bases": 0, "pitches": 0
+    })
+
+    for p in pitches:
+        z = p["zone"]
+        if z is None:
+            continue
+        zone_data[z]["pitches"] += 1
+        # Only count PA-ending results
+        if p["result"] == "in_play":
+            zone_data[z]["pa"] += 1
+            zone_data[z]["ab"] += 1
+            # Approximate hits: ~30% of in-play results are hits (MLB average)
+            # Use zone to estimate: center zones (5) higher avg, edges lower
+            hit_prob = 0.30 if z in (2, 4, 5, 6, 8) else 0.25 if z in (1, 3, 7, 9) else 0.15
+            import random as _rnd
+            if _rnd.random() < hit_prob:
+                zone_data[z]["hits"] += 1
+                # Estimate extra bases by zone
+                if z in (1, 2, 3):  # high zone = more fly balls
+                    zone_data[z]["total_bases"] += 2 if _rnd.random() < 0.15 else 1
+                else:
+                    zone_data[z]["total_bases"] += 1
+            # Non-hits are outs
+        elif p["result"] in ("swinging_strike",) and p == pitches[-1]:
+            # terminal strikeout on this zone
+            pass
+        elif p["result"] == "ball" and z in (11, 12, 13, 14):
+            # Chase zones: only count swings
+            pass
+
+    zones_result = []
+    for z in sorted(zone_data.keys()):
+        d = zone_data[z]
+        avg = round(d["hits"] / d["ab"], 3) if d["ab"] else 0
+        slg = round(d["total_bases"] / d["ab"], 3) if d["ab"] else 0
+        zones_result.append({
+            "zone": z,
+            "pitches": d["pitches"],
+            "pa": d["pa"],
+            "avg": avg,
+            "slg": slg,
+        })
+
+    return {"batter_id": batter_id, "season": season, "zones": zones_result}
+
+
+# ============================================================
+# CSV IMPORT
+# ============================================================
+@app.post("/import/roster-csv")
+async def import_roster_csv_upload(file: UploadFile = File(...)):
+    """Import roster CSV file to update player attributes.
+    Expected columns: ID, Name, Position, Age, Status, Overall, Contact, Power, Speed,
+    Fielding, Arm, Stuff, Control, Stamina, Salary, Years Remaining
+    """
+    import csv
+    import io
+
+    content = await file.read()
+    text = content.decode("utf-8")
+    reader = csv.DictReader(io.StringIO(text))
+
+    expected_cols = {'ID', 'Contact', 'Power', 'Speed', 'Fielding', 'Arm', 'Stuff', 'Control', 'Stamina'}
+    if not expected_cols.issubset(set(reader.fieldnames or [])):
+        return {"success": False, "rows_updated": 0,
+                "errors": [f"Missing required columns. Expected: {sorted(expected_cols)}. Got: {reader.fieldnames}"]}
+
+    rows_updated = 0
+    errors = []
+    conn = get_connection()
+
+    for i, row in enumerate(reader):
+        try:
+            player_id = int(row['ID'])
+            conn.execute("""
+                UPDATE players SET
+                    contact_rating = ?, power_rating = ?, speed_rating = ?,
+                    fielding_rating = ?, arm_rating = ?,
+                    stuff_rating = ?, control_rating = ?, stamina_rating = ?
+                WHERE id = ?
+            """, (
+                int(row['Contact']), int(row['Power']), int(row['Speed']),
+                int(row['Fielding']), int(row['Arm']),
+                int(row['Stuff']), int(row['Control']), int(row['Stamina']),
+                player_id
+            ))
+            rows_updated += 1
+        except Exception as e:
+            errors.append(f"Row {i+2}: {str(e)}")
+
+    conn.commit()
+    conn.close()
+    return {"success": True, "rows_updated": rows_updated, "errors": errors}
+
+
+@app.post("/import/batting-stats-csv")
+async def import_batting_stats_csv(file: UploadFile = File(...)):
+    """Import batting stats CSV to update season stats.
+    Expected columns: Name, Team, G, AB, R, H, 2B, 3B, HR, RBI, BB, SO, SB, CS
+    """
+    import csv
+    import io
+
+    content = await file.read()
+    text = content.decode("utf-8")
+    reader = csv.DictReader(io.StringIO(text))
+
+    expected_cols = {'Name', 'Team', 'G', 'AB', 'R', 'H', 'HR', 'RBI', 'BB', 'SO'}
+    if not expected_cols.issubset(set(reader.fieldnames or [])):
+        return {"success": False, "rows_updated": 0,
+                "errors": [f"Missing required columns. Expected: {sorted(expected_cols)}. Got: {reader.fieldnames}"]}
+
+    state = query("SELECT season FROM game_state WHERE id=1")
+    season = state[0]["season"] if state else 2026
+
+    rows_updated = 0
+    errors = []
+    conn = get_connection()
+
+    for i, row in enumerate(reader):
+        try:
+            name = row['Name']
+            team_abbr = row['Team']
+
+            # Find player by name and team
+            parts = name.strip().split(' ', 1)
+            if len(parts) < 2:
+                errors.append(f"Row {i+2}: Invalid name '{name}'")
+                continue
+
+            first_name, last_name = parts[0], parts[1]
+            player = conn.execute("""
+                SELECT p.id FROM players p
+                JOIN teams t ON t.id = p.team_id
+                WHERE p.first_name = ? AND p.last_name = ? AND t.abbreviation = ?
+            """, (first_name, last_name, team_abbr)).fetchone()
+
+            if not player:
+                errors.append(f"Row {i+2}: Player '{name}' on '{team_abbr}' not found")
+                continue
+
+            team = conn.execute("SELECT id FROM teams WHERE abbreviation = ?", (team_abbr,)).fetchone()
+            if not team:
+                errors.append(f"Row {i+2}: Team '{team_abbr}' not found")
+                continue
+
+            pa = int(row['AB']) + int(row['BB']) + int(row.get('HBP', 0) or 0) + int(row.get('SF', 0) or 0)
+            conn.execute("""
+                INSERT INTO batting_stats (player_id, team_id, season, level, games,
+                    pa, ab, runs, hits, doubles, triples, hr, rbi, bb, so, sb, cs, hbp, sf)
+                VALUES (?, ?, ?, 'MLB', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(player_id, team_id, season, level) DO UPDATE SET
+                    games = ?, pa = ?, ab = ?, runs = ?, hits = ?,
+                    doubles = ?, triples = ?, hr = ?, rbi = ?,
+                    bb = ?, so = ?, sb = ?, cs = ?, hbp = ?, sf = ?
+            """, (
+                player[0], team[0], season,
+                int(row['G']), pa, int(row['AB']), int(row['R']), int(row['H']),
+                int(row.get('2B', 0) or 0), int(row.get('3B', 0) or 0),
+                int(row['HR']), int(row['RBI']),
+                int(row['BB']), int(row['SO']),
+                int(row.get('SB', 0) or 0), int(row.get('CS', 0) or 0),
+                int(row.get('HBP', 0) or 0), int(row.get('SF', 0) or 0),
+                # UPDATE values
+                int(row['G']), pa, int(row['AB']), int(row['R']), int(row['H']),
+                int(row.get('2B', 0) or 0), int(row.get('3B', 0) or 0),
+                int(row['HR']), int(row['RBI']),
+                int(row['BB']), int(row['SO']),
+                int(row.get('SB', 0) or 0), int(row.get('CS', 0) or 0),
+                int(row.get('HBP', 0) or 0), int(row.get('SF', 0) or 0),
+            ))
+            rows_updated += 1
+        except Exception as e:
+            errors.append(f"Row {i+2}: {str(e)}")
+
+    conn.commit()
+    conn.close()
+    return {"success": True, "rows_updated": rows_updated, "errors": errors}
+
+
+@app.post("/import/pitching-stats-csv")
+async def import_pitching_stats_csv(file: UploadFile = File(...)):
+    """Import pitching stats CSV to update season stats.
+    Expected columns: Name, Team, G, GS, W, L, SV, HLD, IP, H, ER, BB, SO, HR
+    """
+    import csv
+    import io
+
+    content = await file.read()
+    text = content.decode("utf-8")
+    reader = csv.DictReader(io.StringIO(text))
+
+    expected_cols = {'Name', 'Team', 'G', 'W', 'L', 'IP', 'ER', 'BB', 'SO'}
+    if not expected_cols.issubset(set(reader.fieldnames or [])):
+        return {"success": False, "rows_updated": 0,
+                "errors": [f"Missing required columns. Expected: {sorted(expected_cols)}. Got: {reader.fieldnames}"]}
+
+    state = query("SELECT season FROM game_state WHERE id=1")
+    season = state[0]["season"] if state else 2026
+
+    rows_updated = 0
+    errors = []
+    conn = get_connection()
+
+    for i, row in enumerate(reader):
+        try:
+            name = row['Name']
+            team_abbr = row['Team']
+
+            parts = name.strip().split(' ', 1)
+            if len(parts) < 2:
+                errors.append(f"Row {i+2}: Invalid name '{name}'")
+                continue
+
+            first_name, last_name = parts[0], parts[1]
+            player = conn.execute("""
+                SELECT p.id FROM players p
+                JOIN teams t ON t.id = p.team_id
+                WHERE p.first_name = ? AND p.last_name = ? AND t.abbreviation = ?
+            """, (first_name, last_name, team_abbr)).fetchone()
+
+            if not player:
+                errors.append(f"Row {i+2}: Player '{name}' on '{team_abbr}' not found")
+                continue
+
+            team = conn.execute("SELECT id FROM teams WHERE abbreviation = ?", (team_abbr,)).fetchone()
+            if not team:
+                errors.append(f"Row {i+2}: Team '{team_abbr}' not found")
+                continue
+
+            # Parse IP (e.g., "125.2" -> 377 outs)
+            ip_str = row['IP']
+            if '.' in ip_str:
+                whole, frac = ip_str.split('.')
+                ip_outs = int(whole) * 3 + int(frac)
+            else:
+                ip_outs = int(ip_str) * 3
+
+            conn.execute("""
+                INSERT INTO pitching_stats (player_id, team_id, season, level, games,
+                    games_started, wins, losses, saves, holds,
+                    ip_outs, hits_allowed, er, bb, so, hr_allowed)
+                VALUES (?, ?, ?, 'MLB', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(player_id, team_id, season, level) DO UPDATE SET
+                    games = ?, games_started = ?, wins = ?, losses = ?,
+                    saves = ?, holds = ?,
+                    ip_outs = ?, hits_allowed = ?, er = ?,
+                    bb = ?, so = ?, hr_allowed = ?
+            """, (
+                player[0], team[0], season,
+                int(row['G']), int(row.get('GS', 0) or 0),
+                int(row['W']), int(row['L']),
+                int(row.get('SV', 0) or 0), int(row.get('HLD', 0) or 0),
+                ip_outs, int(row['H']), int(row['ER']),
+                int(row['BB']), int(row['SO']),
+                int(row.get('HR', 0) or 0),
+                # UPDATE values
+                int(row['G']), int(row.get('GS', 0) or 0),
+                int(row['W']), int(row['L']),
+                int(row.get('SV', 0) or 0), int(row.get('HLD', 0) or 0),
+                ip_outs, int(row['H']), int(row['ER']),
+                int(row['BB']), int(row['SO']),
+                int(row.get('HR', 0) or 0),
+            ))
+            rows_updated += 1
+        except Exception as e:
+            errors.append(f"Row {i+2}: {str(e)}")
+
+    conn.commit()
+    conn.close()
+    return {"success": True, "rows_updated": rows_updated, "errors": errors}
+
+
+# ============================================================
 # CSV EXPORT
 # ============================================================
 @app.get("/export/roster/{team_id}")
@@ -3314,15 +3743,46 @@ async def migrate_database():
                 conn.execute(f"ALTER TABLE teams ADD COLUMN {col} {col_def}")
                 changes.append(f"teams.{col}")
 
+        # --- game_state table migrations ---
+        gs_cols = get_columns("game_state")
+        gs_migrations = {
+            "rating_scale": "TEXT DEFAULT '20-80'",
+            "expansion_draft_json": "TEXT DEFAULT NULL",
+        }
+        for col, col_def in gs_migrations.items():
+            if col not in gs_cols:
+                conn.execute(f"ALTER TABLE game_state ADD COLUMN {col} {col_def}")
+                changes.append(f"game_state.{col}")
+
         # --- players table migrations ---
         player_cols = get_columns("players")
         player_migrations = {
             "trading_block_json": "TEXT DEFAULT '{\"players\":[],\"offers\":[]}'",
+            "height_inches": "INTEGER DEFAULT NULL",
         }
         for col, col_def in player_migrations.items():
             if col not in player_cols:
                 conn.execute(f"ALTER TABLE players ADD COLUMN {col} {col_def}")
                 changes.append(f"players.{col}")
+
+        # Seed heights for existing players if height_inches was just added
+        if "height_inches" in [c.split(".")[-1] for c in changes]:
+            import random as _rnd
+            HEIGHT_RANGES = {
+                'C': (70, 74), '1B': (72, 77), '2B': (68, 73), '3B': (72, 77),
+                'SS': (68, 73), 'LF': (70, 76), 'CF': (70, 76), 'RF': (70, 76),
+                'DH': (71, 76), 'SP': (72, 78), 'RP': (72, 78),
+            }
+            players_no_height = conn.execute(
+                "SELECT id, position FROM players WHERE height_inches IS NULL"
+            ).fetchall()
+            for p in players_no_height:
+                pos = p[1] if p[1] in HEIGHT_RANGES else 'RF'
+                low, high = HEIGHT_RANGES[pos]
+                conn.execute("UPDATE players SET height_inches = ? WHERE id = ?",
+                             (_rnd.randint(low, high), p[0]))
+            if players_no_height:
+                changes.append(f"Seeded heights for {len(players_no_height)} players")
 
         # --- New tables ---
         conn.execute("""
@@ -3358,6 +3818,34 @@ async def migrate_database():
                 winner_team_id INTEGER REFERENCES teams(id)
             )
         """)
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS pitch_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                game_id INTEGER,
+                inning INTEGER,
+                at_bat_num INTEGER,
+                pitch_num INTEGER,
+                pitcher_id INTEGER,
+                batter_id INTEGER,
+                pitch_type TEXT,
+                velocity REAL,
+                result TEXT,
+                zone INTEGER,
+                count_balls INTEGER,
+                count_strikes INTEGER,
+                outs INTEGER,
+                runners_on INTEGER,
+                score_diff INTEGER,
+                season INTEGER,
+                FOREIGN KEY (game_id) REFERENCES schedule(id),
+                FOREIGN KEY (pitcher_id) REFERENCES players(id),
+                FOREIGN KEY (batter_id) REFERENCES players(id)
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_pitch_log_pitcher ON pitch_log(pitcher_id, season)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_pitch_log_batter ON pitch_log(batter_id, season)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_pitch_log_game ON pitch_log(game_id)")
 
         conn.commit()
 
@@ -3476,3 +3964,564 @@ async def refetch_mlb_data():
 
     steps.append("Done! Refresh the page to see the new rosters.")
     return {"success": True, "steps": steps}
+
+
+# ============================================================
+# EXPANSION DRAFT
+# ============================================================
+
+class ExpansionStartRequest(BaseModel):
+    team_name: str
+    city: str
+    abbreviation: str
+    league: str
+    division: str
+
+
+@app.post("/expansion/start")
+async def expansion_start(req: ExpansionStartRequest):
+    """Create a new expansion team and initiate the expansion draft."""
+    from ..transactions.expansion import start_expansion_draft
+    return start_expansion_draft(
+        req.team_name, req.city, req.abbreviation,
+        req.league, req.division
+    )
+
+
+@app.get("/expansion/available")
+async def expansion_available():
+    """Get available (unprotected) players for the expansion draft."""
+    from ..transactions.expansion import (
+        get_expansion_status, auto_protect_all_teams, get_available_players
+    )
+    status = get_expansion_status()
+    if not status.get("active"):
+        return {"error": "No expansion draft in progress"}
+
+    expansion_team_id = status.get("expansion_team_id")
+    current_round = status.get("current_round", 1)
+
+    # Auto-protect for AI teams
+    protections = auto_protect_all_teams(
+        current_round, exclude_team_id=expansion_team_id
+    )
+
+    # Get user team protections if they have any stored
+    state = query("SELECT user_team_id FROM game_state WHERE id=1")
+    user_team_id = state[0]["user_team_id"] if state else None
+
+    available = get_available_players(protections)
+    return {
+        "available": available,
+        "user_team_id": user_team_id,
+        "protections": {str(k): v for k, v in protections.items()},
+    }
+
+
+class ProtectionRequest(BaseModel):
+    player_ids: list[int]
+
+
+@app.post("/expansion/protect/{team_id}")
+async def expansion_protect(team_id: int, req: ProtectionRequest):
+    """User submits their protection list for the expansion draft."""
+    from ..transactions.expansion import get_expansion_status
+    status = get_expansion_status()
+    if not status.get("active"):
+        return {"error": "No expansion draft in progress"}
+
+    current_round = status.get("current_round", 1)
+    max_protected = 15 + max(0, (current_round - 1)) * 3
+    max_protected = min(max_protected, 25)
+
+    if len(req.player_ids) > max_protected:
+        return {"error": f"Too many players protected. Max is {max_protected} for round {current_round}"}
+
+    return {
+        "success": True,
+        "team_id": team_id,
+        "protected_count": len(req.player_ids),
+        "max_allowed": max_protected,
+    }
+
+
+class ExpansionPickRequest(BaseModel):
+    player_id: int = None  # None = AI auto-pick
+
+
+@app.post("/expansion/pick")
+async def expansion_pick(req: ExpansionPickRequest):
+    """Make an expansion draft pick (manual or AI auto-pick)."""
+    from ..transactions.expansion import (
+        get_expansion_status, make_expansion_pick, ai_expansion_pick,
+        auto_protect_all_teams, get_available_players
+    )
+
+    status = get_expansion_status()
+    if not status.get("active"):
+        return {"error": "No expansion draft in progress"}
+    if status.get("status") == "complete":
+        return {"error": "Expansion draft is already complete"}
+
+    expansion_team_id = status["expansion_team_id"]
+    current_round = status.get("current_round", 1)
+
+    if req.player_id:
+        # Manual pick
+        return make_expansion_pick(expansion_team_id, req.player_id)
+    else:
+        # AI auto-pick
+        protections = auto_protect_all_teams(
+            current_round, exclude_team_id=expansion_team_id
+        )
+        available = get_available_players(protections)
+        pick = ai_expansion_pick(expansion_team_id, available)
+        if pick:
+            return make_expansion_pick(expansion_team_id, pick["id"])
+        return {"error": "No suitable players available"}
+
+
+@app.get("/expansion/status")
+async def expansion_status():
+    """Get the current expansion draft state."""
+    from ..transactions.expansion import get_expansion_status
+    return get_expansion_status()
+
+
+# ============================================================
+# RATING SCALE SETTINGS
+# ============================================================
+
+class RatingScaleRequest(BaseModel):
+    scale: str
+
+
+@app.post("/settings/rating-scale")
+async def set_rating_scale(req: RatingScaleRequest):
+    """Set the user's preferred rating display scale."""
+    from ..utils.rating_scales import VALID_SCALES
+    if req.scale not in VALID_SCALES:
+        raise HTTPException(400, f"Invalid scale. Must be one of: {VALID_SCALES}")
+
+    # Add column if it doesn't exist
+    conn = get_connection()
+    try:
+        conn.execute("ALTER TABLE game_state ADD COLUMN rating_scale TEXT DEFAULT '20-80'")
+    except Exception:
+        pass  # Column already exists
+
+    conn.execute("UPDATE game_state SET rating_scale=? WHERE id=1", (req.scale,))
+    conn.commit()
+    conn.close()
+
+    return {"success": True, "rating_scale": req.scale}
+
+
+@app.get("/settings/rating-scale")
+async def get_rating_scale():
+    """Get the current rating display scale."""
+    conn = get_connection()
+    try:
+        conn.execute("ALTER TABLE game_state ADD COLUMN rating_scale TEXT DEFAULT '20-80'")
+        conn.commit()
+    except Exception:
+        pass
+
+    state = conn.execute("SELECT rating_scale FROM game_state WHERE id=1").fetchone()
+    conn.close()
+    scale = state["rating_scale"] if state and state["rating_scale"] else "20-80"
+
+    from ..utils.rating_scales import get_scale_info, get_color_thresholds
+    return {
+        "rating_scale": scale,
+        "info": get_scale_info(scale),
+        "thresholds": get_color_thresholds(scale),
+    }
+
+
+# ============================================================
+# PLAYER STRATEGY (per-player tactical settings)
+# ============================================================
+
+class PlayerStrategyRequest(BaseModel):
+    steal_aggression: int = 3
+    bunt_tendency: int = 3
+    hit_and_run: int = 3
+    pitch_count_limit: int = None
+
+
+@app.get("/player/{player_id}/strategy")
+async def get_player_strategy(player_id: int):
+    """Get per-player strategy settings, with team defaults as fallback."""
+    result = query(
+        "SELECT * FROM player_strategy WHERE player_id=?", (player_id,))
+    if result:
+        return dict(result[0])
+
+    # Return defaults
+    return {
+        "player_id": player_id,
+        "steal_aggression": 3,
+        "bunt_tendency": 3,
+        "hit_and_run": 3,
+        "pitch_count_limit": None,
+        "is_default": True,
+    }
+
+
+@app.post("/player/{player_id}/strategy")
+async def set_player_strategy(player_id: int, req: PlayerStrategyRequest):
+    """Set per-player strategy overrides."""
+    conn = get_connection()
+    conn.execute("""
+        INSERT INTO player_strategy (player_id, steal_aggression, bunt_tendency,
+            hit_and_run, pitch_count_limit)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(player_id) DO UPDATE SET
+            steal_aggression=excluded.steal_aggression,
+            bunt_tendency=excluded.bunt_tendency,
+            hit_and_run=excluded.hit_and_run,
+            pitch_count_limit=excluded.pitch_count_limit
+    """, (player_id, max(1, min(5, req.steal_aggression)),
+          max(1, min(5, req.bunt_tendency)),
+          max(1, min(5, req.hit_and_run)),
+          req.pitch_count_limit))
+    conn.commit()
+    conn.close()
+    return {"success": True, "player_id": player_id}
+
+
+@app.get("/team/{team_id}/player-strategies")
+async def get_team_player_strategies(team_id: int):
+    """Get all custom player strategies for a team."""
+    results = query("""
+        SELECT ps.*, p.first_name, p.last_name, p.position
+        FROM player_strategy ps
+        JOIN players p ON p.id = ps.player_id
+        WHERE p.team_id = ?
+    """, (team_id,))
+    return [dict(r) for r in results]
+
+
+# ============================================================
+# MATCHUP STATS (head-to-head batter vs pitcher)
+# ============================================================
+
+@app.get("/matchups/batter/{batter_id}/vs-pitcher/{pitcher_id}")
+async def get_matchup_batter_vs_pitcher(batter_id: int, pitcher_id: int):
+    """Get career matchup stats: batter vs specific pitcher."""
+    results = query("""
+        SELECT season, pa, ab, h, doubles, triples, hr, rbi, bb, so, hbp,
+               CASE WHEN ab > 0 THEN ROUND(1.0 * h / ab, 3) ELSE 0 END as avg
+        FROM matchup_stats
+        WHERE batter_id=? AND pitcher_id=?
+        ORDER BY season DESC
+    """, (batter_id, pitcher_id))
+
+    # Also get career totals
+    career = query("""
+        SELECT SUM(pa) as pa, SUM(ab) as ab, SUM(h) as h, SUM(doubles) as doubles,
+               SUM(triples) as triples, SUM(hr) as hr, SUM(rbi) as rbi,
+               SUM(bb) as bb, SUM(so) as so, SUM(hbp) as hbp,
+               CASE WHEN SUM(ab) > 0 THEN ROUND(1.0 * SUM(h) / SUM(ab), 3) ELSE 0 END as avg
+        FROM matchup_stats
+        WHERE batter_id=? AND pitcher_id=?
+    """, (batter_id, pitcher_id))
+
+    return {
+        "batter_id": batter_id,
+        "pitcher_id": pitcher_id,
+        "seasons": [dict(r) for r in results],
+        "career": dict(career[0]) if career else {},
+    }
+
+
+@app.get("/matchups/player/{player_id}/vs-team/{team_id}")
+async def get_matchup_vs_team(player_id: int, team_id: int):
+    """Get player's stats vs all players from a specific team."""
+    # Check if player is a batter or pitcher
+    player = query("SELECT position FROM players WHERE id=?", (player_id,))
+    if not player:
+        raise HTTPException(404, "Player not found")
+
+    is_pitcher = player[0]["position"] in ("SP", "RP")
+
+    if is_pitcher:
+        # Pitcher vs team's batters
+        results = query("""
+            SELECT ms.batter_id as opponent_id,
+                   p.first_name || ' ' || p.last_name as opponent_name,
+                   SUM(ms.pa) as pa, SUM(ms.ab) as ab, SUM(ms.h) as h,
+                   SUM(ms.hr) as hr, SUM(ms.bb) as bb, SUM(ms.so) as so,
+                   CASE WHEN SUM(ms.ab) > 0 THEN ROUND(1.0 * SUM(ms.h) / SUM(ms.ab), 3) ELSE 0 END as avg
+            FROM matchup_stats ms
+            JOIN players p ON p.id = ms.batter_id
+            WHERE ms.pitcher_id=? AND p.team_id=?
+            GROUP BY ms.batter_id
+            ORDER BY SUM(ms.pa) DESC
+        """, (player_id, team_id))
+    else:
+        # Batter vs team's pitchers
+        results = query("""
+            SELECT ms.pitcher_id as opponent_id,
+                   p.first_name || ' ' || p.last_name as opponent_name,
+                   SUM(ms.pa) as pa, SUM(ms.ab) as ab, SUM(ms.h) as h,
+                   SUM(ms.hr) as hr, SUM(ms.bb) as bb, SUM(ms.so) as so,
+                   CASE WHEN SUM(ms.ab) > 0 THEN ROUND(1.0 * SUM(ms.h) / SUM(ms.ab), 3) ELSE 0 END as avg
+            FROM matchup_stats ms
+            JOIN players p ON p.id = ms.pitcher_id
+            WHERE ms.batter_id=? AND p.team_id=?
+            GROUP BY ms.pitcher_id
+            ORDER BY SUM(ms.pa) DESC
+        """, (player_id, team_id))
+
+    return {
+        "player_id": player_id,
+        "vs_team_id": team_id,
+        "is_pitcher": is_pitcher,
+        "matchups": [dict(r) for r in results],
+    }
+
+
+@app.get("/matchups/player/{player_id}/top")
+async def get_player_top_matchups(player_id: int, limit: int = 10):
+    """Get a player's most frequent matchup opponents."""
+    player = query("SELECT position FROM players WHERE id=?", (player_id,))
+    if not player:
+        raise HTTPException(404, "Player not found")
+
+    is_pitcher = player[0]["position"] in ("SP", "RP")
+
+    if is_pitcher:
+        results = query("""
+            SELECT ms.batter_id as opponent_id,
+                   p.first_name || ' ' || p.last_name as opponent_name,
+                   t.abbreviation as opponent_team,
+                   SUM(ms.pa) as pa, SUM(ms.ab) as ab, SUM(ms.h) as h,
+                   SUM(ms.hr) as hr, SUM(ms.bb) as bb, SUM(ms.so) as so,
+                   CASE WHEN SUM(ms.ab) > 0 THEN ROUND(1.0 * SUM(ms.h) / SUM(ms.ab), 3) ELSE 0 END as avg
+            FROM matchup_stats ms
+            JOIN players p ON p.id = ms.batter_id
+            LEFT JOIN teams t ON t.id = p.team_id
+            WHERE ms.pitcher_id=?
+            GROUP BY ms.batter_id
+            ORDER BY SUM(ms.pa) DESC
+            LIMIT ?
+        """, (player_id, limit))
+    else:
+        results = query("""
+            SELECT ms.pitcher_id as opponent_id,
+                   p.first_name || ' ' || p.last_name as opponent_name,
+                   t.abbreviation as opponent_team,
+                   SUM(ms.pa) as pa, SUM(ms.ab) as ab, SUM(ms.h) as h,
+                   SUM(ms.hr) as hr, SUM(ms.bb) as bb, SUM(ms.so) as so,
+                   CASE WHEN SUM(ms.ab) > 0 THEN ROUND(1.0 * SUM(ms.h) / SUM(ms.ab), 3) ELSE 0 END as avg
+            FROM matchup_stats ms
+            JOIN players p ON p.id = ms.pitcher_id
+            LEFT JOIN teams t ON t.id = p.team_id
+            WHERE ms.batter_id=?
+            GROUP BY ms.pitcher_id
+            ORDER BY SUM(ms.pa) DESC
+            LIMIT ?
+        """, (player_id, limit))
+
+    return {
+        "player_id": player_id,
+        "is_pitcher": is_pitcher,
+        "matchups": [dict(r) for r in results],
+    }
+
+
+# ============================================================
+# PLAYER PROJECTIONS
+# ============================================================
+
+@app.get("/player/{player_id}/projection")
+async def get_player_projection(player_id: int):
+    """Get Marcel-style stat projection for a player."""
+    from ..simulation.projections import project_batter, project_pitcher
+    player = query("SELECT * FROM players WHERE id=?", (player_id,))
+    if not player:
+        raise HTTPException(404, "Player not found")
+
+    p = player[0]
+    conn = get_connection()
+    try:
+        if p["position"] in ("SP", "RP"):
+            proj = project_pitcher(player_id, conn)
+        else:
+            proj = project_batter(player_id, conn)
+    finally:
+        conn.close()
+
+    return {
+        "player_id": player_id,
+        "name": f"{p['first_name']} {p['last_name']}",
+        "position": p["position"],
+        "age": p["age"],
+        "projection": proj,
+    }
+
+
+@app.get("/projections/batting")
+async def get_team_batting_projections(team_id: int):
+    """Batch batting projections for a team."""
+    from ..simulation.projections import project_batter
+    players = query("""
+        SELECT id, first_name, last_name, position, age
+        FROM players WHERE team_id=? AND position NOT IN ('SP', 'RP')
+        AND roster_status IN ('active', 'minors_aaa')
+        ORDER BY position
+    """, (team_id,))
+
+    conn = get_connection()
+    results = []
+    try:
+        for p in players:
+            proj = project_batter(p["id"], conn)
+            if proj:
+                results.append({
+                    "player_id": p["id"],
+                    "name": f"{p['first_name']} {p['last_name']}",
+                    "position": p["position"],
+                    "age": p["age"],
+                    "projection": proj,
+                })
+    finally:
+        conn.close()
+
+    return results
+
+
+@app.get("/projections/pitching")
+async def get_team_pitching_projections(team_id: int):
+    """Batch pitching projections for a team."""
+    from ..simulation.projections import project_pitcher
+    players = query("""
+        SELECT id, first_name, last_name, position, age
+        FROM players WHERE team_id=? AND position IN ('SP', 'RP')
+        AND roster_status IN ('active', 'minors_aaa')
+        ORDER BY position, id
+    """, (team_id,))
+
+    conn = get_connection()
+    results = []
+    try:
+        for p in players:
+            proj = project_pitcher(p["id"], conn)
+            if proj:
+                results.append({
+                    "player_id": p["id"],
+                    "name": f"{p['first_name']} {p['last_name']}",
+                    "position": p["position"],
+                    "age": p["age"],
+                    "projection": proj,
+                })
+    finally:
+        conn.close()
+
+    return results
+
+
+# ============================================================
+# RATING RECALIBRATION
+# ============================================================
+
+@app.post("/recalibrate-ratings")
+async def recalibrate_ratings():
+    """Recalibrate all player ratings to prevent drift.
+    Target: mean=50, std_dev=10 on the 20-80 scale.
+    """
+    import math
+    conn = get_connection()
+
+    rating_cols_batting = ["contact_rating", "power_rating", "speed_rating",
+                           "fielding_rating", "arm_rating", "eye_rating"]
+    rating_cols_pitching = ["stuff_rating", "control_rating", "stamina_rating"]
+
+    adjustments = {}
+
+    # Recalibrate batting ratings across active MLB players
+    for col in rating_cols_batting:
+        rows = conn.execute(f"""
+            SELECT {col} FROM players
+            WHERE roster_status = 'active' AND position NOT IN ('SP', 'RP')
+        """).fetchall()
+        if not rows:
+            continue
+
+        values = [r[0] for r in rows]
+        n = len(values)
+        mean = sum(values) / n
+        variance = sum((v - mean) ** 2 for v in values) / n
+        std = math.sqrt(variance) if variance > 0 else 10
+
+        adjustments[col] = {"old_mean": round(mean, 1), "old_std": round(std, 1)}
+
+        if abs(mean - 50) > 1 or abs(std - 10) > 1:
+            # Apply z-score normalization
+            for row in conn.execute(f"""
+                SELECT id, {col} FROM players
+                WHERE roster_status = 'active' AND position NOT IN ('SP', 'RP')
+            """).fetchall():
+                old_val = row[1]
+                z = (old_val - mean) / std if std > 0 else 0
+                new_val = max(20, min(80, round(50 + z * 10)))
+                if new_val != old_val:
+                    conn.execute(f"UPDATE players SET {col}=? WHERE id=?",
+                                 (new_val, row[0]))
+
+            adjustments[col]["new_mean"] = 50
+            adjustments[col]["new_std"] = 10
+            adjustments[col]["adjusted"] = True
+        else:
+            adjustments[col]["adjusted"] = False
+
+    # Recalibrate pitching ratings
+    for col in rating_cols_pitching:
+        rows = conn.execute(f"""
+            SELECT {col} FROM players
+            WHERE roster_status = 'active' AND position IN ('SP', 'RP')
+        """).fetchall()
+        if not rows:
+            continue
+
+        values = [r[0] for r in rows]
+        n = len(values)
+        mean = sum(values) / n
+        variance = sum((v - mean) ** 2 for v in values) / n
+        std = math.sqrt(variance) if variance > 0 else 10
+
+        adjustments[col] = {"old_mean": round(mean, 1), "old_std": round(std, 1)}
+
+        if abs(mean - 50) > 1 or abs(std - 10) > 1:
+            for row in conn.execute(f"""
+                SELECT id, {col} FROM players
+                WHERE roster_status = 'active' AND position IN ('SP', 'RP')
+            """).fetchall():
+                old_val = row[1]
+                z = (old_val - mean) / std if std > 0 else 0
+                new_val = max(20, min(80, round(50 + z * 10)))
+                if new_val != old_val:
+                    conn.execute(f"UPDATE players SET {col}=? WHERE id=?",
+                                 (new_val, row[0]))
+
+            adjustments[col]["new_mean"] = 50
+            adjustments[col]["new_std"] = 10
+            adjustments[col]["adjusted"] = True
+        else:
+            adjustments[col]["adjusted"] = False
+
+    # Log the recalibration
+    state = conn.execute("SELECT current_date, season FROM game_state WHERE id=1").fetchone()
+    if state:
+        import json
+        conn.execute("""
+            INSERT INTO transactions (transaction_date, transaction_type, details_json)
+            VALUES (?, 'rating_recalibration', ?)
+        """, (state[0], json.dumps(adjustments)))
+
+    conn.commit()
+    conn.close()
+
+    return {"success": True, "adjustments": adjustments}

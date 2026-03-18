@@ -125,3 +125,99 @@ def executemany(sql: str, params_list: list, db_path: str = None):
     conn.executemany(sql, params_list)
     conn.commit()
     conn.close()
+
+
+def migrate_phase1_gap_closing(db_path: str = None):
+    """Add new tables and columns for Phase 1 gap-closing features.
+
+    Adds: player_strategy, matchup_stats, pitch_log tables,
+    height_inches column, rating_scale setting.
+    """
+    import random
+    conn = get_connection(db_path)
+    cursor = conn.cursor()
+
+    # New tables (CREATE IF NOT EXISTS is safe to re-run)
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS player_strategy (
+            player_id INTEGER PRIMARY KEY,
+            steal_aggression INTEGER NOT NULL DEFAULT 3,
+            bunt_tendency INTEGER NOT NULL DEFAULT 3,
+            hit_and_run INTEGER NOT NULL DEFAULT 3,
+            pitch_count_limit INTEGER DEFAULT NULL,
+            FOREIGN KEY (player_id) REFERENCES players(id)
+        );
+        CREATE TABLE IF NOT EXISTS matchup_stats (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            batter_id INTEGER NOT NULL,
+            pitcher_id INTEGER NOT NULL,
+            season INTEGER NOT NULL,
+            pa INTEGER NOT NULL DEFAULT 0,
+            ab INTEGER NOT NULL DEFAULT 0,
+            h INTEGER NOT NULL DEFAULT 0,
+            doubles INTEGER NOT NULL DEFAULT 0,
+            triples INTEGER NOT NULL DEFAULT 0,
+            hr INTEGER NOT NULL DEFAULT 0,
+            rbi INTEGER NOT NULL DEFAULT 0,
+            bb INTEGER NOT NULL DEFAULT 0,
+            so INTEGER NOT NULL DEFAULT 0,
+            hbp INTEGER NOT NULL DEFAULT 0,
+            UNIQUE(batter_id, pitcher_id, season),
+            FOREIGN KEY (batter_id) REFERENCES players(id),
+            FOREIGN KEY (pitcher_id) REFERENCES players(id)
+        );
+        CREATE TABLE IF NOT EXISTS pitch_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            game_id INTEGER,
+            inning INTEGER,
+            at_bat_num INTEGER,
+            pitch_num INTEGER,
+            pitcher_id INTEGER,
+            batter_id INTEGER,
+            pitch_type TEXT,
+            velocity REAL,
+            result TEXT,
+            zone INTEGER,
+            count_balls INTEGER,
+            count_strikes INTEGER,
+            outs INTEGER,
+            runners_on INTEGER,
+            score_diff INTEGER,
+            season INTEGER,
+            FOREIGN KEY (game_id) REFERENCES schedule(id),
+            FOREIGN KEY (pitcher_id) REFERENCES players(id),
+            FOREIGN KEY (batter_id) REFERENCES players(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_matchup_stats_batter ON matchup_stats(batter_id, season);
+        CREATE INDEX IF NOT EXISTS idx_matchup_stats_pitcher ON matchup_stats(pitcher_id, season);
+        CREATE INDEX IF NOT EXISTS idx_pitch_log_pitcher ON pitch_log(pitcher_id, season);
+        CREATE INDEX IF NOT EXISTS idx_pitch_log_batter ON pitch_log(batter_id, season);
+        CREATE INDEX IF NOT EXISTS idx_pitch_log_game ON pitch_log(game_id);
+    """)
+
+    # Add height_inches to players if missing
+    cursor.execute("PRAGMA table_info(players)")
+    player_cols = {row[1] for row in cursor.fetchall()}
+    if "height_inches" not in player_cols:
+        conn.execute("ALTER TABLE players ADD COLUMN height_inches INTEGER DEFAULT NULL")
+        # Seed heights for existing players based on position
+        HEIGHT_RANGES = {
+            'C': (70, 74), '1B': (72, 77), '2B': (68, 73), '3B': (72, 77),
+            'SS': (68, 73), 'LF': (70, 76), 'CF': (70, 76), 'RF': (70, 76),
+            'DH': (71, 76), 'SP': (72, 78), 'RP': (72, 78),
+        }
+        players = conn.execute("SELECT id, position FROM players WHERE height_inches IS NULL").fetchall()
+        for p in players:
+            pos = p[1] if p[1] in HEIGHT_RANGES else 'RF'
+            low, high = HEIGHT_RANGES[pos]
+            height = random.randint(low, high)
+            conn.execute("UPDATE players SET height_inches = ? WHERE id = ?", (height, p[0]))
+
+    # Add rating_scale to game_state if missing
+    cursor.execute("PRAGMA table_info(game_state)")
+    gs_cols = {row[1] for row in cursor.fetchall()}
+    if "rating_scale" not in gs_cols:
+        conn.execute("ALTER TABLE game_state ADD COLUMN rating_scale TEXT NOT NULL DEFAULT '20-80'")
+
+    conn.commit()
+    conn.close()

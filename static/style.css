@@ -524,7 +524,8 @@ a:hover { text-decoration: underline; }
 
 .sim-controls {
   display: flex;
-  gap: 6px;
+  flex-wrap: wrap;
+  gap: 4px;
 }
 
 .sim-btn {
@@ -564,6 +565,33 @@ a:hover { text-decoration: underline; }
   border-color: var(--text-tertiary);
 }
 .sim-btn-week:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.sim-btn-play {
+  background: linear-gradient(135deg, #2d8a4e, #1a6b35);
+  color: #fff;
+  box-shadow: 0 2px 8px rgba(45,138,78,0.3);
+}
+.sim-btn-play:hover {
+  background: linear-gradient(135deg, #3a9d5c, #2d8a4e);
+  box-shadow: 0 4px 16px rgba(45,138,78,0.4);
+}
+.sim-btn-play.sim-playing {
+  background: linear-gradient(135deg, #c84e4e, #a83a3a);
+  box-shadow: 0 2px 8px rgba(200,78,78,0.3);
+  animation: pulse-glow 2s ease-in-out infinite;
+}
+.sim-btn-play.sim-playing:hover {
+  background: linear-gradient(135deg, #d46262, #c84e4e);
+}
+@keyframes pulse-glow {
+  0%, 100% { box-shadow: 0 2px 8px rgba(200,78,78,0.3); }
+  50% { box-shadow: 0 4px 16px rgba(200,78,78,0.6); }
+}
+
+#sim-speed-select {
+  flex: 0 0 auto;
+  min-width: 90px;
+}
 
 .sidebar-controls {
   display: flex;
@@ -636,6 +664,21 @@ a:hover { text-decoration: underline; }
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.game-clock {
+  font-size: 16px;
+  font-weight: 800;
+  color: var(--gold, #c8a44e);
+  font-family: 'Bitter', Georgia, serif;
+  letter-spacing: 0.5px;
+  padding: 2px 10px;
+  border: 1px solid var(--gold, #c8a44e);
+  border-radius: 4px;
+  background: rgba(200, 164, 78, 0.08);
+  font-variant-numeric: tabular-nums;
+  min-width: 180px;
+  text-align: center;
 }
 
 .header-date {
@@ -2495,4 +2538,163 @@ tr.standings-playoff:hover {
 .kb-help-row span:last-child {
   text-align: right;
   flex: 1;
+}
+
+/* =============================================================
+   PITCH DATA — Zone Grid Heat Map
+   ============================================================= */
+.zone-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 3px;
+  max-width: 240px;
+  margin: 8px auto;
+  border: 2px solid var(--text-secondary);
+  border-radius: var(--radius-sm);
+  padding: 3px;
+  background: var(--border);
+}
+.zone-cell {
+  aspect-ratio: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  border-radius: 2px;
+  padding: 4px;
+  min-height: 56px;
+  transition: transform 0.1s;
+}
+.zone-cell:hover {
+  transform: scale(1.05);
+  z-index: 1;
+}
+.zone-avg {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+.zone-pa {
+  font-size: 9px;
+  color: rgba(255,255,255,0.7);
+  margin-top: 2px;
+}
+/* Zone heat colors */
+.zone-hot {
+  background: #d32f2f;
+  color: white;
+}
+.zone-warm {
+  background: #f57c00;
+  color: white;
+}
+.zone-neutral {
+  background: #ffd54f;
+  color: #333;
+}
+.zone-neutral .zone-pa { color: rgba(0,0,0,0.5); }
+.zone-cold {
+  background: #1565c0;
+  color: white;
+}
+
+/* =============================================================
+   PITCH DATA — Pitch Mix Table
+   ============================================================= */
+.pitch-mix-table {
+  width: 100%;
+  font-size: 12px;
+}
+.pitch-mix-table th {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-secondary);
+  padding: 6px 8px;
+  border-bottom: 2px solid var(--border);
+}
+.pitch-mix-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border-light);
+}
+
+/* Pitch type badges */
+.pitch-badge {
+  display: inline-block;
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+}
+.pitch-4SFB { background: #ef5350; color: white; }
+.pitch-2SFB { background: #e53935; color: white; }
+.pitch-CUT { background: #ec407a; color: white; }
+.pitch-SI  { background: #ab47bc; color: white; }
+.pitch-SL  { background: #42a5f5; color: white; }
+.pitch-CB  { background: #26c6da; color: white; }
+.pitch-CH  { background: #66bb6a; color: white; }
+.pitch-SPL { background: #8d6e63; color: white; }
+.pitch-KC  { background: #78909c; color: white; }
+.pitch-SW  { background: #5c6bc0; color: white; }
+.pitch-SC  { background: #7e57c2; color: white; }
+.pitch-KN  { background: #ff7043; color: white; }
+
+/* =============================================================
+   CSV IMPORT BUTTONS
+   ============================================================= */
+.btn-import {
+  border-style: dashed;
+  border-color: var(--accent);
+  color: var(--accent-text);
+  background: var(--accent-soft);
+}
+.btn-import:hover {
+  background: var(--accent);
+  color: white;
+  border-style: solid;
+}
+
+/* ---- Expansion Draft ---- */
+.expansion-pick-row {
+  transition: background 0.15s ease;
+}
+.expansion-pick-row:hover {
+  background: var(--bg-hover);
+}
+.expansion-pick-row td {
+  padding: 6px 8px;
+}
+.expansion-status-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.expansion-status-badge.active {
+  background: var(--accent-soft);
+  color: var(--accent-text);
+}
+.expansion-status-badge.complete {
+  background: var(--green-soft);
+  color: var(--green);
+}
+
+/* ---- Rating Scale Selector ---- */
+#rating-scale-select {
+  cursor: pointer;
+  transition: border-color 0.15s ease;
+}
+#rating-scale-select:hover {
+  border-color: var(--accent);
+}
+#rating-scale-select:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
 }

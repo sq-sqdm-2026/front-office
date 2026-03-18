@@ -13,6 +13,7 @@ Development model:
 """
 import random
 from ..database.db import get_connection, query
+from .minor_league_parks import get_park_factors, NEUTRAL_PARK
 
 
 # ---------------------------------------------------------------------------
@@ -138,6 +139,9 @@ def _generate_minor_league_stats(season: int, conn):
         is_pitcher = position in ("SP", "RP")
         level = {"minors_aaa": "AAA", "minors_aa": "AA", "minors_low": "LOW"}.get(m[9], "AAA")
 
+        # Get park factors for this team's affiliate at this level
+        pf = get_park_factors(team_id, level)
+
         if is_pitcher:
             stuff = m[6] or 50
             control = m[7] or 50
@@ -166,6 +170,15 @@ def _generate_minor_league_stats(season: int, conn):
             losses = games - wins - random.randint(0, 3)
             losses = max(0, losses)
 
+            # Apply park factors to generated stats
+            # Hitter-friendly parks inflate hits, HR, runs against pitchers
+            hits = int(round(hits * pf.get("H", 1.0)))
+            hr = int(round(hr * pf.get("HR", 1.0)))
+            bb = int(round(bb * pf.get("BB", 1.0)))
+            so = int(round(so * pf.get("K", 1.0)))
+            er = int(round(er * pf.get("R", 1.0)))
+            runs_allowed = er + random.randint(0, 5)
+
             conn.execute("""
                 INSERT OR IGNORE INTO pitching_stats
                 (player_id, team_id, season, level, games, games_started, wins, losses,
@@ -173,7 +186,7 @@ def _generate_minor_league_stats(season: int, conn):
                  bb, so, hr_allowed, pitches, complete_games, shutouts, quality_starts)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0)
             """, (player_id, team_id, season, level, games, gs, wins, losses,
-                  ip_outs, hits, er + random.randint(0, 5), er, bb, so, hr,
+                  ip_outs, hits, runs_allowed, er, bb, so, hr,
                   int(ip_outs * 4.5)))
         else:
             contact = m[2] or 50
@@ -207,6 +220,16 @@ def _generate_minor_league_stats(season: int, conn):
             cs = int(sb * random.uniform(0.15, 0.35))
             runs = int(hits * 0.4 + bb * 0.3 + hr * 0.6)
             rbi = int(hr * 1.2 + (hits - hr) * 0.25 + random.randint(0, 15))
+
+            # Apply park factors to generated stats
+            hits = int(round(hits * pf.get("H", 1.0)))
+            doubles = int(round(doubles * pf.get("2B", 1.0)))
+            triples = int(round(triples * pf.get("3B", 1.0)))
+            hr = int(round(hr * pf.get("HR", 1.0)))
+            bb = int(round(bb * pf.get("BB", 1.0)))
+            so = int(round(so * pf.get("K", 1.0)))
+            runs = int(round(runs * pf.get("R", 1.0)))
+            rbi = int(round(rbi * pf.get("R", 1.0)))
 
             conn.execute("""
                 INSERT OR IGNORE INTO batting_stats

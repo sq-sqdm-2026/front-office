@@ -1,9 +1,11 @@
 """
 Front Office - Major League Equivalencies (MLE)
 Converts minor league stats to estimated MLB equivalent ratings using MLE factors.
+Integrates minor league park factors to normalize stats before conversion.
 """
 import random
 from ..database.db import query
+from ..simulation.minor_league_parks import get_park_factors, NEUTRAL_PARK
 
 
 # MLE conversion factors by level
@@ -42,6 +44,82 @@ MLE_FACTORS = {
 def _clamp(value: int, lo: int = 20, hi: int = 80) -> int:
     """Clamp a rating to 20-80 scouting scale."""
     return max(lo, min(hi, int(value)))
+
+
+def park_adjust_stats(stats: dict, park_factors: dict, is_pitcher: bool = False) -> dict:
+    """
+    Normalize raw stats for park effects before MLE conversion.
+    Divides counting/rate stats by park factors to remove park inflation/deflation.
+
+    For a hitter in Las Vegas (HR factor 1.18), 30 HR becomes 30/1.18 = ~25.4 HR.
+    For a pitcher in a hitter's park (R factor 1.15), ER gets divided by R factor.
+
+    Args:
+        stats: Dict of raw stats from the database (batting_stats or pitching_stats row)
+        park_factors: Dict with keys H, 2B, 3B, HR, BB, K, R
+        is_pitcher: Whether these are pitching stats
+
+    Returns:
+        New dict with park-adjusted stats (original dict is not modified)
+    """
+    adjusted = dict(stats)
+
+    if is_pitcher:
+        # Adjust pitching stats: hits allowed, HR allowed, BB, K, ER/runs
+        h_factor = park_factors.get("H", 1.0)
+        hr_factor = park_factors.get("HR", 1.0)
+        bb_factor = park_factors.get("BB", 1.0)
+        k_factor = park_factors.get("K", 1.0)
+        r_factor = park_factors.get("R", 1.0)
+
+        if adjusted.get("hits_allowed"):
+            adjusted["hits_allowed"] = int(round(adjusted["hits_allowed"] / h_factor))
+        if adjusted.get("hr_allowed"):
+            adjusted["hr_allowed"] = int(round(adjusted["hr_allowed"] / hr_factor))
+        if adjusted.get("bb"):
+            adjusted["bb"] = int(round(adjusted["bb"] / bb_factor))
+        if adjusted.get("so"):
+            adjusted["so"] = int(round(adjusted["so"] / k_factor))
+        if adjusted.get("er"):
+            adjusted["er"] = int(round(adjusted["er"] / r_factor))
+        if adjusted.get("runs_allowed"):
+            adjusted["runs_allowed"] = int(round(adjusted["runs_allowed"] / r_factor))
+    else:
+        # Adjust batting stats
+        h_factor = park_factors.get("H", 1.0)
+        doubles_factor = park_factors.get("2B", 1.0)
+        triples_factor = park_factors.get("3B", 1.0)
+        hr_factor = park_factors.get("HR", 1.0)
+        bb_factor = park_factors.get("BB", 1.0)
+        k_factor = park_factors.get("K", 1.0)
+        r_factor = park_factors.get("R", 1.0)
+
+        if adjusted.get("hits"):
+            adjusted["hits"] = int(round(adjusted["hits"] / h_factor))
+        if adjusted.get("doubles"):
+            adjusted["doubles"] = int(round(adjusted["doubles"] / doubles_factor))
+        if adjusted.get("triples"):
+            adjusted["triples"] = int(round(adjusted["triples"] / triples_factor))
+        if adjusted.get("hr"):
+            adjusted["hr"] = int(round(adjusted["hr"] / hr_factor))
+        if adjusted.get("bb"):
+            adjusted["bb"] = int(round(adjusted["bb"] / bb_factor))
+        if adjusted.get("so"):
+            adjusted["so"] = int(round(adjusted["so"] / k_factor))
+        if adjusted.get("runs"):
+            adjusted["runs"] = int(round(adjusted["runs"] / r_factor))
+        if adjusted.get("rbi"):
+            adjusted["rbi"] = int(round(adjusted["rbi"] / r_factor))
+
+    return adjusted
+
+
+def _get_player_team_id(player_id: int) -> int:
+    """Get the team_id for a player."""
+    result = query("SELECT team_id FROM players WHERE id=?", (player_id,))
+    if result and result[0]["team_id"]:
+        return result[0]["team_id"]
+    return None
 
 
 def _get_player_level(player_id: int, season: int) -> str:
@@ -102,16 +180,25 @@ def calculate_mle_ratings(player_id: int, season: int = 2026) -> dict:
 
 def _calculate_mle_hitting_ratings(player_id: int, level: str, season: int) -> dict:
     """Calculate MLE hitting ratings from minor league stats."""
-    stats = query("""
+    raw_stats = query("""
         SELECT * FROM batting_stats
         WHERE player_id=? AND season=? AND level=?
     """, (player_id, season, level))
 
-    if not stats:
+    if not raw_stats:
         # No stats at this level
         return None
 
-    stats = stats[0]
+    raw_stats = raw_stats[0]
+
+    # Apply park factor normalization before MLE conversion
+    team_id = raw_stats.get("team_id") or _get_player_team_id(player_id)
+    if team_id:
+        pf = get_park_factors(team_id, level)
+    else:
+        pf = NEUTRAL_PARK
+    stats = park_adjust_stats(dict(raw_stats), pf, is_pitcher=False)
+
     pa = stats.get("pa", 0) or 1
     ab = stats.get("ab", 0) or 1
 
@@ -248,20 +335,30 @@ def _calculate_mle_hitting_ratings(player_id: int, level: str, season: int) -> d
         "from_level": level,
         "uncertainty": uncertainty,
         "playing_time": pa,
+        "park_adjusted": pf != NEUTRAL_PARK,
     }
 
 
 def _calculate_mle_pitching_ratings(player_id: int, level: str, season: int) -> dict:
     """Calculate MLE pitching ratings from minor league stats."""
-    stats = query("""
+    raw_stats = query("""
         SELECT * FROM pitching_stats
         WHERE player_id=? AND season=? AND level=?
     """, (player_id, season, level))
 
-    if not stats:
+    if not raw_stats:
         return None
 
-    stats = stats[0]
+    raw_stats = raw_stats[0]
+
+    # Apply park factor normalization before MLE conversion
+    team_id = raw_stats.get("team_id") or _get_player_team_id(player_id)
+    if team_id:
+        pf = get_park_factors(team_id, level)
+    else:
+        pf = NEUTRAL_PARK
+    stats = park_adjust_stats(dict(raw_stats), pf, is_pitcher=True)
+
     ip_outs = stats.get("ip_outs", 0) or 1
     ip = ip_outs / 3.0  # Convert outs to innings
 
@@ -370,4 +467,5 @@ def _calculate_mle_pitching_ratings(player_id: int, level: str, season: int) -> 
         "from_level": level,
         "uncertainty": uncertainty,
         "playing_time": ip,
+        "park_adjusted": pf != NEUTRAL_PARK,
     }

@@ -111,8 +111,17 @@
 
     <div class="sidebar-footer">
       <div class="sim-controls">
-        <button class="sim-btn sim-btn-day" onclick="simDays(1)" id="sim-day-btn">&#9654; Sim Day</button>
-        <button class="sim-btn sim-btn-week" onclick="simDays(7)" id="sim-week-btn">&#9654;&#9654; Week</button>
+        <button class="sim-btn sim-btn-play" onclick="toggleAutoSim()" id="auto-sim-btn" title="Auto-advance time">&#9654; Play</button>
+        <select id="sim-speed-select" onchange="setSimSpeed(this.value)" title="Game speed" style="padding:4px;border:1px solid var(--border);border-radius:4px;background:var(--bg-input);color:var(--text-primary);font-size:11px;cursor:pointer;">
+          <option value="120000">1x (1mo=1yr)</option>
+          <option value="60000">2x</option>
+          <option value="30000">4x</option>
+          <option value="10000">12x</option>
+          <option value="5000">24x</option>
+          <option value="2000">Blitz</option>
+        </select>
+        <button class="sim-btn sim-btn-day" onclick="simDays(1)" id="sim-day-btn">+1d</button>
+        <button class="sim-btn sim-btn-week" onclick="simDays(7)" id="sim-week-btn">+7d</button>
       </div>
       <div class="sidebar-controls">
         <button class="sidebar-icon-btn" title="Search (Ctrl+K)" onclick="openGlobalSearch()">&#128269;</button>
@@ -131,6 +140,7 @@
         <span class="page-title" id="page-title">Dashboard</span>
       </div>
       <div class="top-bar-center">
+        <span class="game-clock" id="game-clock" title="Front Office Game Time"></span>
         <span class="header-date" id="hdr-date"></span>
         <span class="header-record mono" id="hdr-record"></span>
         <span class="header-phase" id="hdr-phase"></span>
@@ -577,10 +587,50 @@
         </div>
 
         <div style="margin-bottom: 16px; padding: 16px; border: 1px solid var(--border); border-radius: var(--radius-md);">
+          <div style="display: flex; justify-content: space-between; align-items: center;">
+            <div>
+              <div style="font-weight: 600; font-size: 14px;">Rating Scale</div>
+              <div style="font-size: 12px; color: var(--text-secondary); margin-top: 2px;">How player ratings are displayed</div>
+            </div>
+            <select id="rating-scale-select" onchange="setRatingScale(this.value)" style="padding:6px 10px; border:1px solid var(--border); border-radius:var(--radius-sm); background:var(--bg-input); color:var(--text-primary); font-size:13px; min-width:180px;">
+              <option value="20-80">Scout (20-80)</option>
+              <option value="50-100">Baseball Mogul (50-100)</option>
+              <option value="1-20">Football Manager (1-20)</option>
+              <option value="1-100">Percentage (1-100)</option>
+              <option value="letter">Letter Grade (A+ - F)</option>
+            </select>
+          </div>
+        </div>
+
+        <div style="margin-bottom: 16px; padding: 16px; border: 1px solid var(--border); border-radius: var(--radius-md);">
           <div style="font-weight: 600; font-size: 14px; margin-bottom: 12px;">Stat Columns</div>
           <div style="display: flex; gap: 8px;">
             <button class="btn btn-sm" onclick="openColumnPickerModal('batting')">Batting Columns</button>
             <button class="btn btn-sm" onclick="openColumnPickerModal('pitching')">Pitching Columns</button>
+          </div>
+        </div>
+
+        <div id="expansion-draft-btn" style="margin-bottom: 16px; padding: 16px; border: 1px solid var(--border); border-radius: var(--radius-md); display: none;">
+          <div style="display: flex; justify-content: space-between; align-items: center;">
+            <div>
+              <div style="font-weight: 600; font-size: 14px;">Expansion Draft</div>
+              <div style="font-size: 12px; color: var(--text-secondary); margin-top: 2px;">Add a new franchise and stock it via expansion draft</div>
+            </div>
+            <button class="btn btn-sm btn-primary" onclick="openExpansionDraftModal()">Start</button>
+          </div>
+        </div>
+
+        <div style="margin-bottom: 16px; padding: 16px; border: 1px solid var(--border); border-radius: var(--radius-md);">
+          <div style="font-weight: 600; font-size: 14px; margin-bottom: 12px;">CSV Export / Import</div>
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+            <button class="btn btn-sm" onclick="exportCSV('roster')">Export Roster</button>
+            <button class="btn btn-sm btn-import" onclick="importCSV('roster')">Import Roster</button>
+            <button class="btn btn-sm" onclick="exportCSV('batting-stats', {season: STATE.season})">Export Batting</button>
+            <button class="btn btn-sm btn-import" onclick="importCSV('batting-stats')">Import Batting</button>
+            <button class="btn btn-sm" onclick="exportCSV('pitching-stats', {season: STATE.season})">Export Pitching</button>
+            <button class="btn btn-sm btn-import" onclick="importCSV('pitching-stats')">Import Pitching</button>
+            <button class="btn btn-sm" onclick="exportCSV('financials')">Export Financials</button>
+            <div></div>
           </div>
         </div>
 

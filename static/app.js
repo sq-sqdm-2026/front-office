@@ -21,6 +21,8 @@ const STATE = {
   _rotationData: null,
   sortStates: {},
   teams: [],
+  ratingScale: '20-80',
+  ratingThresholds: { elite: 65, good: 50, avg: 35 },
   statsPage: {
     type: 'batters',
     sort: 'hr',
@@ -72,7 +74,7 @@ function showToast(message, type = 'info') {
 }
 
 // ============================================================
-// GRADE SYSTEM
+// GRADE SYSTEM (supports multiple rating scales)
 // ============================================================
 const GRADES = [
   [80, 'A+'], [75, 'A'], [70, 'A-'], [65, 'B+'], [60, 'B'],
@@ -83,19 +85,66 @@ function toGrade(val) {
   for (const [min, g] of GRADES) { if (val >= min) return g; }
   return 'F';
 }
+
+/**
+ * Convert a 20-80 internal rating to the current display scale.
+ * @param {number} val - Rating on the 20-80 scale
+ * @returns {string|number} - Converted display value
+ */
+function convertRating(val) {
+  const scale = STATE.ratingScale || '20-80';
+  val = Math.max(20, Math.min(80, val));
+  if (scale === '20-80') return val;
+  const normalized = (val - 20) / 60;
+  if (scale === '50-100') return Math.round(50 + normalized * 50);
+  if (scale === '1-20') return Math.max(1, Math.round(1 + normalized * 19));
+  if (scale === '1-100') return Math.max(1, Math.round(1 + normalized * 99));
+  if (scale === 'letter') return toGrade(val);
+  return val;
+}
+
 function gradeClass(val) {
-  if (val >= 65) return 'grade-elite';
-  if (val >= 50) return 'grade-good';
-  if (val >= 35) return 'grade-avg';
+  // val is always on 20-80 internal scale for class determination
+  const t = STATE.ratingThresholds || { elite: 65, good: 50, avg: 35 };
+  if (val >= t.elite) return 'grade-elite';
+  if (val >= t.good) return 'grade-good';
+  if (val >= t.avg) return 'grade-avg';
   return 'grade-below';
 }
 function gradeHtml(val) {
-  return `<span class="grade ${gradeClass(val)}">${toGrade(val)}</span>`;
+  const display = convertRating(val);
+  return `<span class="grade ${gradeClass(val)}">${display}</span>`;
 }
 function ratingBar(val) {
   const pct = Math.max(0, Math.min(100, ((val - 20) / 60) * 100));
   const cls = val >= 65 ? 'rf-elite' : val >= 50 ? 'rf-good' : val >= 35 ? 'rf-avg' : 'rf-below';
-  return `<span class="rating-bar"><span class="rating-fill ${cls}" style="width:${pct}%"></span></span><span class="mono" style="font-size:10px">${val}</span>`;
+  const display = convertRating(val);
+  return `<span class="rating-bar"><span class="rating-fill ${cls}" style="width:${pct}%"></span></span><span class="mono" style="font-size:10px">${display}</span>`;
+}
+
+async function loadRatingScale() {
+  try {
+    const data = await api('/settings/rating-scale');
+    if (data && data.rating_scale) {
+      STATE.ratingScale = data.rating_scale;
+      STATE.ratingThresholds = data.thresholds || { elite: 65, good: 50, avg: 35 };
+    }
+  } catch (e) { /* use defaults */ }
+}
+
+async function setRatingScale(scale) {
+  const result = await post('/settings/rating-scale', { scale });
+  if (result && result.success) {
+    STATE.ratingScale = scale;
+    await loadRatingScale();
+    showToast(`Rating scale changed to ${scale}`, 'success');
+    // Refresh current view
+    const activeScreen = document.querySelector('.screen.active');
+    if (activeScreen) {
+      const screenId = activeScreen.id.replace('screen-', '');
+      showScreen(screenId);
+    }
+  }
 }
 
 // ============================================================
@@ -116,6 +165,20 @@ function fmtDate(s) {
 function fmtAvg(h, ab) { return ab > 0 ? (h / ab).toFixed(3).replace(/^0/, '') : '.000'; }
 function fmtEra(er, ipOuts) { return ipOuts > 0 ? (9 * er / (ipOuts / 3)).toFixed(2) : '0.00'; }
 function fmtIp(outs) { return Math.floor(outs / 3) + '.' + (outs % 3); }
+
+function updateGameClock() {
+  const el = document.getElementById('game-clock');
+  if (!el || !STATE.currentDate) return;
+  const d = new Date(STATE.currentDate + 'T12:00:00');
+  const months = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
+  const phase = STATE.phase || '';
+  const phaseLabel = phase === 'spring_training' ? 'ST' :
+    phase === 'regular_season' ? 'REG' :
+    phase === 'postseason' ? 'POST' :
+    phase === 'offseason' ? 'OFF' : '';
+  el.textContent = `${months[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()} [${phaseLabel}]`;
+}
+
 async function api(path, opts) {
   try {
     const r = await fetch(API + path, opts);
@@ -259,6 +322,9 @@ async function loadState() {
   STATE.phase = s.phase;
   if (s.user_team_id && !STATE.userTeamId) STATE.userTeamId = s.user_team_id;
 
+  // Load rating scale preference
+  await loadRatingScale();
+
   if (STATE.userTeamId) {
     const t = await api('/team/' + STATE.userTeamId);
     if (t?.team) {
@@ -269,6 +335,7 @@ async function loadState() {
     document.getElementById('hdr-team').textContent = `${STATE.teamCity} ${STATE.teamName}`;
     document.getElementById('hdr-date').textContent = fmtDate(STATE.currentDate);
     document.getElementById('hdr-phase').textContent = STATE.phase.replace('_', ' ');
+    updateGameClock();
 
     // Update sidebar elements
     const sidebarTeam = document.getElementById('sidebar-team-name');
@@ -433,6 +500,87 @@ async function simDays(n) {
   oldBtns.forEach((b, i) => { b.disabled = false; b.textContent = i === 0 ? '\u25B6 Day' : '\u25B6\u25B6 Week'; });
   if (dayBtn) { dayBtn.disabled = false; dayBtn.textContent = '\u25B6 Sim Day'; }
   if (weekBtn) { weekBtn.disabled = false; weekBtn.textContent = '\u25B6\u25B6 Week'; }
+}
+
+// ============================================================
+// AUTO-ADVANCE (Progressive Time)
+// 1 real-world month = 1 game year at 1x speed
+// 365 game-days / 30 real-days / 24 hrs / 60 min ≈ 1 game-day every ~118 seconds
+// ============================================================
+let autoSimInterval = null;
+let autoSimRunning = false;
+let autoSimSpeed = 120000; // ms between advances (1x = ~2 min per game-day)
+let autoSimBusy = false; // prevents overlap
+
+function toggleAutoSim() {
+  if (autoSimRunning) {
+    stopAutoSim();
+  } else {
+    startAutoSim();
+  }
+}
+
+function startAutoSim() {
+  if (autoSimRunning) return;
+  autoSimRunning = true;
+  const btn = document.getElementById('auto-sim-btn');
+  if (btn) { btn.textContent = '\u23F8 Pause'; btn.classList.add('sim-playing'); }
+  autoSimTick(); // immediate first tick
+  autoSimInterval = setInterval(autoSimTick, autoSimSpeed);
+}
+
+function stopAutoSim() {
+  autoSimRunning = false;
+  if (autoSimInterval) { clearInterval(autoSimInterval); autoSimInterval = null; }
+  const btn = document.getElementById('auto-sim-btn');
+  if (btn) { btn.textContent = '\u25B6 Play'; btn.classList.remove('sim-playing'); }
+}
+
+async function autoSimTick() {
+  if (autoSimBusy) return; // skip if previous tick still running
+  autoSimBusy = true;
+  try {
+    const r = await post('/sim/advance', { days: 1 });
+    if (r) {
+      await loadState();
+      const ticker = document.getElementById('ticker');
+      const stGames = r.spring_training ? r.spring_training.length : 0;
+      const regGames = r.games_played || 0;
+      const total = stGames + regGames;
+      ticker.textContent = `${fmtDate(r.new_date)} | ${total} game${total !== 1 ? 's' : ''} played`;
+
+      // Show key events
+      if (r.offseason) {
+        const trim = r.offseason.find(e => e.type === 'opening_day_roster_trim');
+        if (trim) showToast(`Opening Day: ${trim.teams_trimmed?.length || 0} teams trimmed rosters`, 'info');
+        const asg = r.offseason.find(e => e.type === 'all_star_game');
+        if (asg && !asg.error) showToast(`All-Star Game: AL ${asg.al_score}, NL ${asg.nl_score}`, 'info');
+        const recal = r.offseason.find(e => e.type === 'ratings_recalibrated');
+        if (recal) showToast('Ratings recalibrated for new season', 'info');
+      }
+
+      // Refresh visible screen
+      const d = new Date(STATE.currentDate + 'T12:00:00');
+      STATE.calMonth = d.getMonth();
+      STATE.calYear = d.getFullYear();
+      const active = document.querySelector('.content-screen.active');
+      if (active) showScreen(active.id.replace('s-', ''));
+    }
+  } catch (e) {
+    console.error('Auto-sim error:', e);
+    stopAutoSim();
+    showToast('Auto-sim stopped due to error', 'error');
+  }
+  autoSimBusy = false;
+}
+
+function setSimSpeed(ms) {
+  autoSimSpeed = parseInt(ms);
+  if (autoSimRunning) {
+    // Restart interval with new speed
+    clearInterval(autoSimInterval);
+    autoSimInterval = setInterval(autoSimTick, autoSimSpeed);
+  }
 }
 
 // ============================================================
@@ -1593,12 +1741,12 @@ async function showPlayer(pid) {
 
   const gradesHtml = ratings.map(([l, v]) => `
     <div class="grade-box-lg"><div class="grade-label">${l}</div>
-    <div class="grade-value-lg ${gradeClass(v)}">${toGrade(v)}</div>
+    <div class="grade-value-lg ${gradeClass(v)}">${convertRating(v)}</div>
     <div class="grade-num">${v}</div></div>`).join('');
 
   const persHtml = personality.map(([l, v]) => `
     <div class="grade-box"><div class="grade-label">${l}</div>
-    <div class="grade-value ${gradeClass(v)}">${toGrade(v)}</div>
+    <div class="grade-value ${gradeClass(v)}">${convertRating(v)}</div>
     <div class="grade-num">${v}</div></div>`).join('');
 
   // Build mini current-season stat line for the overview tab
@@ -1767,6 +1915,10 @@ async function showPlayer(pid) {
     <div class="modal-tabs">
       <button class="modal-tab active" onclick="switchPlayerTab(event, 'overview')">Overview</button>
       <button class="modal-tab" onclick="switchPlayerTab(event, 'stats')">Stats</button>
+      <button class="modal-tab" onclick="switchPlayerTab(event, 'pitch-data')">Pitch Data</button>
+      <button class="modal-tab" onclick="switchPlayerTab(event, 'matchups')">Matchups</button>
+      <button class="modal-tab" onclick="switchPlayerTab(event, 'projection')">Projection</button>
+      <button class="modal-tab" onclick="switchPlayerTab(event, 'strategy')">Strategy</button>
       <button class="modal-tab" onclick="switchPlayerTab(event, 'scouting')">Scouting</button>
     </div>
     <div class="modal-body">
@@ -1783,6 +1935,20 @@ async function showPlayer(pid) {
       <div id="player-tab-stats" style="display:none">
         ${statsHtml || '<div class="empty-state">No stats available</div>'}
       </div>
+      <div id="player-tab-pitch-data" style="display:none" data-player-id="${p.id}" data-is-pitcher="${isPit}">
+        <div id="pitch-data-content-${p.id}">
+          <div class="empty-state">Click this tab to load pitch data.</div>
+        </div>
+      </div>
+      <div id="player-tab-matchups" style="display:none" data-player-id="${p.id}">
+        <div id="matchups-content-${p.id}"><div class="empty-state">Loading matchups...</div></div>
+      </div>
+      <div id="player-tab-projection" style="display:none" data-player-id="${p.id}">
+        <div id="projection-content-${p.id}"><div class="empty-state">Loading projection...</div></div>
+      </div>
+      <div id="player-tab-strategy" style="display:none" data-player-id="${p.id}" data-is-pitcher="${isPit}">
+        <div id="strategy-content-${p.id}"><div class="empty-state">Loading strategy...</div></div>
+      </div>
       <div id="player-tab-scouting" style="display:none">
         <div id="scout-${p.id}" class="scouting-report" style="display:none"></div>
         <button class="btn btn-primary btn-sm" onclick="genScout(${p.id})">Generate Scout Report</button>
@@ -1795,8 +1961,285 @@ function switchPlayerTab(e, tab) {
   document.querySelectorAll('.modal-tab').forEach(t => t.classList.remove('active'));
   document.querySelectorAll('[id^="player-tab-"]').forEach(t => t.style.display = 'none');
   e.target.classList.add('active');
-  document.getElementById(`player-tab-${tab}`).style.display = 'block';
+  const tabEl = document.getElementById(`player-tab-${tab}`);
+  tabEl.style.display = 'block';
+
+  // Lazy-load pitch data when tab is first shown
+  if (tab === 'pitch-data' && tabEl.dataset.playerId) {
+    const pid = parseInt(tabEl.dataset.playerId);
+    const isPit = tabEl.dataset.isPitcher === 'true';
+    loadPitchData(pid, isPit);
+    tabEl.removeAttribute('data-player-id');  // Only load once
+  }
+  // Lazy-load matchups
+  if (tab === 'matchups' && tabEl.dataset.playerId) {
+    loadMatchups(parseInt(tabEl.dataset.playerId));
+    tabEl.removeAttribute('data-player-id');
+  }
+  // Lazy-load projection
+  if (tab === 'projection' && tabEl.dataset.playerId) {
+    loadProjection(parseInt(tabEl.dataset.playerId));
+    tabEl.removeAttribute('data-player-id');
+  }
+  // Lazy-load strategy
+  if (tab === 'strategy' && tabEl.dataset.playerId) {
+    loadStrategy(parseInt(tabEl.dataset.playerId), tabEl.dataset.isPitcher === 'true');
+    tabEl.removeAttribute('data-player-id');
+  }
 }
+
+async function loadMatchups(pid) {
+  const el = document.getElementById(`matchups-content-${pid}`);
+  try {
+    const data = await api(`/matchups/player/${pid}/top?limit=15`);
+    if (!data?.matchups?.length) {
+      el.innerHTML = '<div class="empty-state">No matchup data yet. Play some games first.</div>';
+      return;
+    }
+    const label = data.is_pitcher ? 'Batters Faced' : 'Pitchers Faced';
+    let html = `<div class="section-title">${label} (Most PA)</div>`;
+    html += '<div class="table-wrap"><table>';
+    html += '<tr><th>Opponent</th><th>Team</th><th class="r">PA</th><th class="r">AVG</th><th class="r">HR</th><th class="r">SO</th><th class="r">BB</th></tr>';
+    data.matchups.forEach(m => {
+      html += `<tr><td style="cursor:pointer;color:var(--gold)" onclick="showPlayer(${m.opponent_id})">${m.opponent_name}</td>
+        <td>${m.opponent_team || '?'}</td>
+        <td class="r">${m.pa}</td><td class="r">${m.avg}</td>
+        <td class="r">${m.hr}</td><td class="r">${m.so}</td><td class="r">${m.bb}</td></tr>`;
+    });
+    html += '</table></div>';
+    el.innerHTML = html;
+  } catch (e) {
+    el.innerHTML = '<div class="empty-state">Error loading matchups</div>';
+  }
+}
+
+async function loadProjection(pid) {
+  const el = document.getElementById(`projection-content-${pid}`);
+  try {
+    const data = await api(`/player/${pid}/projection`);
+    if (!data?.projection) {
+      el.innerHTML = '<div class="empty-state">No projection available</div>';
+      return;
+    }
+    const proj = data.projection;
+    let html = `<div class="section-title">${(STATE.season||2026)+1} Projection for ${data.name}</div>`;
+
+    if (proj.avg !== undefined) {
+      // Batting projection
+      html += '<div class="table-wrap"><table>';
+      html += '<tr><th>G</th><th>AB</th><th>R</th><th>H</th><th>HR</th><th>RBI</th><th>BB</th><th>SO</th><th>SB</th><th>AVG</th><th>OBP</th><th>SLG</th><th>OPS</th></tr>';
+      html += `<tr><td>${proj.g}</td><td>${proj.ab}</td><td>${proj.r}</td><td>${proj.h}</td><td>${proj.hr}</td>
+        <td>${proj.rbi}</td><td>${proj.bb}</td><td>${proj.so}</td><td>${proj.sb}</td>
+        <td><b>${proj.avg}</b></td><td>${proj.obp}</td><td>${proj.slg}</td><td><b>${proj.ops}</b></td></tr>`;
+      html += '</table></div>';
+    } else {
+      // Pitching projection
+      html += '<div class="table-wrap"><table>';
+      html += '<tr><th>G</th><th>GS</th><th>W</th><th>L</th><th>SV</th><th>IP</th><th>SO</th><th>BB</th><th>ERA</th><th>WHIP</th><th>K/9</th></tr>';
+      html += `<tr><td>${proj.g}</td><td>${proj.gs}</td><td>${proj.w}</td><td>${proj.l}</td><td>${proj.sv}</td>
+        <td>${proj.ip}</td><td>${proj.so}</td><td>${proj.bb}</td>
+        <td><b>${proj.era}</b></td><td>${proj.whip}</td><td>${proj.k9}</td></tr>`;
+      html += '</table></div>';
+    }
+    el.innerHTML = html;
+  } catch (e) {
+    el.innerHTML = '<div class="empty-state">Error loading projection</div>';
+  }
+}
+
+async function loadStrategy(pid, isPitcher) {
+  const el = document.getElementById(`strategy-content-${pid}`);
+  try {
+    const data = await api(`/player/${pid}/strategy`);
+    let html = '<div class="section-title">Per-Player Strategy</div>';
+    html += `<div style="display:grid;gap:12px;max-width:350px;margin:8px 0">`;
+
+    html += `<div><label style="font-size:12px;color:var(--text-dim)">Steal Aggression</label>
+      <input type="range" id="strat-steal-${pid}" min="1" max="5" value="${data.steal_aggression||3}" style="width:100%">
+      <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text-dim)"><span>Never</span><span>Normal</span><span>Very Agg.</span></div></div>`;
+
+    html += `<div><label style="font-size:12px;color:var(--text-dim)">Bunt Tendency</label>
+      <input type="range" id="strat-bunt-${pid}" min="1" max="5" value="${data.bunt_tendency||3}" style="width:100%">
+      <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text-dim)"><span>Never</span><span>Normal</span><span>Frequent</span></div></div>`;
+
+    html += `<div><label style="font-size:12px;color:var(--text-dim)">Hit & Run</label>
+      <input type="range" id="strat-hnr-${pid}" min="1" max="5" value="${data.hit_and_run||3}" style="width:100%">
+      <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text-dim)"><span>Never</span><span>Normal</span><span>Frequent</span></div></div>`;
+
+    if (isPitcher) {
+      html += `<div><label style="font-size:12px;color:var(--text-dim)">Pitch Count Limit (blank = team default)</label>
+        <input type="number" id="strat-pc-${pid}" value="${data.pitch_count_limit||''}" min="40" max="130"
+          placeholder="Team default" style="width:100%;padding:4px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px"></div>`;
+    }
+
+    html += `</div>`;
+    html += `<button class="btn btn-primary btn-sm" style="margin-top:8px" onclick="saveStrategy(${pid}, ${isPitcher})">Save Strategy</button>`;
+    if (data.is_default) html += `<span style="margin-left:8px;color:var(--text-dim);font-size:11px">Using team defaults</span>`;
+
+    el.innerHTML = html;
+  } catch (e) {
+    el.innerHTML = '<div class="empty-state">Error loading strategy</div>';
+  }
+}
+
+async function saveStrategy(pid, isPitcher) {
+  const body = {
+    steal_aggression: parseInt(document.getElementById(`strat-steal-${pid}`)?.value || 3),
+    bunt_tendency: parseInt(document.getElementById(`strat-bunt-${pid}`)?.value || 3),
+    hit_and_run: parseInt(document.getElementById(`strat-hnr-${pid}`)?.value || 3),
+  };
+  if (isPitcher) {
+    const pcVal = document.getElementById(`strat-pc-${pid}`)?.value;
+    body.pitch_count_limit = pcVal ? parseInt(pcVal) : null;
+  }
+  const r = await post(`/player/${pid}/strategy`, body);
+  if (r?.success) showToast('Strategy saved', 'success');
+}
+
+// ============================================================
+// PITCH DATA TAB
+// ============================================================
+async function loadPitchData(playerId, isPitcher) {
+  const container = document.getElementById(`pitch-data-content-${playerId}`);
+  if (!container) return;
+
+  // Filter controls
+  let filterHtml = `<div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;">
+    <select id="pitch-season-filter" onchange="refreshPitchData(${playerId}, ${isPitcher})" style="padding:4px 8px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--bg-input);color:var(--text-primary);font-size:12px;">
+      <option value="${STATE.season}">${STATE.season}</option>
+    </select>
+    <select id="pitch-situation-filter" onchange="refreshPitchData(${playerId}, ${isPitcher})" style="padding:4px 8px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--bg-input);color:var(--text-primary);font-size:12px;">
+      <option value="">All Situations</option>
+      <option value="risp">RISP</option>
+    </select>
+  </div>`;
+
+  if (isPitcher) {
+    const data = await api(`/pitch-log/pitcher/${playerId}/summary?season=${STATE.season}`);
+    if (!data || !data.pitch_types || data.pitch_types.length === 0) {
+      container.innerHTML = filterHtml + '<div class="empty-state">No pitch data available. Simulate some games first.</div>';
+      return;
+    }
+    let html = filterHtml + `<div class="section-title">Pitch Mix</div>
+      <div class="table-wrap"><table class="pitch-mix-table">
+        <tr><th>Pitch</th><th class="r">Count</th><th class="r">Usage%</th><th class="r">Avg Velo</th><th class="r">Strike%</th><th class="r">Whiff%</th><th class="r">GB%</th></tr>`;
+    data.pitch_types.forEach(pt => {
+      html += `<tr>
+        <td><span class="pitch-badge pitch-${pt.pitch_type}">${pt.pitch_type}</span></td>
+        <td class="r">${pt.count}</td>
+        <td class="r">${pt.usage_pct}%</td>
+        <td class="r">${pt.avg_velocity}</td>
+        <td class="r">${pt.strike_pct}%</td>
+        <td class="r">${pt.whiff_pct}%</td>
+        <td class="r">${pt.gb_pct}%</td>
+      </tr>`;
+    });
+    html += '</table></div>';
+    container.innerHTML = html;
+  } else {
+    const data = await api(`/pitch-log/batter/${playerId}/zones?season=${STATE.season}`);
+    if (!data || !data.zones || data.zones.length === 0) {
+      container.innerHTML = filterHtml + '<div class="empty-state">No pitch data available. Simulate some games first.</div>';
+      return;
+    }
+    let html = filterHtml + `<div class="section-title">Strike Zone Heat Map (AVG by Zone)</div>`;
+    // Build 3x3 grid for zones 1-9
+    const zoneMap = {};
+    data.zones.forEach(z => { zoneMap[z.zone] = z; });
+
+    html += '<div class="zone-grid">';
+    for (let row = 0; row < 3; row++) {
+      for (let col = 0; col < 3; col++) {
+        const zone = row * 3 + col + 1;
+        const z = zoneMap[zone];
+        const avg = z ? z.avg : 0;
+        const pa = z ? z.pa : 0;
+        const colorClass = avg >= 0.300 ? 'zone-hot' : avg >= 0.250 ? 'zone-warm' : avg >= 0.200 ? 'zone-neutral' : 'zone-cold';
+        html += `<div class="zone-cell ${colorClass}" title="Zone ${zone}: ${pa} PA">
+          <div class="zone-avg">${avg > 0 ? avg.toFixed(3).replace(/^0/,'') : '---'}</div>
+          <div class="zone-pa">${pa} PA</div>
+        </div>`;
+      }
+    }
+    html += '</div>';
+
+    // Chase zones
+    const chaseZones = [11, 12, 13, 14];
+    const chaseLabels = {11: 'Up', 12: 'Down', 13: 'Inside', 14: 'Outside'};
+    html += '<div class="section-title" style="margin-top:12px">Chase Zones</div><div style="display:flex;gap:8px;flex-wrap:wrap">';
+    chaseZones.forEach(cz => {
+      const z = zoneMap[cz];
+      const pitches = z ? z.pitches : 0;
+      html += `<div style="background:var(--bg-hover);padding:6px 10px;border-radius:var(--radius-sm);font-size:11px;">
+        <div style="font-weight:600">${chaseLabels[cz]}</div>
+        <div>${pitches} pitches</div>
+      </div>`;
+    });
+    html += '</div>';
+
+    container.innerHTML = html;
+  }
+}
+
+async function refreshPitchData(playerId, isPitcher) {
+  const season = document.getElementById('pitch-season-filter')?.value || STATE.season;
+  const situation = document.getElementById('pitch-situation-filter')?.value || '';
+  const container = document.getElementById(`pitch-data-content-${playerId}`);
+  if (!container) return;
+  container.innerHTML = '<div class="loading"><span class="spinner"></span> Loading...</div>';
+
+  const endpoint = isPitcher
+    ? `/pitch-log/pitcher/${playerId}/summary?season=${season}${situation ? '&situation=' + situation : ''}`
+    : `/pitch-log/batter/${playerId}/zones?season=${season}${situation ? '&situation=' + situation : ''}`;
+  const data = await api(endpoint);
+
+  // Re-render with same logic
+  loadPitchData(playerId, isPitcher);
+}
+
+
+// ============================================================
+// CSV IMPORT
+// ============================================================
+function importCSV(importType) {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = '.csv';
+  input.onchange = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    const formData = new FormData();
+    formData.append('file', file);
+
+    let endpoint = '';
+    switch (importType) {
+      case 'roster': endpoint = '/import/roster-csv'; break;
+      case 'batting-stats': endpoint = '/import/batting-stats-csv'; break;
+      case 'pitching-stats': endpoint = '/import/pitching-stats-csv'; break;
+      default: return;
+    }
+
+    try {
+      const r = await fetch(API + endpoint, { method: 'POST', body: formData });
+      const data = await r.json();
+      if (data.success) {
+        showToast(`Imported ${data.rows_updated} rows${data.errors?.length ? ` (${data.errors.length} errors)` : ''}`, 'success');
+        if (data.errors?.length) {
+          console.warn('Import errors:', data.errors);
+        }
+        // Refresh the current view
+        if (importType === 'roster') loadRoster();
+      } else {
+        showToast(data.error || 'Import failed', 'error');
+      }
+    } catch (err) {
+      showToast('Error importing CSV: ' + err.message, 'error');
+    }
+  };
+  input.click();
+}
+
 
 // ============================================================
 // PLAYER ACTION BUTTONS
@@ -2370,7 +2813,7 @@ async function genScout(pid) {
     const fCls = gradeClass(fut);
     return `<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border);font-size:11px">
       <span style="width:70px;color:var(--text-dim)">${label}</span>
-      <span class="grade-pair"><span class="${pCls}" style="font-weight:700">${pres}</span><span style="color:var(--text-muted)">/</span><span class="${fCls}" style="font-weight:700">${fut}</span></span>
+      <span class="grade-pair"><span class="${pCls}" style="font-weight:700">${convertRating(pres)}</span><span style="color:var(--text-muted)">/</span><span class="${fCls}" style="font-weight:700">${convertRating(fut)}</span></span>
       <span style="color:var(--text-muted);font-size:9px">+/-${margin}</span>
     </div>`;
   }
@@ -2386,7 +2829,7 @@ async function genScout(pid) {
   gradesHtml += `<div class="card" style="padding:10px">
     <div style="text-align:center;margin-bottom:8px">
       <div style="font-size:9px;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px">Overall Future Potential</div>
-      <div class="grade ${gradeClass(r.ofp)}" style="font-size:28px;width:auto">${r.ofp}</div>
+      <div class="grade ${gradeClass(r.ofp)}" style="font-size:28px;width:auto">${convertRating(r.ofp)}</div>
     </div>
     <div style="font-size:11px;margin-top:8px">
       <div style="display:flex;justify-content:space-between;margin-bottom:3px"><span style="color:var(--green)">Ceiling</span><span>${r.ceiling || 'N/A'}</span></div>
@@ -2416,7 +2859,7 @@ async function genScout(pid) {
     const m = r.makeup;
     makeupHtml = `<div style="display:flex;gap:8px;margin:8px 0;flex-wrap:wrap">
       ${[['Work Ethic', m.work_ethic], ['Leadership', m.leadership], ['Clutch', m.clutch], ['Ego', m.ego]].map(([l, v]) =>
-        `<div class="grade-box" style="min-width:60px"><div class="grade-label">${l}</div><div class="grade-value ${gradeClass(v)}" style="font-size:14px">${v}</div></div>`
+        `<div class="grade-box" style="min-width:60px"><div class="grade-label">${l}</div><div class="grade-value ${gradeClass(v)}" style="font-size:14px">${convertRating(v)}</div></div>`
       ).join('')}
     </div>`;
   }
@@ -2441,7 +2884,7 @@ async function genScout(pid) {
               <td style="padding:4px;color:var(--text)">${p.label || p.type}</td>
               <td style="text-align:right;padding:4px;color:var(--text)">${p.avg_velocity} mph</td>
               <td style="text-align:right;padding:4px;color:var(--text)">${p.top_velocity} mph</td>
-              <td style="text-align:right;padding:4px"><span class="grade ${gradeClass(p.rating)}" style="font-weight:700">${p.rating}</span></td>
+              <td style="text-align:right;padding:4px"><span class="grade ${gradeClass(p.rating)}" style="font-weight:700">${convertRating(p.rating)}</span></td>
             </tr>
           `).join('')}
         </tbody>
@@ -2614,7 +3057,7 @@ async function performComparison(pid1, pid2) {
     html += `<div class="comparison-column">
       <div style="text-align: center; padding: 8px; background: var(--bg-2); margin-bottom: 4px;">
         <div style="font-size: 10px; color: var(--text-muted); text-transform: uppercase;">${s1 ? s1[0] : ''}</div>
-        <div class="grade ${gradeClass(v1)}" style="font-size: 18px;${better === 1 ? 'color: var(--green); font-weight: 700;' : ''}">${toGrade(v1)}</div>
+        <div class="grade ${gradeClass(v1)}" style="font-size: 18px;${better === 1 ? 'color: var(--green); font-weight: 700;' : ''}">${convertRating(v1)}</div>
         <div style="font-size: 10px; color: var(--text-dim);">${v1}</div>
       </div>
     </div>
@@ -2622,7 +3065,7 @@ async function performComparison(pid1, pid2) {
     <div class="comparison-column">
       <div style="text-align: center; padding: 8px; background: var(--bg-2); margin-bottom: 4px;">
         <div style="font-size: 10px; color: var(--text-muted); text-transform: uppercase;">${s2 ? s2[0] : ''}</div>
-        <div class="grade ${gradeClass(v2)}" style="font-size: 18px;${better === 2 ? 'color: var(--green); font-weight: 700;' : ''}">${toGrade(v2)}</div>
+        <div class="grade ${gradeClass(v2)}" style="font-size: 18px;${better === 2 ? 'color: var(--green); font-weight: 700;' : ''}">${convertRating(v2)}</div>
         <div style="font-size: 10px; color: var(--text-dim);">${v2}</div>
       </div>
     </div>`;
@@ -3604,11 +4047,11 @@ async function loadDepthChart() {
     html += `<tr>
       <td class="text-col"><strong>${pos}</strong></td>
       <td class="text-col" onclick="showPlayer(${starter?.player_id})" style="cursor:pointer;">${starter ? starter.name : '—'}</td>
-      <td class="r">${starter ? `<span class="grade ${gradeClass(starter.overall)}">${toGrade(starter.overall)}</span> <span class="mono" style="font-size:10px">(${starter.overall})</span>` : '—'}</td>
+      <td class="r">${starter ? `<span class="grade ${gradeClass(starter.overall)}">${convertRating(starter.overall)}</span> <span class="mono" style="font-size:10px">(${starter.overall})</span>` : '—'}</td>
       <td class="text-col" onclick="${backups[0] ? `showPlayer(${backups[0].player_id})` : ''}" style="${backups[0] ? 'cursor:pointer;' : ''}">${backups[0] ? backups[0].name : '—'}</td>
-      <td class="r">${backups[0] ? `<span class="grade ${gradeClass(backups[0].overall)}">${toGrade(backups[0].overall)}</span> <span class="mono" style="font-size:10px">(${backups[0].overall})</span>` : '—'}</td>
+      <td class="r">${backups[0] ? `<span class="grade ${gradeClass(backups[0].overall)}">${convertRating(backups[0].overall)}</span> <span class="mono" style="font-size:10px">(${backups[0].overall})</span>` : '—'}</td>
       <td class="text-col" onclick="${backups[1] ? `showPlayer(${backups[1].player_id})` : ''}" style="${backups[1] ? 'cursor:pointer;' : ''}">${backups[1] ? backups[1].name : '—'}</td>
-      <td class="r">${backups[1] ? `<span class="grade ${gradeClass(backups[1].overall)}">${toGrade(backups[1].overall)}</span> <span class="mono" style="font-size:10px">(${backups[1].overall})</span>` : '—'}</td>
+      <td class="r">${backups[1] ? `<span class="grade ${gradeClass(backups[1].overall)}">${convertRating(backups[1].overall)}</span> <span class="mono" style="font-size:10px">(${backups[1].overall})</span>` : '—'}</td>
     </tr>`;
   });
   html += '</tbody></table></div></div>';
@@ -3634,7 +4077,7 @@ async function loadDepthChart() {
     html += `<tr>
       <td class="text-col" style="font-weight:bold;">${i+1}</td>
       <td class="text-col" onclick="showPlayer(${p.player_id})" style="cursor:pointer;">${p.name}</td>
-      <td class="r"><span class="grade ${gradeClass(p.overall)}">${toGrade(p.overall)}</span> <span class="mono" style="font-size:10px">(${p.overall})</span></td>
+      <td class="r"><span class="grade ${gradeClass(p.overall)}">${convertRating(p.overall)}</span> <span class="mono" style="font-size:10px">(${p.overall})</span></td>
     </tr>`;
   });
   html += '</tbody></table></div></div>';
@@ -3665,7 +4108,7 @@ async function loadDepthChart() {
     html += `<tr>
       <td class="text-col"><strong>${role}</strong></td>
       <td class="text-col" onclick="showPlayer(${p.player_id})" style="cursor:pointer;">${p.name}</td>
-      <td class="r"><span class="grade ${gradeClass(p.overall)}">${toGrade(p.overall)}</span> <span class="mono" style="font-size:10px">(${p.overall})</span></td>
+      <td class="r"><span class="grade ${gradeClass(p.overall)}">${convertRating(p.overall)}</span> <span class="mono" style="font-size:10px">(${p.overall})</span></td>
     </tr>`;
   });
   html += '</tbody></table></div></div></div></div>';
@@ -3851,6 +4294,14 @@ function openSettingsModal() {
   document.getElementById('settings-modal').style.display = 'block';
   updateCommissionerToggleUI();
   loadSavesList();
+  // Update rating scale dropdown
+  const scaleSelect = document.getElementById('rating-scale-select');
+  if (scaleSelect) scaleSelect.value = STATE.ratingScale || '20-80';
+  // Show/hide expansion draft button based on phase
+  const expansionBtn = document.getElementById('expansion-draft-btn');
+  if (expansionBtn) {
+    expansionBtn.style.display = STATE.phase === 'offseason' ? 'block' : 'none';
+  }
 }
 
 async function loadSavesList() {
@@ -4330,7 +4781,7 @@ async function genProspectScout(prospectId) {
     const fCls = gradeClass(fut);
     return `<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border);font-size:11px">
       <span style="width:70px;color:var(--text-dim)">${label}</span>
-      <span class="grade-pair"><span class="${pCls}" style="font-weight:700">${pres}</span><span style="color:var(--text-muted)">/</span><span class="${fCls}" style="font-weight:700">${fut}</span></span>
+      <span class="grade-pair"><span class="${pCls}" style="font-weight:700">${convertRating(pres)}</span><span style="color:var(--text-muted)">/</span><span class="${fCls}" style="font-weight:700">${convertRating(fut)}</span></span>
       <span style="color:var(--text-muted);font-size:9px">+/-${margin}</span>
     </div>`;
   }
@@ -4346,7 +4797,7 @@ async function genProspectScout(prospectId) {
   gradesHtml += `<div class="card" style="padding:10px">
     <div style="text-align:center;margin-bottom:8px">
       <div style="font-size:9px;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px">Overall Future Potential</div>
-      <div class="grade ${gradeClass(r.ofp)}" style="font-size:28px;width:auto">${r.ofp}</div>
+      <div class="grade ${gradeClass(r.ofp)}" style="font-size:28px;width:auto">${convertRating(r.ofp)}</div>
     </div>
     <div style="font-size:11px;margin-top:8px">
       <div style="display:flex;justify-content:space-between;margin-bottom:3px"><span style="color:var(--green)">Ceiling</span><span>${r.ceiling || 'N/A'}</span></div>
@@ -4390,7 +4841,7 @@ async function genProspectScout(prospectId) {
               <td style="padding:4px;color:var(--text)">${p.label || p.type}</td>
               <td style="text-align:right;padding:4px;color:var(--text)">${p.avg_velocity} mph</td>
               <td style="text-align:right;padding:4px;color:var(--text)">${p.top_velocity} mph</td>
-              <td style="text-align:right;padding:4px"><span class="grade ${gradeClass(p.rating)}" style="font-weight:700">${p.rating}</span></td>
+              <td style="text-align:right;padding:4px"><span class="grade ${gradeClass(p.rating)}" style="font-weight:700">${convertRating(p.rating)}</span></td>
             </tr>
           `).join('')}
         </tbody>
@@ -4942,6 +5393,225 @@ function createKeyboardHelp() {
   document.body.appendChild(div);
 }
 
+// ============================================================
+// EXPANSION DRAFT
+// ============================================================
+let expansionProtections = {};
+let expansionAvailable = [];
+let expansionPicks = [];
+
+async function openExpansionDraftModal() {
+  closeSettingsModal();
+  const status = await api('/expansion/status');
+  if (status && status.active) {
+    showExpansionDraftScreen(status);
+  } else {
+    showExpansionSetupForm();
+  }
+}
+
+function showExpansionSetupForm() {
+  const el = document.getElementById('main-content');
+  if (!el) return;
+  const modal = document.getElementById('modal');
+  const body = document.getElementById('modal-body');
+  body.innerHTML = `
+    <h2 style="font-size:18px;font-weight:700;margin-bottom:16px;">Start Expansion Draft</h2>
+    <p style="font-size:13px;color:var(--text-secondary);margin-bottom:16px;">Create a new expansion franchise. Existing teams will protect players, and the new team drafts from the unprotected pool.</p>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px;">
+      <div>
+        <label style="font-size:12px;font-weight:600;color:var(--text-secondary);display:block;margin-bottom:4px;">City</label>
+        <input type="text" id="exp-city" placeholder="e.g. Nashville" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--bg-input);color:var(--text-primary);font-size:13px;">
+      </div>
+      <div>
+        <label style="font-size:12px;font-weight:600;color:var(--text-secondary);display:block;margin-bottom:4px;">Team Name</label>
+        <input type="text" id="exp-name" placeholder="e.g. Stars" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--bg-input);color:var(--text-primary);font-size:13px;">
+      </div>
+      <div>
+        <label style="font-size:12px;font-weight:600;color:var(--text-secondary);display:block;margin-bottom:4px;">Abbreviation</label>
+        <input type="text" id="exp-abbr" placeholder="e.g. NSH" maxlength="3" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--bg-input);color:var(--text-primary);font-size:13px;text-transform:uppercase;">
+      </div>
+      <div>
+        <label style="font-size:12px;font-weight:600;color:var(--text-secondary);display:block;margin-bottom:4px;">League</label>
+        <select id="exp-league" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--bg-input);color:var(--text-primary);font-size:13px;">
+          <option value="AL">American League</option>
+          <option value="NL">National League</option>
+        </select>
+      </div>
+      <div style="grid-column:span 2;">
+        <label style="font-size:12px;font-weight:600;color:var(--text-secondary);display:block;margin-bottom:4px;">Division</label>
+        <select id="exp-division" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--bg-input);color:var(--text-primary);font-size:13px;">
+          <option value="East">East</option>
+          <option value="Central">Central</option>
+          <option value="West">West</option>
+        </select>
+      </div>
+    </div>
+    <div style="display:flex;gap:8px;justify-content:flex-end;">
+      <button class="btn btn-sm" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary btn-sm" onclick="startExpansionDraft()">Create Team & Start Draft</button>
+    </div>
+  `;
+  modal.style.display = 'block';
+}
+
+async function startExpansionDraft() {
+  const city = document.getElementById('exp-city').value.trim();
+  const name = document.getElementById('exp-name').value.trim();
+  const abbr = document.getElementById('exp-abbr').value.trim().toUpperCase();
+  const league = document.getElementById('exp-league').value;
+  const division = document.getElementById('exp-division').value;
+
+  if (!city || !name || !abbr) {
+    showToast('Fill in all fields', 'error');
+    return;
+  }
+
+  const result = await post('/expansion/start', {
+    team_name: name, city, abbreviation: abbr, league, division
+  });
+
+  if (result && result.error) {
+    showToast(result.error, 'error');
+    return;
+  }
+
+  if (result && result.success) {
+    showToast(`${result.team_name} created! Expansion draft starting...`, 'success');
+    closeModal();
+    const status = await api('/expansion/status');
+    showExpansionDraftScreen(status);
+  }
+}
+
+async function showExpansionDraftScreen(status) {
+  const el = document.getElementById('main-content');
+  if (!el) return;
+
+  const data = await api('/expansion/available');
+  const available = data?.available || [];
+  expansionAvailable = available;
+
+  const picks = status.picks_made || [];
+  expansionPicks = picks;
+  const totalTarget = status.total_picks_target || 29;
+  const picksMade = picks.length;
+  const isComplete = status.status === 'complete';
+
+  let html = `
+    <div style="padding:24px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
+        <h2 style="font-family:'Bitter',serif;font-size:22px;font-weight:800;">Expansion Draft</h2>
+        <div style="font-size:13px;color:var(--text-secondary);">Pick ${picksMade + 1} of ${totalTarget}</div>
+      </div>
+
+      <div style="display:flex;gap:8px;margin-bottom:16px;">
+        <div style="flex:1;padding:12px;background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-md);">
+          <div style="font-size:11px;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.5px;">Picks Made</div>
+          <div style="font-size:24px;font-weight:700;">${picksMade}</div>
+        </div>
+        <div style="flex:1;padding:12px;background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-md);">
+          <div style="font-size:11px;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.5px;">Available</div>
+          <div style="font-size:24px;font-weight:700;">${available.length}</div>
+        </div>
+        <div style="flex:1;padding:12px;background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-md);">
+          <div style="font-size:11px;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.5px;">Status</div>
+          <div style="font-size:14px;font-weight:700;color:${isComplete ? 'var(--green)' : 'var(--accent)'};">${isComplete ? 'COMPLETE' : 'IN PROGRESS'}</div>
+        </div>
+      </div>
+  `;
+
+  if (!isComplete) {
+    html += `
+      <div style="margin-bottom:16px;display:flex;gap:8px;">
+        <button class="btn btn-primary btn-sm" onclick="autoExpansionPick()">AI Auto-Pick</button>
+        <button class="btn btn-sm" onclick="autoExpansionPickAll()">Auto-Draft Remaining</button>
+      </div>
+    `;
+  }
+
+  // Picks made table
+  if (picks.length > 0) {
+    html += `
+      <h3 style="font-size:14px;font-weight:700;margin-bottom:8px;">Picks Made</h3>
+      <table class="data-table" style="margin-bottom:20px;">
+        <thead><tr><th>#</th><th>Player</th><th>POS</th><th>OVR</th><th>From</th></tr></thead>
+        <tbody>
+    `;
+    picks.forEach((p, i) => {
+      html += `<tr>
+        <td class="c">${i + 1}</td>
+        <td>${p.player_name}</td>
+        <td class="c">${p.position}</td>
+        <td class="c">${gradeHtml(p.overall || 50)}</td>
+        <td class="c">${p.from_team_id || ''}</td>
+      </tr>`;
+    });
+    html += '</tbody></table>';
+  }
+
+  // Available players table
+  html += `
+    <h3 style="font-size:14px;font-weight:700;margin-bottom:8px;">Available Players (Top 100)</h3>
+    <table class="data-table">
+      <thead><tr><th>Player</th><th>POS</th><th>Age</th><th>OVR</th><th>Team</th><th>Salary</th><th></th></tr></thead>
+      <tbody>
+  `;
+  available.slice(0, 100).forEach(p => {
+    const salary = p.annual_salary ? fmt$(p.annual_salary) : 'Min';
+    html += `<tr>
+      <td>${p.first_name} ${p.last_name}</td>
+      <td class="c">${p.position}</td>
+      <td class="c">${p.age}</td>
+      <td class="c">${gradeHtml(p.overall || 50)}</td>
+      <td class="c">${p.team_abbr || ''}</td>
+      <td class="r">${salary}</td>
+      <td class="c">${!isComplete ? `<button class="btn btn-sm" onclick="manualExpansionPick(${p.id})">Draft</button>` : ''}</td>
+    </tr>`;
+  });
+  html += '</tbody></table></div>';
+  el.innerHTML = html;
+}
+
+async function manualExpansionPick(playerId) {
+  const result = await post('/expansion/pick', { player_id: playerId });
+  if (result && result.success) {
+    showToast(`Drafted ${result.player_name} (${result.position})`, 'success');
+    const status = await api('/expansion/status');
+    showExpansionDraftScreen(status);
+  } else {
+    showToast(result?.error || 'Pick failed', 'error');
+  }
+}
+
+async function autoExpansionPick() {
+  const result = await post('/expansion/pick', { player_id: null });
+  if (result && result.success) {
+    showToast(`AI drafted ${result.player_name} (${result.position})`, 'info');
+    const status = await api('/expansion/status');
+    showExpansionDraftScreen(status);
+  } else {
+    showToast(result?.error || 'Auto-pick failed', 'error');
+  }
+}
+
+async function autoExpansionPickAll() {
+  if (!confirm('Auto-draft all remaining picks?')) return;
+  showToast('Auto-drafting...', 'info');
+  let status = await api('/expansion/status');
+  while (status && status.active && status.status !== 'complete') {
+    const result = await post('/expansion/pick', { player_id: null });
+    if (!result || !result.success) break;
+    status = await api('/expansion/status');
+  }
+  showToast('Expansion draft complete!', 'success');
+  showExpansionDraftScreen(status);
+}
+
+
+// ============================================================
+// INIT
+// ============================================================
 async function init() {
   initTheme();
   createKeyboardHelp();

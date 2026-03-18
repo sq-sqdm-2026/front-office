@@ -429,6 +429,30 @@ async def generate_scouting_report(player_id: int, scout_quality: int = 50,
                                                    ceiling, floor, is_pitcher, mlb_comp,
                                                    scout_quality, db_path)
 
+    # Check if stat-based scouting is active and include MLE metadata
+    from .scouting_modes import get_scouting_mode
+    from .mle import calculate_mle_ratings
+    scouting_mode = get_scouting_mode()
+    mle_info = None
+    if scouting_mode == "stat_based":
+        mle_result = calculate_mle_ratings(player_id, season=2026)
+        if mle_result:
+            from_level = mle_result.get("from_level", "")
+            is_mle = mle_result.get("is_mle", False)
+            park_adjusted = mle_result.get("park_adjusted", False)
+            if is_mle:
+                source_desc = f"MLE-derived from {from_level} stats"
+                if park_adjusted:
+                    source_desc += " (park-factor adjusted)"
+            else:
+                source_desc = "Derived from actual MLB stats"
+            mle_info = {
+                "rating_source": "mle" if is_mle else "mlb_actual",
+                "from_level": from_level,
+                "park_adjusted": park_adjusted,
+                "source_description": source_desc,
+            }
+
     result = {
         "player_id": player_id,
         "player_name": f"{p['first_name']} {p['last_name']}",
@@ -445,6 +469,8 @@ async def generate_scouting_report(player_id: int, scout_quality: int = 50,
         "mlb_comp": mlb_comp,
         "scout_quality": scout_quality,
         "uncertainty_margin": uncertainty,
+        "scouting_mode": scouting_mode,
+        "mle_info": mle_info,
         "physical": {
             "height": "6-0",  # Would come from extended player data
             "weight": "190",

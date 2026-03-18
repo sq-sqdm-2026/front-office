@@ -355,6 +355,7 @@ def _load_team_lineup(team_id: int, db_path: str = None, opposing_pitcher_throws
             fielding=b["fielding_rating"],
             eye=b.get("eye_rating", 50),
             morale=b["morale"],
+            height_inches=b.get("height_inches") or 73,
         ))
     # Add bench players after starters
     for i, b in enumerate(bench):
@@ -371,7 +372,24 @@ def _load_team_lineup(team_id: int, db_path: str = None, opposing_pitcher_throws
             fielding=b["fielding_rating"],
             eye=b.get("eye_rating", 50),
             morale=b["morale"],
+            height_inches=b.get("height_inches") or 73,
         ))
+
+    # Load per-player strategy overrides
+    player_ids = [b.player_id for b in lineup]
+    if player_ids:
+        placeholders = ",".join(str(pid) for pid in player_ids)
+        strategies = query(
+            f"SELECT * FROM player_strategy WHERE player_id IN ({placeholders})",
+            db_path=db_path
+        )
+        strat_map = {s["player_id"]: s for s in strategies}
+        for b in lineup:
+            if b.player_id in strat_map:
+                s = strat_map[b.player_id]
+                b.steal_aggression = s.get("steal_aggression", 3)
+                b.bunt_tendency = s.get("bunt_tendency", 3)
+                b.hit_and_run_tendency = s.get("hit_and_run", 3)
 
     # Load pitcher fatigue data to filter out those needing rest
     team = query("SELECT team_strategy_json FROM teams WHERE id=?",
@@ -602,6 +620,19 @@ def _load_team_lineup(team_id: int, db_path: str = None, opposing_pitcher_throws
             fatigue_control_modifier=r_ctrl_mod,
             pitched_yesterday=r_pitched_yesterday,
         ))
+
+    # Load per-pitcher custom pitch count limits
+    pitcher_ids = [p.player_id for p in pitchers]
+    if pitcher_ids:
+        placeholders = ",".join(str(pid) for pid in pitcher_ids)
+        p_strategies = query(
+            f"SELECT player_id, pitch_count_limit FROM player_strategy WHERE player_id IN ({placeholders}) AND pitch_count_limit IS NOT NULL",
+            db_path=db_path
+        )
+        for ps in p_strategies:
+            for p in pitchers:
+                if p.player_id == ps["player_id"]:
+                    p.custom_pitch_count_limit = ps["pitch_count_limit"]
 
     return lineup, pitchers
 
@@ -1170,6 +1201,7 @@ def sim_day(game_date: str = None, db_path: str = None) -> list:
                         clutch=callup["clutch"],
                         fielding=callup["fielding_rating"],
                         eye=callup.get("eye_rating", 50),
+                        height_inches=callup.get("height_inches") or 73,
                     ))
 
         if not home_lineup or not away_lineup or not home_pitchers or not away_pitchers:
@@ -1324,6 +1356,42 @@ def sim_day(game_date: str = None, db_path: str = None) -> list:
                       p.bb_allowed, p.so_pitched, p.hr_allowed, p.pitches,
                       is_cg, is_sho, is_qs))
 
+        # Save pitch log entries
+        pitch_log = result.get("pitch_log", [])
+        for pl in pitch_log:
+            conn.execute("""
+                INSERT INTO pitch_log (game_id, inning, at_bat_num, pitch_num,
+                    pitcher_id, batter_id, pitch_type, velocity, result, zone,
+                    count_balls, count_strikes, outs, runners_on, score_diff, season)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (game["id"], pl["inning"], pl["at_bat_num"], pl["pitch_num"],
+                  pl["pitcher_id"], pl["batter_id"], pl["pitch_type"], pl["velocity"],
+                  pl["result"], pl["zone"], pl["count_balls"], pl["count_strikes"],
+                  pl["outs"], pl["runners_on"], pl["score_diff"], game["season"]))
+
+        # Save matchup stats (head-to-head batter vs pitcher)
+        matchup_data = result.get("matchup_data", {})
+        for (batter_id, pitcher_id), mstats in matchup_data.items():
+            conn.execute("""
+                INSERT INTO matchup_stats (batter_id, pitcher_id, season, pa, ab, h,
+                    doubles, triples, hr, rbi, bb, so, hbp)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(batter_id, pitcher_id, season) DO UPDATE SET
+                    pa = pa + excluded.pa,
+                    ab = ab + excluded.ab,
+                    h = h + excluded.h,
+                    doubles = doubles + excluded.doubles,
+                    triples = triples + excluded.triples,
+                    hr = hr + excluded.hr,
+                    rbi = rbi + excluded.rbi,
+                    bb = bb + excluded.bb,
+                    so = so + excluded.so,
+                    hbp = hbp + excluded.hbp
+            """, (batter_id, pitcher_id, game["season"],
+                  mstats["pa"], mstats["ab"], mstats["h"],
+                  mstats["doubles"], mstats["triples"], mstats["hr"],
+                  mstats["rbi"], mstats["bb"], mstats["so"], mstats["hbp"]))
+
         results.append({
             "schedule_id": game["id"],
             "home_team_id": home_id,
@@ -1404,6 +1472,44 @@ def advance_date(days: int = 1, db_path: str = None) -> dict:
                 offseason_events.append({"type": "awards_calculated", "season": season})
             except Exception as e:
                 offseason_events.append({"type": "awards_error", "error": str(e)})
+
+            # Recalibrate ratings to prevent drift
+            try:
+                from ..api.routes import recalibrate_ratings as _recal
+                import asyncio
+                # Can't await in sync context, so do it directly
+                from ..database.db import get_connection as _get_conn
+                import math as _math
+                _conn = _get_conn(db_path)
+                _rating_cols = ["contact_rating", "power_rating", "speed_rating",
+                               "fielding_rating", "arm_rating", "eye_rating",
+                               "stuff_rating", "control_rating", "stamina_rating"]
+                for _col in _rating_cols:
+                    _is_pitching = _col in ("stuff_rating", "control_rating", "stamina_rating")
+                    _pos_filter = "IN ('SP', 'RP')" if _is_pitching else "NOT IN ('SP', 'RP')"
+                    _rows = _conn.execute(
+                        f"SELECT {_col} FROM players WHERE roster_status='active' AND position {_pos_filter}"
+                    ).fetchall()
+                    if not _rows:
+                        continue
+                    _vals = [r[0] for r in _rows]
+                    _n = len(_vals)
+                    _mean = sum(_vals) / _n
+                    _var = sum((v - _mean) ** 2 for v in _vals) / _n
+                    _std = _math.sqrt(_var) if _var > 0 else 10
+                    if abs(_mean - 50) > 1 or abs(_std - 10) > 1:
+                        for _r in _conn.execute(
+                            f"SELECT id, {_col} FROM players WHERE roster_status='active' AND position {_pos_filter}"
+                        ).fetchall():
+                            _z = (_r[1] - _mean) / _std if _std > 0 else 0
+                            _new = max(20, min(80, round(50 + _z * 10)))
+                            if _new != _r[1]:
+                                _conn.execute(f"UPDATE players SET {_col}=? WHERE id=?", (_new, _r[0]))
+                _conn.commit()
+                _conn.close()
+                offseason_events.append({"type": "ratings_recalibrated", "season": season})
+            except Exception as e:
+                offseason_events.append({"type": "recalibration_error", "error": str(e)})
 
         if phase == "offseason":
             from .offseason import process_offseason_day

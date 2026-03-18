@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS game_state (
     scouting_mode TEXT NOT NULL DEFAULT 'traditional',  -- traditional, stat_based, variable
     commissioner_mode INTEGER NOT NULL DEFAULT 0,  -- 0=off, 1=on
     stat_display_config_json TEXT DEFAULT NULL,  -- JSON: {batting: [...], pitching: [...]}
+    rating_scale TEXT NOT NULL DEFAULT '20-80',  -- 20-80, 50-100, 1-20, 1-100, letter
     FOREIGN KEY (user_team_id) REFERENCES teams(id)
 );
 
@@ -142,6 +143,8 @@ CREATE TABLE IF NOT EXISTS players (
     platoon_split_json TEXT DEFAULT NULL,
     -- Pitch repertoire for pitchers: JSON format [{"type": "4SFB", "rating": 65, "usage": 0.35}, ...]
     pitch_repertoire_json TEXT DEFAULT NULL,
+    -- Physical attributes
+    height_inches INTEGER DEFAULT NULL,  -- player height in inches for strike zone modeling
     -- Scouted ratings cache: JSON format {"season": 2026, "scouted": {"contact": 55, "power": 48, ...}, "mode": "traditional"}
     scouted_ratings_json TEXT DEFAULT NULL,
     FOREIGN KEY (team_id) REFERENCES teams(id)
@@ -630,4 +633,72 @@ CREATE INDEX IF NOT EXISTS idx_playoff_bracket_round ON playoff_bracket(round);
 CREATE INDEX IF NOT EXISTS idx_awards_season ON awards(season);
 CREATE INDEX IF NOT EXISTS idx_awards_type_league ON awards(award_type, league);
 CREATE INDEX IF NOT EXISTS idx_awards_player ON awards(player_id);
+
+-- ============================================================
+-- PLAYER STRATEGY (per-player tactical settings)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS player_strategy (
+    player_id INTEGER PRIMARY KEY,
+    steal_aggression INTEGER NOT NULL DEFAULT 3,  -- 1-5 scale (1=never, 3=normal, 5=very aggressive)
+    bunt_tendency INTEGER NOT NULL DEFAULT 3,     -- 1-5 scale
+    hit_and_run INTEGER NOT NULL DEFAULT 3,       -- 1-5 scale
+    pitch_count_limit INTEGER DEFAULT NULL,       -- NULL = use team setting
+    FOREIGN KEY (player_id) REFERENCES players(id)
+);
+
+-- ============================================================
+-- MATCHUP STATS (batter vs pitcher head-to-head)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS matchup_stats (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    batter_id INTEGER NOT NULL,
+    pitcher_id INTEGER NOT NULL,
+    season INTEGER NOT NULL,
+    pa INTEGER NOT NULL DEFAULT 0,
+    ab INTEGER NOT NULL DEFAULT 0,
+    h INTEGER NOT NULL DEFAULT 0,
+    doubles INTEGER NOT NULL DEFAULT 0,
+    triples INTEGER NOT NULL DEFAULT 0,
+    hr INTEGER NOT NULL DEFAULT 0,
+    rbi INTEGER NOT NULL DEFAULT 0,
+    bb INTEGER NOT NULL DEFAULT 0,
+    so INTEGER NOT NULL DEFAULT 0,
+    hbp INTEGER NOT NULL DEFAULT 0,
+    UNIQUE(batter_id, pitcher_id, season),
+    FOREIGN KEY (batter_id) REFERENCES players(id),
+    FOREIGN KEY (pitcher_id) REFERENCES players(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_matchup_stats_batter ON matchup_stats(batter_id, season);
+CREATE INDEX IF NOT EXISTS idx_matchup_stats_pitcher ON matchup_stats(pitcher_id, season);
+
+-- ============================================================
+-- PITCH LOG (per-pitch tracking data)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS pitch_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    game_id INTEGER,
+    inning INTEGER,
+    at_bat_num INTEGER,
+    pitch_num INTEGER,
+    pitcher_id INTEGER,
+    batter_id INTEGER,
+    pitch_type TEXT,
+    velocity REAL,
+    result TEXT,  -- ball, called_strike, swinging_strike, foul, in_play
+    zone INTEGER,  -- 1-9 for strike zone quadrants, 11-14 for chase zones
+    count_balls INTEGER,
+    count_strikes INTEGER,
+    outs INTEGER,
+    runners_on INTEGER,  -- bitmask: 1=1st, 2=2nd, 4=3rd
+    score_diff INTEGER,
+    season INTEGER,
+    FOREIGN KEY (game_id) REFERENCES schedule(id),
+    FOREIGN KEY (pitcher_id) REFERENCES players(id),
+    FOREIGN KEY (batter_id) REFERENCES players(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_pitch_log_pitcher ON pitch_log(pitcher_id, season);
+CREATE INDEX IF NOT EXISTS idx_pitch_log_batter ON pitch_log(batter_id, season);
+CREATE INDEX IF NOT EXISTS idx_pitch_log_game ON pitch_log(game_id);
 """
