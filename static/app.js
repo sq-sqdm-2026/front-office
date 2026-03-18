@@ -2780,7 +2780,7 @@ async function submitSignPlayer(pid) {
     return;
   }
 
-  const r = await api('/free-agency/sign', {
+  const r = await api('/free-agents/sign', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ player_id: pid, team_id: STATE.userTeamId, years, annual_salary: salary })
@@ -6449,7 +6449,7 @@ async function loadFarm(level) {
         <th>Player</th><th>Pos</th><th>Age</th><th>G</th><th>AB</th><th>H</th><th>2B</th><th>3B</th><th>HR</th><th>RBI</th><th>BB</th><th>SO</th><th>SB</th><th>AVG</th><th>OBP</th><th>SLG</th><th>OPS</th>
       </tr></thead><tbody>`;
     stats.batting.forEach(b => {
-      html += `<tr onclick="openPlayerModal(${b.player_id})" style="cursor:pointer;">
+      html += `<tr onclick="showPlayer(${b.player_id})" style="cursor:pointer;">
         <td style="font-weight:500;">${b.first_name} ${b.last_name}</td>
         <td>${b.position}</td>
         <td>${b.age}</td>
@@ -6482,7 +6482,7 @@ async function loadFarm(level) {
         <th>Player</th><th>Pos</th><th>Age</th><th>G</th><th>GS</th><th>W</th><th>L</th><th>SV</th><th>IP</th><th>H</th><th>ER</th><th>BB</th><th>SO</th><th>HR</th><th>ERA</th><th>WHIP</th>
       </tr></thead><tbody>`;
     stats.pitching.forEach(p => {
-      html += `<tr onclick="openPlayerModal(${p.player_id})" style="cursor:pointer;">
+      html += `<tr onclick="showPlayer(${p.player_id})" style="cursor:pointer;">
         <td style="font-weight:500;">${p.first_name} ${p.last_name}</td>
         <td>${p.position}</td>
         <td>${p.age}</td>
