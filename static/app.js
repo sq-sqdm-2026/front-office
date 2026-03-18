@@ -3390,7 +3390,31 @@ async function loadAwards() {
     </div>
   </div>`;
 
+  // Hall of Fame
+  const hof = await api('/hall-of-fame');
+  if (hof?.length) {
+    html += `<div style="margin-bottom:24px">
+      <div class="section-title">Hall of Fame</div>
+      <div class="table-wrap"><table id="hof-table" style="font-size:12px">
+        <thead><tr><th class="text-col">Player</th><th class="text-col">Position</th><th class="r">Induction Year</th></tr></thead>
+        <tbody>
+        ${hof.map(p => `<tr>
+          <td class="text-col clickable" onclick="showPlayer(${p.player_id})">${p.name || p.first_name + ' ' + p.last_name}</td>
+          <td class="text-col">${p.position || '-'}</td>
+          <td class="r">${p.induction_year || p.season || '-'}</td>
+        </tr>`).join('')}
+        </tbody>
+      </table></div>
+    </div>`;
+  } else {
+    html += `<div style="margin-bottom:24px">
+      <div class="section-title">Hall of Fame</div>
+      <div class="empty-state">No Hall of Fame inductees yet</div>
+    </div>`;
+  }
+
   el.innerHTML = html;
+  makeSortable('hof-table');
 }
 
 // ============================================================

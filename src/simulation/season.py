@@ -1686,6 +1686,18 @@ def advance_date(days: int = 1, db_path: str = None) -> dict:
                     except Exception:
                         pass
 
+                    # Update position eligibility for all active players
+                    try:
+                        from .player_development import update_secondary_positions
+                        active_players = query(
+                            "SELECT id FROM players WHERE roster_status='active'",
+                            db_path=db_path
+                        )
+                        for p in (active_players or []):
+                            update_secondary_positions(p["id"], db_path)
+                    except Exception:
+                        pass
+
             # Simulate minor league games during regular season
             from .minor_leagues import simulate_all_milb_day
             try:
