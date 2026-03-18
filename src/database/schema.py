@@ -1038,4 +1038,39 @@ CREATE TABLE IF NOT EXISTS fan_sentiment (
 
 CREATE INDEX IF NOT EXISTS idx_fan_sentiment_team ON fan_sentiment(team_id);
 CREATE INDEX IF NOT EXISTS idx_fan_sentiment_date ON fan_sentiment(game_date);
+
+-- ============================================================
+-- SCOUTING ASSIGNMENTS (asymmetric information system)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS scouting_assignments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    team_id INTEGER NOT NULL,
+    player_id INTEGER NOT NULL,
+    scout_quality INTEGER NOT NULL DEFAULT 50,
+    started_date TEXT NOT NULL,
+    info_level INTEGER NOT NULL DEFAULT 2,  -- maps to InformationLevel enum
+    FOREIGN KEY (team_id) REFERENCES teams(id),
+    FOREIGN KEY (player_id) REFERENCES players(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_scouting_assignments_team ON scouting_assignments(team_id);
+CREATE INDEX IF NOT EXISTS idx_scouting_assignments_player ON scouting_assignments(team_id, player_id);
+
+-- ============================================================
+-- INTELLIGENCE REPORTS (asymmetric information system)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS intelligence_reports (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    team_id INTEGER NOT NULL,
+    subject_type TEXT NOT NULL DEFAULT 'player',  -- player, team, trade
+    subject_id INTEGER NOT NULL,
+    info_level INTEGER NOT NULL DEFAULT 0,
+    report_data TEXT,  -- JSON blob with report details
+    source TEXT NOT NULL DEFAULT 'scout',  -- scout, beat_writer, agent, gm
+    game_date TEXT NOT NULL,
+    FOREIGN KEY (team_id) REFERENCES teams(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_intelligence_reports_team ON intelligence_reports(team_id);
+CREATE INDEX IF NOT EXISTS idx_intelligence_reports_subject ON intelligence_reports(subject_type, subject_id);
 """

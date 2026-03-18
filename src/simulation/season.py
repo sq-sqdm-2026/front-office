@@ -1663,6 +1663,19 @@ def advance_date(days: int = 1, db_path: str = None) -> dict:
                     except Exception:
                         pass
 
+                # Proactive AI character messages (owner, agents, coaches, etc.)
+                try:
+                    from ..ai.proactive_messaging import check_and_send_proactive_messages
+                    user_state_pm = query("SELECT user_team_id FROM game_state WHERE id=1", db_path=db_path)
+                    if user_state_pm and user_state_pm[0]["user_team_id"]:
+                        proactive_msgs = check_and_send_proactive_messages(
+                            user_state_pm[0]["user_team_id"], game_date, db_path
+                        )
+                        if proactive_msgs:
+                            offseason_events.extend([{"type": "proactive_message", **m} for m in proactive_msgs])
+                except Exception:
+                    pass
+
                 # Minor league promotion checks on the 1st of each month
                 if game_date_obj.day == 1:
                     try:
