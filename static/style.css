@@ -3492,6 +3492,11 @@ tr.standings-playoff:hover {
 /* ============================================================
    PLAYER PORTRAITS
    ============================================================ */
+.modal-header:has(.player-portrait-frame) {
+  display: flex;
+  align-items: flex-start;
+  gap: 0;
+}
 .player-portrait-frame {
   width: 80px;
   height: 100px;
