@@ -1365,6 +1365,31 @@ async def negotiate_free_agent(req: FreeAgentNegotiationRequest):
     return response
 
 
+@app.get("/free-agents/{player_id}/non-money-score")
+async def fa_non_money_score(player_id: int, team_id: int):
+    """Calculate non-money attraction score (0-100) for a free agent toward a specific team.
+
+    Shows how attractive this team is to the player beyond salary, broken down by:
+    Playing Time, Friends, Chemistry, Contender Status, Market Size.
+    Personality traits (greed, ego, sociability, loyalty) adjust the weights.
+    """
+    return calculate_non_money_score(player_id, team_id)
+
+
+@app.get("/free-agents/{player_id}/preferences")
+async def fa_preferences(player_id: int):
+    """Get a free agent's non-money preferences for scouting reports.
+
+    Shows what factors this player values most (e.g. 'Drawn to contenders',
+    'Values having friends on the team') so the user knows what teams
+    might appeal to them beyond salary.
+    """
+    result = get_player_fa_preferences(player_id)
+    if "error" in result:
+        raise HTTPException(404, result["error"])
+    return result
+
+
 @app.post("/admin/generate-free-agents")
 async def generate_free_agents(min_count: int = 50):
     """
@@ -4477,6 +4502,28 @@ async def migrate_database():
         conn.execute("CREATE INDEX IF NOT EXISTS idx_pitch_log_pitcher ON pitch_log(pitcher_id, season)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_pitch_log_batter ON pitch_log(batter_id, season)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_pitch_log_game ON pitch_log(game_id)")
+
+        # --- character_careers table ---
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS character_careers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                character_id TEXT NOT NULL,
+                character_type TEXT NOT NULL,
+                name TEXT NOT NULL,
+                current_role TEXT NOT NULL,
+                current_team_id INTEGER,
+                reputation INTEGER NOT NULL DEFAULT 50,
+                personality_json TEXT NOT NULL DEFAULT '{}',
+                career_history_json TEXT NOT NULL DEFAULT '[]',
+                created_date TEXT NOT NULL,
+                last_updated TEXT NOT NULL,
+                FOREIGN KEY (current_team_id) REFERENCES teams(id)
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_character_careers_type ON character_careers(character_type)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_character_careers_team ON character_careers(current_team_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_character_careers_role ON character_careers(current_role)")
+        changes.append("character_careers table")
 
         conn.commit()
 
