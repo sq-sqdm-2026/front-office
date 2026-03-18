@@ -984,14 +984,17 @@ CREATE INDEX IF NOT EXISTS idx_proactive_msg_cooldown
 -- ============================================================
 CREATE TABLE IF NOT EXISTS beat_writers (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    team_id INTEGER,
     name TEXT NOT NULL,
     outlet TEXT NOT NULL,
-    personality TEXT NOT NULL DEFAULT 'neutral',
-    style_description TEXT,
+    personality TEXT NOT NULL DEFAULT 'analyst',
+    writing_style TEXT NOT NULL DEFAULT 'narrative',
     credibility INTEGER NOT NULL DEFAULT 70,
-    beat_team_id INTEGER,
+    access_level INTEGER NOT NULL DEFAULT 50,
+    bias REAL NOT NULL DEFAULT 0.0,
+    follower_count INTEGER NOT NULL DEFAULT 50000,
     is_active INTEGER NOT NULL DEFAULT 1,
-    FOREIGN KEY (beat_team_id) REFERENCES teams(id)
+    FOREIGN KEY (team_id) REFERENCES teams(id)
 );
 
 -- ============================================================
@@ -1024,20 +1027,19 @@ CREATE INDEX IF NOT EXISTS idx_articles_writer ON articles(writer_id);
 -- ============================================================
 CREATE TABLE IF NOT EXISTS fan_sentiment (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    team_id INTEGER NOT NULL,
-    game_date TEXT NOT NULL,
+    team_id INTEGER NOT NULL UNIQUE,
     sentiment_score INTEGER NOT NULL DEFAULT 50,
     excitement INTEGER NOT NULL DEFAULT 50,
-    trust_in_gm INTEGER NOT NULL DEFAULT 50,
     attendance_modifier REAL NOT NULL DEFAULT 1.0,
+    social_media_buzz INTEGER NOT NULL DEFAULT 50,
+    trust_in_gm INTEGER NOT NULL DEFAULT 50,
     top_concern TEXT,
     reaction_text TEXT,
-    FOREIGN KEY (team_id) REFERENCES teams(id),
-    UNIQUE(team_id, game_date)
+    last_updated TEXT,
+    FOREIGN KEY (team_id) REFERENCES teams(id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_fan_sentiment_team ON fan_sentiment(team_id);
-CREATE INDEX IF NOT EXISTS idx_fan_sentiment_date ON fan_sentiment(game_date);
 
 -- ============================================================
 -- SCOUTING ASSIGNMENTS (asymmetric information system)
