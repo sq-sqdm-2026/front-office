@@ -20,6 +20,10 @@ from ..ai.agent_characters import (
     get_agent_negotiation_message,
 )
 from ..ai.player_backstories import generate_all_backstories, generate_backstory
+from ..ai.asymmetric_info import (
+    InformationLevel, get_player_info_level, apply_info_uncertainty,
+    get_trade_intelligence, scout_player, get_available_intel,
+)
 from ..ai.owner_pressure import (
     set_owner_objectives, evaluate_gm_performance, check_firing,
     get_owner_mood_message, send_owner_pressure_messages,
@@ -4431,6 +4435,28 @@ async def migrate_database():
         return {"success": False, "error": str(e)}
     finally:
         conn.close()
+
+
+@app.get("/admin/rating-health")
+async def admin_rating_health():
+    """Show current rating distribution and drift health across all categories."""
+    health = check_rating_health()
+    return health
+
+
+@app.post("/admin/calibrate-ratings")
+async def admin_calibrate_ratings(season: int = Query(None)):
+    """Trigger rating recalibration.
+
+    If season is omitted, reads the current season from game_state.
+    """
+    if season is None:
+        state = query("SELECT season FROM game_state WHERE id=1")
+        if not state:
+            raise HTTPException(status_code=400, detail="No game state found")
+        season = state[0]["season"]
+    result = calibrate_ratings(season)
+    return result
 
 
 @app.post("/admin/reseed")

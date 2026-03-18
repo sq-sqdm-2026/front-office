@@ -427,6 +427,21 @@ def _calculate_non_money_attraction(player: dict, team_id: int, conn,
     position = player.get("position", "")
     player_id = player["id"]
 
+    # Personality traits that modify factor weights
+    greed = player.get("greed", 50) or 50
+    ego = player.get("ego", 50) or 50       # "ambition" — favors contenders/big markets
+    sociability = player.get("sociability", 50) or 50
+    loyalty = player.get("loyalty", 50) or 50
+
+    # Personality-based weight multipliers (each factor scaled by relevant trait)
+    # Sociability amplifies friends factor: 0.5x at sociability=0, 1.5x at sociability=100
+    friends_weight = 0.5 + sociability / 100.0
+    # Ego/ambition amplifies contender + market factors: 0.6x at ego=0, 1.4x at ego=100
+    ambition_weight = 0.6 + ego * 0.008
+    # High greed reduces all non-money factors (handled in the combined scoring, but
+    # also slightly dampens the modifier here)
+    greed_dampening = 1.0 - (max(0, greed - 50) / 200.0)  # 1.0 at greed=50, 0.75 at greed=100
+
     # --- Playing time: check if team has a high-rated player at same position ---
     try:
         incumbent = conn.execute("""
@@ -448,7 +463,7 @@ def _calculate_non_money_attraction(player: dict, team_id: int, conn,
     except Exception:
         pass
 
-    # --- Friends on team ---
+    # --- Friends on team (amplified by sociability) ---
     try:
         friend_count = conn.execute("""
             SELECT COUNT(*) as cnt FROM player_relationships pr
@@ -460,8 +475,9 @@ def _calculate_non_money_attraction(player: dict, team_id: int, conn,
             AND p.team_id = ?
         """, (player_id, player_id, team_id)).fetchone()["cnt"]
         if friend_count > 0:
-            # 10-15% bonus, capped at 3 friends contributing
-            modifier += min(friend_count, 3) * random.uniform(0.033, 0.05)
+            # Base 10-15% bonus, capped at 3 friends, scaled by sociability
+            base_friend_bonus = min(friend_count, 3) * random.uniform(0.033, 0.05)
+            modifier += base_friend_bonus * friends_weight
     except Exception:
         pass
 
@@ -469,7 +485,9 @@ def _calculate_non_money_attraction(player: dict, team_id: int, conn,
     try:
         from ..simulation.chemistry import calculate_team_chemistry
         chem = calculate_team_chemistry(team_id, db_path=db_path)
-        team_chem = chem.get("overall", 50) if isinstance(chem, dict) else 50
+        team_chem = chem if isinstance(chem, (int, float)) else (
+            chem.get("overall", 50) if isinstance(chem, dict) else 50
+        )
         if team_chem > 70:
             modifier += random.uniform(0.05, 0.10)
         elif team_chem < 30:
@@ -477,7 +495,7 @@ def _calculate_non_money_attraction(player: dict, team_id: int, conn,
     except Exception:
         pass
 
-    # --- Winning record ---
+    # --- Winning record / contender status (amplified by ambition/ego) ---
     try:
         record = conn.execute(
             "SELECT wins, losses FROM teams WHERE id = ?", (team_id,)
@@ -487,13 +505,13 @@ def _calculate_non_money_attraction(player: dict, team_id: int, conn,
             if total_games > 0:
                 win_pct = record["wins"] / total_games
                 if win_pct >= 0.550:
-                    modifier += random.uniform(0.05, 0.10)
+                    modifier += random.uniform(0.05, 0.10) * ambition_weight
                 elif win_pct < 0.400:
-                    modifier -= random.uniform(0.03, 0.07)
+                    modifier -= random.uniform(0.03, 0.07) * ambition_weight
     except Exception:
         pass
 
-    # --- Market size ---
+    # --- Market size (amplified by ambition/ego) ---
     try:
         team_info = conn.execute(
             "SELECT market_size FROM teams WHERE id = ?", (team_id,)
@@ -501,17 +519,16 @@ def _calculate_non_money_attraction(player: dict, team_id: int, conn,
         if team_info:
             mkt = team_info["market_size"] or 3
             if mkt >= 5:
-                modifier += random.uniform(0.03, 0.06)
+                modifier += random.uniform(0.03, 0.06) * ambition_weight
             elif mkt >= 4:
-                modifier += random.uniform(0.01, 0.03)
+                modifier += random.uniform(0.01, 0.03) * ambition_weight
             elif mkt <= 1:
-                modifier -= random.uniform(0.01, 0.03)
+                modifier -= random.uniform(0.01, 0.03) * ambition_weight
     except Exception:
         pass
 
     # --- Loyalty: prefer re-signing with previous team ---
     try:
-        loyalty = player.get("loyalty", 50) or 50
         if loyalty > 60:
             # Check if this team was the player's most recent team
             prev_contract = conn.execute("""
@@ -525,6 +542,9 @@ def _calculate_non_money_attraction(player: dict, team_id: int, conn,
                 modifier += max(0.05, loyalty_bonus)
     except Exception:
         pass
+
+    # Apply greed dampening — greedy players care less about non-money factors
+    modifier *= greed_dampening
 
     return max(-0.30, min(0.40, modifier))
 

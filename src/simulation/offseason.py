@@ -17,6 +17,7 @@ from ..transactions.roster import process_rule_5_draft
 from ..financial.economics import save_season_finances, process_end_of_season_finances
 from ..financial.broadcast_stadium import apply_broadcast_deal_decrement, apply_broadcast_loyalty_penalties
 from ..simulation.player_development import process_offseason_development
+from ..simulation.rating_calibration import calibrate_ratings
 
 
 def process_offseason_day(game_date: str, season: int, db_path: str = None) -> dict:
@@ -243,6 +244,14 @@ def process_offseason_day(game_date: str, season: int, db_path: str = None) -> d
                     "type": "player_development",
                     "players_changed": len(dev_events),
                     "notable": dev_events[:3],
+                })
+
+            # Recalibrate league-wide ratings to prevent drift from 50
+            cal_result = calibrate_ratings(season, db_path)
+            if cal_result.get("adjustments"):
+                events["events"].append({
+                    "type": "rating_calibration",
+                    "adjustments": cal_result["adjustments"],
                 })
 
         if offseason_day >= 95:
