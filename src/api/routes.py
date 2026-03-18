@@ -5252,6 +5252,41 @@ async def recalibrate_ratings():
 
 
 # ============================================================
+# CHARACTER CAREER ARCS
+# ============================================================
+
+@app.get("/characters")
+async def list_characters():
+    """List all tracked NPC characters with their current roles."""
+    from ..ai.career_arcs import get_all_characters
+    characters = get_all_characters()
+    return {"characters": characters, "count": len(characters)}
+
+
+@app.get("/characters/{character_id}/history")
+async def character_history(character_id: int):
+    """Get full career history for a character."""
+    from ..ai.career_arcs import get_character_history, generate_career_narrative
+    history = get_character_history(character_id)
+    if not history:
+        raise HTTPException(status_code=404, detail=f"Character {character_id} not found")
+    history["narrative"] = generate_career_narrative(character_id)
+    return history
+
+
+@app.post("/characters/process-careers")
+async def process_character_careers():
+    """Trigger end-of-season career processing for all NPC characters."""
+    from ..ai.career_arcs import process_career_changes
+    state = query("SELECT current_date FROM game_state WHERE id=1")
+    if not state:
+        raise HTTPException(status_code=400, detail="No game state found")
+    game_date = state[0]["current_date"]
+    results = process_career_changes(game_date)
+    return results
+
+
+# ============================================================
 # OWNER PRESSURE & JOB SECURITY
 # ============================================================
 
