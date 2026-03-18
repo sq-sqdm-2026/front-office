@@ -1252,12 +1252,27 @@ def sim_day(game_date: str = None, db_path: str = None) -> list:
         home_chemistry = calculate_team_chemistry(home_id, db_path)
         away_chemistry = calculate_team_chemistry(away_id, db_path)
 
+        # Phase 5: compute analytics integration modifiers
+        from ..ai.analytics_integration import (
+            calculate_chemistry_performance_bonus,
+            calculate_relationship_defense_effects,
+        )
+        home_analytics = {
+            "chemistry_bonus": calculate_chemistry_performance_bonus(home_id, db_path),
+            "defense_effects": calculate_relationship_defense_effects(home_id, db_path),
+        }
+        away_analytics = {
+            "chemistry_bonus": calculate_chemistry_performance_bonus(away_id, db_path),
+            "defense_effects": calculate_relationship_defense_effects(away_id, db_path),
+        }
+
         result = simulate_game(
             home_lineup, away_lineup,
             home_pitchers, away_pitchers,
             park, home_id, away_id,
             home_strategy, away_strategy,
-            home_chemistry=home_chemistry, away_chemistry=away_chemistry
+            home_chemistry=home_chemistry, away_chemistry=away_chemistry,
+            home_analytics=home_analytics, away_analytics=away_analytics,
         )
 
         # Save to database
@@ -1454,6 +1469,12 @@ def sim_day(game_date: str = None, db_path: str = None) -> list:
     for result_item in results:
         update_team_chemistry(result_item["home_team_id"], db_path)
         update_team_chemistry(result_item["away_team_id"], db_path)
+
+    # Phase 5: streak-driven morale adjustments
+    from ..ai.analytics_integration import update_streak_morale
+    for result_item in results:
+        update_streak_morale(result_item["home_team_id"], db_path)
+        update_streak_morale(result_item["away_team_id"], db_path)
 
     return results
 

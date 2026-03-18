@@ -938,4 +938,82 @@ CREATE TABLE IF NOT EXISTS coaching_staff (
     is_available INTEGER NOT NULL DEFAULT 0,  -- 1 = free agent coach
     FOREIGN KEY (team_id) REFERENCES teams(id)
 );
+
+-- ============================================================
+-- PROACTIVE MESSAGE LOG (cooldown tracking for AI character messages)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS proactive_message_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    character_type TEXT NOT NULL,  -- owner, rival_gm, agent, coach, beat_writer
+    character_id TEXT NOT NULL,  -- identifier (e.g. agent id, team id, coach name)
+    trigger_type TEXT NOT NULL,  -- losing_streak, payroll_over_budget, prospect_ready, etc.
+    team_id INTEGER NOT NULL,
+    game_date TEXT NOT NULL,
+    cooldown_until TEXT NOT NULL,  -- don't send same trigger from same character until this date
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (team_id) REFERENCES teams(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_proactive_msg_cooldown
+    ON proactive_message_log(character_type, character_id, trigger_type, team_id);
+
+-- ============================================================
+-- BEAT WRITERS (journalist characters)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS beat_writers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    outlet TEXT NOT NULL,
+    personality TEXT NOT NULL DEFAULT 'neutral',
+    style_description TEXT,
+    credibility INTEGER NOT NULL DEFAULT 70,
+    beat_team_id INTEGER,
+    is_active INTEGER NOT NULL DEFAULT 1,
+    FOREIGN KEY (beat_team_id) REFERENCES teams(id)
+);
+
+-- ============================================================
+-- ARTICLES (generated news articles)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS articles (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    writer_id INTEGER,
+    game_date TEXT NOT NULL,
+    headline TEXT NOT NULL,
+    body TEXT NOT NULL,
+    article_type TEXT NOT NULL DEFAULT 'news',
+    sentiment TEXT NOT NULL DEFAULT 'neutral',
+    team_id INTEGER,
+    player_id INTEGER,
+    is_read INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (writer_id) REFERENCES beat_writers(id),
+    FOREIGN KEY (team_id) REFERENCES teams(id),
+    FOREIGN KEY (player_id) REFERENCES players(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_articles_date ON articles(game_date);
+CREATE INDEX IF NOT EXISTS idx_articles_team ON articles(team_id);
+CREATE INDEX IF NOT EXISTS idx_articles_type ON articles(article_type);
+CREATE INDEX IF NOT EXISTS idx_articles_writer ON articles(writer_id);
+
+-- ============================================================
+-- FAN SENTIMENT (per-team fan mood tracking)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS fan_sentiment (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    team_id INTEGER NOT NULL,
+    game_date TEXT NOT NULL,
+    sentiment_score INTEGER NOT NULL DEFAULT 50,
+    excitement INTEGER NOT NULL DEFAULT 50,
+    trust_in_gm INTEGER NOT NULL DEFAULT 50,
+    attendance_modifier REAL NOT NULL DEFAULT 1.0,
+    top_concern TEXT,
+    reaction_text TEXT,
+    FOREIGN KEY (team_id) REFERENCES teams(id),
+    UNIQUE(team_id, game_date)
+);
+
+CREATE INDEX IF NOT EXISTS idx_fan_sentiment_team ON fan_sentiment(team_id);
+CREATE INDEX IF NOT EXISTS idx_fan_sentiment_date ON fan_sentiment(game_date);
 """

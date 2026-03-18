@@ -34,6 +34,11 @@ from ..transactions.draft import generate_draft_class, make_draft_pick
 from ..simulation.injuries import check_injuries_for_day
 from ..financial.economics import calculate_season_finances
 from ..simulation.game_engine import simulate_game
+from ..simulation.rating_calibration import (
+    calibrate_ratings, get_rating_distribution, check_rating_health,
+    normalize_draft_class,
+)
+from ..narrative.starting_scenario import get_available_scenarios, select_starting_team
 
 app = FastAPI(title="Front Office", version="0.1.0",
               description="Baseball Universe Simulation powered by Local LLMs")
@@ -268,6 +273,29 @@ async def set_user_team(req: SetUserTeam):
     """Set the user's team."""
     execute("UPDATE game_state SET user_team_id=? WHERE id=1", (req.team_id,))
     return {"success": True, "team_id": req.team_id}
+
+
+# ============================================================
+# STARTING SCENARIOS
+# ============================================================
+@app.get("/scenarios")
+async def list_scenarios():
+    """Return the three available starting team scenarios."""
+    return get_available_scenarios()
+
+
+class SelectScenario(BaseModel):
+    team_id: int
+
+
+@app.post("/scenarios/select")
+async def select_scenario(req: SelectScenario):
+    """Select a starting team and initialise the game narrative."""
+    try:
+        scenario = select_starting_team(req.team_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"success": True, "scenario": scenario}
 
 
 class SetScoutingMode(BaseModel):

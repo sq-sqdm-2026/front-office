@@ -271,41 +271,54 @@ function sortTable(tableId, colIdx, type = 'auto') {
 }
 
 // ============================================================
-// INTRO NARRATIVE
+// INTRO NARRATIVE & TEAM SELECTION
 // ============================================================
-const TEAMS = [
-  { abbr: 'PIT', city: 'Pittsburgh', name: 'Pirates',
-    owner: 'Marcus Whitfield', ownerDesc: 'Impatient heir who just took over from his father',
-    pitch: 'A proud franchise in a two-decade spiral. The farm system has talent. Whitfield wants someone who thinks differently.',
-    challenge: 'Small market, skeptical fanbase, thin ML roster, top-10 farm system ready to arrive.' },
-  { abbr: 'KC', city: 'Kansas City', name: 'Royals',
-    owner: 'Dennis Cavanaugh', ownerDesc: 'Self-made tech billionaire, first year of ownership',
-    pitch: 'Cavanaugh made his fortune in AI and bought the Royals because he believes baseball is the ultimate optimization problem.',
-    challenge: 'Mid-market, aging core, an owner who gives you rope but expects results by year 3.' },
-  { abbr: 'CIN', city: 'Cincinnati', name: 'Reds',
-    owner: 'Patricia Langford', ownerDesc: 'Lifelong fan, inherited the team, tired of losing',
-    pitch: 'Great American Ball Park is a hitter\'s paradise. Langford wants bold moves and doesn\'t care if the old guard disapproves.',
-    challenge: 'Competitive division, homer-friendly park, passionate fanbase, payroll needs creative management.' },
-];
+let _scenarios = [];
 
-function playIntro() {
+async function playIntro() {
+  // Fetch scenarios from backend
+  try {
+    _scenarios = await api('/scenarios') || [];
+  } catch (e) {
+    _scenarios = [];
+  }
+
   const el = document.getElementById('intro-narrative');
   el.innerHTML = `
     <p><span class="dim">February 14, 2026</span></p>
     <p>The call comes on a Tuesday morning. An unknown number. You almost don't answer.</p>
-    <p>On the other end is a voice you don't recognize, an owner you've only read about. <span class="hl">"I just fired my General Manager. I've been watching you. I think you're exactly what this franchise needs."</span></p>
-    <p>You're not a traditional baseball executive. You never played pro ball. You're an <span class="gold">outsider with an edge</span>. You understand systems, data, and how to build from nothing. The old guard thinks you're a joke. The owner thinks you're the future.</p>
+    <p>On the other end is a voice you don't recognize, an owner you've only read about.
+       <span class="hl">"I just fired my General Manager. I've been watching you.
+       I think you're exactly what this franchise needs."</span></p>
+    <p>You're not a traditional baseball executive. You never played pro ball.
+       You're an <span class="gold">outsider with an edge</span>. You understand systems,
+       data, and how to build from nothing. The old guard thinks you're a joke.
+       The owner thinks you're the future.</p>
     <p>Three teams are interested. Three owners willing to bet on you.</p>
     <p><span class="hl">Choose your franchise.</span></p>
   `;
+
   const choices = document.getElementById('intro-choices');
   choices.style.display = 'flex';
-  choices.innerHTML = TEAMS.map((t, i) => `
+
+  const patienceLabel = { low: 'Low', medium: 'Medium', high: 'High' };
+  const patienceColor = { low: '#ff453a', medium: '#ffd60a', high: '#30d158' };
+
+  choices.innerHTML = _scenarios.map((s, i) => `
     <div class="team-choice" onclick="selectTeam(${i})" id="tc-${i}">
-      <h3>${t.city} ${t.name}</h3>
-      <p><strong>${t.owner}</strong> - ${t.ownerDesc}</p>
-      <p>${t.pitch}</p>
-      <p style="color:var(--accent);margin-top:3px;font-size:11px">${t.challenge}</p>
+      <div class="tc-owner-badge">${s.owner_name.split(' ').map(n => n[0]).join('')}</div>
+      <h3>${s.team_city} ${s.team_name}</h3>
+      <p class="tc-owner-line"><strong>${s.owner_name}</strong>
+        <span class="tc-patience" style="color:${patienceColor[s.owner_patience] || '#aaa'}">
+          Patience: ${patienceLabel[s.owner_patience] || s.owner_patience}
+        </span>
+      </p>
+      <p class="tc-challenge">${s.challenge_description}</p>
+      <div class="tc-traits">
+        ${s.owner_personality.traits.map(t =>
+          `<span class="tc-trait">${t}</span>`
+        ).join('')}
+      </div>
     </div>
   `).join('');
 }
@@ -321,16 +334,24 @@ function selectTeam(i) {
 }
 
 async function startGame() {
-  const t = TEAMS[STATE._introTeam];
-  const teams = await api('/teams');
-  const match = teams?.find(x => x.abbreviation === t.abbr);
-  if (match) {
-    STATE.userTeamId = match.id;
-    STATE.teamAbbr = match.abbreviation;
-    STATE.teamCity = match.city;
-    STATE.teamName = match.name;
+  const scenario = _scenarios[STATE._introTeam];
+  if (!scenario || !scenario.team_id) {
+    showToast('Could not select team. Please try again.', 'error');
+    return;
   }
-  await post('/set-user-team', { team_id: STATE.userTeamId });
+
+  // Use the new /scenarios/select endpoint which sets date, sends messages, etc.
+  const result = await post('/scenarios/select', { team_id: scenario.team_id });
+  if (!result?.success) {
+    showToast('Failed to initialise game. Please try again.', 'error');
+    return;
+  }
+
+  STATE.userTeamId = scenario.team_id;
+  STATE.teamAbbr = scenario.team_abbr;
+  STATE.teamCity = scenario.team_city;
+  STATE.teamName = scenario.team_name;
+
   document.getElementById('intro-screen').classList.remove('active');
   document.getElementById('app').classList.add('active');
   await loadState();
