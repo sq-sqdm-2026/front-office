@@ -32,6 +32,10 @@ from ..ai.owner_pressure import (
     get_owner_mood_message, send_owner_pressure_messages,
     get_job_security, get_owner_objectives_for_team
 )
+from ..simulation.records import (
+    initialize_records, check_record_watch, get_record_watch,
+    get_all_records, check_career_milestones,
+)
 from ..transactions.roster import (
     call_up_player, option_player, dfa_player, get_roster_summary,
     add_to_forty_man, remove_from_forty_man, release_player
@@ -56,6 +60,15 @@ try:
     _conn.execute("ALTER TABLE game_state ADD COLUMN current_hour INTEGER NOT NULL DEFAULT 8")
     _conn.commit()
     _conn.close()
+except Exception:
+    pass  # Column already exists
+
+# --- Schema migration: add portrait column if missing ---
+try:
+    _conn_portrait = get_connection()
+    _conn_portrait.execute("ALTER TABLE players ADD COLUMN portrait TEXT DEFAULT NULL")
+    _conn_portrait.commit()
+    _conn_portrait.close()
 except Exception:
     pass  # Column already exists
 
@@ -293,6 +306,48 @@ for _msg_col in [
         _conn.close()
     except Exception:
         pass  # Column already exists
+
+# --- Schema migration: create records tracking tables ---
+try:
+    _conn = get_connection()
+    _conn.executescript("""
+        CREATE TABLE IF NOT EXISTS records (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            record_type TEXT NOT NULL,
+            category TEXT NOT NULL,
+            stat_name TEXT NOT NULL,
+            value REAL NOT NULL,
+            player_name TEXT NOT NULL,
+            player_id INTEGER,
+            season INTEGER,
+            team_name TEXT,
+            set_date TEXT,
+            is_real_record INTEGER DEFAULT 1,
+            UNIQUE(record_type, category, stat_name)
+        );
+        CREATE TABLE IF NOT EXISTS record_watch (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            player_id INTEGER NOT NULL,
+            player_name TEXT NOT NULL,
+            stat_name TEXT NOT NULL,
+            record_type TEXT NOT NULL DEFAULT 'season',
+            category TEXT NOT NULL DEFAULT 'batting',
+            current_value REAL NOT NULL,
+            record_value REAL NOT NULL,
+            pace REAL NOT NULL,
+            game_date TEXT NOT NULL,
+            is_active INTEGER NOT NULL DEFAULT 1,
+            FOREIGN KEY (player_id) REFERENCES players(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_record_watch_active
+            ON record_watch(is_active, player_id, stat_name);
+        CREATE INDEX IF NOT EXISTS idx_records_type
+            ON records(record_type, category);
+    """)
+    _conn.commit()
+    _conn.close()
+except Exception:
+    pass
 
 
 # ============================================================
@@ -1796,6 +1851,7 @@ async def send_user_message(msg: MessageSend):
 # OLLAMA STATUS
 # ============================================================
 @app.get("/ollama/status")
+@app.get("/ollama-health")
 async def ollama_status():
     """Check Ollama health and available models."""
     return await check_health()
@@ -5690,3 +5746,106 @@ async def update_fan_sentiments():
         }
     except Exception as e:
         raise HTTPException(500, f"Error updating fan sentiments: {e}")
+
+
+# ============================================================
+# PLAYER PORTRAITS
+# ============================================================
+
+@app.get("/player/{player_id}/portrait")
+async def get_player_portrait(player_id: int):
+    """Return SVG portrait for a player, generating one if needed."""
+    from ..ai.player_portraits import get_portrait, regenerate_portrait
+
+    svg = get_portrait(player_id)
+    if not svg:
+        svg = regenerate_portrait(player_id)
+    if not svg:
+        raise HTTPException(404, "Player not found")
+    from fastapi.responses import Response
+    return Response(content=svg, media_type="image/svg+xml")
+
+
+@app.post("/admin/generate-portraits")
+async def api_generate_portraits():
+    """Bulk generate portraits for all players missing one."""
+    from ..ai.player_portraits import generate_all_portraits
+    try:
+        count = generate_all_portraits()
+        return {"status": "ok", "portraits_generated": count}
+    except Exception as e:
+        raise HTTPException(500, f"Error generating portraits: {e}")
+
+
+@app.post("/player/{player_id}/regenerate-portrait")
+async def api_regenerate_portrait(player_id: int):
+    """Regenerate portrait for a single player (e.g. after trade)."""
+    from ..ai.player_portraits import regenerate_portrait
+    svg = regenerate_portrait(player_id)
+    if not svg:
+        raise HTTPException(404, "Player not found")
+    return {"status": "ok", "player_id": player_id}
+
+
+# ============================================================
+# RECORDS TRACKING
+# ============================================================
+@app.get("/records")
+async def api_get_records(type: str = None):
+    """Get all records, optionally filtered by type ('season' or 'career')."""
+    try:
+        records = get_all_records(record_type=type)
+        return records
+    except Exception as e:
+        raise HTTPException(500, f"Error fetching records: {e}")
+
+
+@app.get("/records/watch")
+async def api_get_record_watch():
+    """Get current record watch list."""
+    try:
+        watch = get_record_watch()
+        return watch
+    except Exception as e:
+        raise HTTPException(500, f"Error fetching record watch: {e}")
+
+
+@app.post("/records/check")
+async def api_check_records():
+    """Manually trigger a record check against current stats."""
+    try:
+        state = query("SELECT current_date FROM game_state WHERE id=1")
+        if not state:
+            raise HTTPException(404, "No game state found")
+        game_date = state[0]["current_date"]
+        results = check_record_watch(game_date)
+        return {
+            "success": True,
+            "game_date": game_date,
+            "watch_items": results.get("watch_items", []) if isinstance(results, dict) else [],
+            "broken_records": results.get("broken_records", []) if isinstance(results, dict) else [],
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"Error checking records: {e}")
+
+
+@app.post("/records/initialize")
+async def api_initialize_records():
+    """Seed the records table with real MLB records."""
+    try:
+        result = initialize_records()
+        return result
+    except Exception as e:
+        raise HTTPException(500, f"Error initializing records: {e}")
+
+
+@app.get("/records/milestones/{player_id}")
+async def api_career_milestones(player_id: int):
+    """Check career milestone proximity for a specific player."""
+    try:
+        milestones = check_career_milestones(player_id)
+        return milestones
+    except Exception as e:
+        raise HTTPException(500, f"Error checking milestones: {e}")

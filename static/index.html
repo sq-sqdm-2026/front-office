@@ -88,6 +88,9 @@
         <button class="nav-item" data-s="leaders" onclick="showScreen('leaders')">
           <span class="nav-icon">&#11088;</span> Leaders
         </button>
+        <button class="nav-item" data-s="records" onclick="showScreen('records')">
+          <span class="nav-icon">&#127942;</span> Records
+        </button>
       </div>
 
       <!-- Front Office -->
@@ -402,6 +405,15 @@
           <div class="leader-card"><h3>Strikeouts (P)</h3><div id="ldr-era"></div></div>
           <div class="leader-card"><h3>Stolen Bases</h3><div id="ldr-sb"></div></div>
         </div>
+      </div>
+
+      <!-- RECORDS -->
+      <div id="s-records" class="content-screen">
+        <div class="section-bar">
+          <span class="section-title">Records Book</span>
+          <button class="btn btn-sm" onclick="checkRecords()">Check Records</button>
+        </div>
+        <div id="records-body"></div>
       </div>
 
       <!-- PODCAST -->
@@ -810,6 +822,44 @@
               <button class="btn btn-sm btn-import" onclick="importCSV('pitching-stats')">Import Pitching</button>
               <button class="btn btn-sm" onclick="exportCSV('financials')">Export Financials</button>
               <div></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ====== AI / OLLAMA MODELS ====== -->
+        <div class="settings-section">
+          <div class="settings-section-header">
+            <span class="settings-section-icon">&#129302;</span> AI Models (Ollama)
+          </div>
+
+          <div class="settings-card">
+            <div class="settings-label">Required Models</div>
+            <div class="settings-helper">Front Office uses local LLMs via Ollama for GM personalities, trade evaluation, scouting reports, and more. Pull these models to enable AI features. Without them, the game uses template-based fallbacks.</div>
+            <div class="settings-option-details" style="margin-top:12px">
+              <div class="settings-option-item">
+                <strong>qwen3:32b</strong> &mdash; Strategic reasoning (GM decisions, trade evaluation, negotiation)
+                <div style="color:var(--text-muted);font-size:11px;margin-top:2px"><code>ollama pull qwen3:32b</code> &bull; ~18GB &bull; Requires 24GB+ RAM</div>
+              </div>
+              <div class="settings-option-item">
+                <strong>qwen3:14b</strong> &mdash; Creative text (scouting reports, messages, articles, podcasts)
+                <div style="color:var(--text-muted);font-size:11px;margin-top:2px"><code>ollama pull qwen3:14b</code> &bull; ~8GB &bull; Requires 16GB+ RAM</div>
+              </div>
+            </div>
+            <div style="margin-top:12px">
+              <div class="settings-label">Ollama Status</div>
+              <div id="ollama-status" style="margin-top:4px;font-size:12px;color:var(--text-muted)">Checking...</div>
+              <button class="btn btn-sm" style="margin-top:8px" onclick="checkOllamaStatus()">Check Connection</button>
+            </div>
+          </div>
+
+          <div class="settings-card">
+            <div class="settings-label">Optional Models (Phase 3+)</div>
+            <div class="settings-helper">These models enable advanced features like text-to-speech podcasts and image generation.</div>
+            <div class="settings-option-details" style="margin-top:12px">
+              <div class="settings-option-item">
+                <strong>Orpheus TTS 3B</strong> &mdash; Audio podcast rendering (converts podcast scripts to speech)
+                <div style="color:var(--text-muted);font-size:11px;margin-top:2px">Not yet integrated &bull; Requires separate TTS server setup</div>
+              </div>
             </div>
           </div>
         </div>

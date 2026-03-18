@@ -474,7 +474,7 @@ const PAGE_TITLES = {
   lineup: 'Lineup', depthchart: 'Depth Chart', standings: 'Standings',
   schedule: 'Schedule', playoffs: 'Playoffs', finances: 'Finances',
   trades: 'Trade Center', draft: 'Draft', freeagents: 'Free Agents',
-  findplayers: 'Find Players', leaders: 'Leaders', podcast: 'Podcast', messages: 'Messages',
+  findplayers: 'Find Players', leaders: 'Leaders', records: 'Records', podcast: 'Podcast', messages: 'Messages',
   gameday: 'Game Day', farm: 'Farm System', news: 'News & Media',
 };
 
@@ -495,7 +495,7 @@ function showScreen(name) {
   const loaders = {
     calendar: loadCalendar, roster: loadRoster, transactions: loadTransactions, lineup: loadLineup, depthchart: loadDepthChart, standings: loadStandings,
     schedule: loadSchedule, playoffs: loadPlayoffs, finances: loadFinances, trades: loadTrades, draft: loadDraft,
-    freeagents: loadFA, findplayers: loadFindPlayers, leaders: loadLeaders, messages: loadMessages,
+    freeagents: loadFA, findplayers: loadFindPlayers, leaders: loadLeaders, records: loadRecords, messages: loadMessages,
     gameday: loadGameDay, podcast: loadPodcast, farm: () => loadFarm('AAA'), news: () => loadNews('all'),
   };
   if (loaders[name]) loaders[name]();
@@ -1950,7 +1950,10 @@ async function showPlayer(pid) {
 
   body.innerHTML = `
     <div class="modal-header">
-      <div>
+      <div class="player-portrait-frame">
+        <img src="/player/${p.id}/portrait" alt="" class="player-portrait-img" onerror="this.parentElement.style.display='none'"/>
+      </div>
+      <div style="flex:1">
         <div class="player-name">${p.first_name} ${p.last_name}${p.nickname ? ` <span style="font-size:14px;color:var(--accent);font-style:italic">"${p.nickname}"</span>` : ''}</div>
         <div class="player-meta">${p.position} | Age ${p.age} | ${p.bats}/${p.throws} | ${p.birth_country || 'USA'}</div>
         <div class="player-meta">${p.abbreviation || ''} ${p.team_name || 'Free Agent'}</div>
@@ -4030,6 +4033,128 @@ async function loadLeaders() {
 }
 
 // ============================================================
+// RECORDS
+// ============================================================
+async function loadRecords() {
+  const body = document.getElementById('records-body');
+  if (!body) return;
+  body.innerHTML = '<div class="empty-state">Loading records...</div>';
+
+  // Initialize records if needed
+  await api('/records/initialize', { method: 'POST' });
+
+  // Fetch records and watch list in parallel
+  const [allRecords, watchList] = await Promise.all([
+    api('/records') || [],
+    api('/records/watch') || [],
+  ]);
+
+  if ((!allRecords || !allRecords.length) && (!watchList || !watchList.length)) {
+    body.innerHTML = '<div class="empty-state">No records data yet. Records are seeded with real MLB records as baselines.</div>';
+    return;
+  }
+
+  let html = '';
+
+  // Record Watch section
+  if (watchList && watchList.length) {
+    html += '<div class="records-section"><h3 class="records-section-title">Record Watch</h3>';
+    html += '<div class="records-watch-grid">';
+    watchList.forEach(w => {
+      const pctBar = Math.min(100, w.pace_pct || 0);
+      const isHot = pctBar >= 95;
+      const fmtVal = _fmtRecordVal(w.stat_name, w.current_value);
+      const fmtPace = _fmtRecordVal(w.stat_name, w.pace);
+      const fmtRec = _fmtRecordVal(w.stat_name, w.record_value);
+      html += `<div class="record-watch-card ${isHot ? 'record-watch-hot' : ''}">
+        <div class="record-watch-header">
+          <span class="record-watch-player clickable" onclick="showPlayer(${w.player_id})">${w.player_name}</span>
+          <span class="record-watch-type">${w.record_type === 'career' ? 'Career' : 'Season'}</span>
+        </div>
+        <div class="record-watch-stat">${w.stat_display || w.stat_name}</div>
+        <div class="record-watch-numbers">
+          <span>Current: <strong>${fmtVal}</strong></span>
+          <span>Pace: <strong>${fmtPace}</strong></span>
+          <span>Record: <strong>${fmtRec}</strong></span>
+        </div>
+        <div class="record-watch-bar-bg">
+          <div class="record-watch-bar-fill ${isHot ? 'hot' : ''}" style="width:${pctBar}%"></div>
+        </div>
+        <div class="record-watch-pct">${w.pace_pct}% of record</div>
+      </div>`;
+    });
+    html += '</div></div>';
+  }
+
+  // Group records by type and category
+  const grouped = {};
+  (allRecords || []).forEach(r => {
+    const key = r.record_type + '_' + r.category;
+    if (!grouped[key]) grouped[key] = [];
+    grouped[key].push(r);
+  });
+
+  const sectionOrder = [
+    { key: 'season_batting', title: 'Single-Season Batting Records' },
+    { key: 'season_pitching', title: 'Single-Season Pitching Records' },
+    { key: 'career_batting', title: 'Career Batting Records' },
+    { key: 'career_pitching', title: 'Career Pitching Records' },
+  ];
+
+  sectionOrder.forEach(sec => {
+    const recs = grouped[sec.key];
+    if (!recs || !recs.length) return;
+    html += `<div class="records-section"><h3 class="records-section-title">${sec.title}</h3>`;
+    html += '<table class="records-table"><thead><tr><th>Record</th><th>Value</th><th>Player</th><th>Year</th><th>Team</th><th></th></tr></thead><tbody>';
+    recs.forEach(r => {
+      const isGame = !r.is_real_record;
+      const fmtVal = _fmtRecordVal(r.stat_name, r.value);
+      const yearStr = r.season || (r.record_type === 'career' ? 'Career' : '-');
+      html += `<tr class="${isGame ? 'record-game-set' : ''}">
+        <td>${r.stat_display || r.stat_name}</td>
+        <td class="record-value"><strong>${fmtVal}</strong></td>
+        <td>${r.player_name}${r.player_id ? ` <span class="clickable" onclick="showPlayer(${r.player_id})">[view]</span>` : ''}</td>
+        <td>${yearStr}</td>
+        <td>${r.team_name || '-'}</td>
+        <td>${isGame ? '<span class="record-badge-game">GAME</span>' : '<span class="record-badge-real">MLB</span>'}</td>
+      </tr>`;
+    });
+    html += '</tbody></table></div>';
+  });
+
+  // Manual check button
+  html += `<div style="text-align:center;margin:16px 0">
+    <button class="btn btn-sm" onclick="checkRecords()">Check Records Now</button>
+  </div>`;
+
+  body.innerHTML = html;
+}
+
+function _fmtRecordVal(stat, val) {
+  if (val === null || val === undefined) return '-';
+  if (['avg','obp','slg','ops','whip'].includes(stat)) return val.toFixed(3);
+  if (stat === 'era') return val.toFixed(2);
+  if (stat === 'ip') return val.toFixed(1);
+  return Number.isInteger(val) ? val.toString() : Math.round(val).toString();
+}
+
+async function checkRecords() {
+  const result = await api('/records/check', { method: 'POST' });
+  if (result && result.success) {
+    const broken = result.broken_records || [];
+    const watch = result.watch_items || [];
+    if (broken.length) {
+      alert('Records broken: ' + broken.map(b => `${b.player} - ${b.stat}: ${b.value}`).join(', '));
+    } else if (watch.length) {
+      alert(`${watch.length} player(s) on record watch.`);
+    } else {
+      alert('No record-breaking activity detected.');
+    }
+    loadRecords();
+  }
+}
+
+// ============================================================
 // PODCAST
 // ============================================================
 async function loadPodcast() {
@@ -4631,10 +4756,36 @@ async function saveTeamEdit(teamId) {
 // ============================================================
 // SETTINGS & COLUMN PICKER
 // ============================================================
+async function checkOllamaStatus() {
+  const el = document.getElementById('ollama-status');
+  if (!el) return;
+  el.innerHTML = '<span class="spinner" style="width:12px;height:12px"></span> Checking...';
+  try {
+    const data = await api('/ollama-health');
+    if (data && data.status === 'healthy') {
+      const models = data.models || [];
+      const hasStrategic = models.some(m => m.includes('32b'));
+      const hasCreative = models.some(m => m.includes('14b'));
+      el.innerHTML = `<span style="color:var(--green)">&#10003; Connected</span><br>` +
+        `<span style="color:${hasStrategic ? 'var(--green)' : 'var(--red)'}">` +
+        `${hasStrategic ? '&#10003;' : '&#10007;'} qwen3:32b (strategic)</span><br>` +
+        `<span style="color:${hasCreative ? 'var(--green)' : 'var(--red)'}">` +
+        `${hasCreative ? '&#10003;' : '&#10007;'} qwen3:14b (creative)</span>`;
+    } else {
+      el.innerHTML = '<span style="color:var(--red)">&#10007; Ollama not running</span><br>' +
+        '<span style="font-size:11px">Start with: <code>ollama serve</code></span>';
+    }
+  } catch (e) {
+    el.innerHTML = '<span style="color:var(--red)">&#10007; Ollama not running</span><br>' +
+      '<span style="font-size:11px">Start with: <code>ollama serve</code></span>';
+  }
+}
+
 function openSettingsModal() {
   document.getElementById('settings-modal').style.display = 'block';
   updateCommissionerToggleUI();
   loadSavesList();
+  checkOllamaStatus();
   // Update rating scale dropdown
   const scaleSelect = document.getElementById('rating-scale-select');
   if (scaleSelect) scaleSelect.value = STATE.ratingScale || '20-80';
