@@ -2880,3 +2880,262 @@ tr.standings-playoff:hover {
 .news-transaction {
   border-left: 3px solid var(--green);
 }
+
+/* ============================================================
+   8-BIT RETRO GAME VIEWER
+   ============================================================ */
+#retro-modal .modal-content {
+  border-radius: 0;
+  border: 2px solid #333;
+  image-rendering: pixelated;
+  overflow: hidden;
+}
+
+#retro-canvas {
+  image-rendering: pixelated;
+  image-rendering: -moz-crisp-edges;
+  image-rendering: crisp-edges;
+  background: #1a1a2e;
+}
+
+#retro-controls button {
+  font-family: monospace;
+  font-size: 13px;
+  margin: 0 4px;
+  image-rendering: pixelated;
+  border-radius: 2px;
+  transition: background 0.15s;
+}
+
+#retro-controls button:hover {
+  filter: brightness(1.2);
+}
+
+#retro-header {
+  border-bottom: 2px solid #333;
+}
+
+#retro-info {
+  border-top: 1px solid #333;
+}
+
+.retro-watch-btn {
+  cursor: pointer;
+  font-size: 10px;
+  opacity: 0.6;
+  transition: opacity 0.15s;
+  margin-left: 2px;
+}
+
+.retro-watch-btn:hover {
+  opacity: 1;
+}
+
+/* =============================================================
+   SETTINGS MODAL — User-friendly grouped settings
+   ============================================================= */
+.settings-modal-content {
+  width: 580px;
+  max-height: 90vh;
+  overflow-y: auto;
+}
+
+.settings-body {
+  padding: 24px;
+}
+
+.settings-title {
+  font-size: 20px;
+  font-weight: 800;
+  margin-bottom: 24px;
+  letter-spacing: -0.3px;
+}
+
+/* Section groups */
+.settings-section {
+  margin-bottom: 24px;
+}
+
+.settings-section-header {
+  font-size: 13px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-secondary);
+  margin-bottom: 12px;
+  padding-bottom: 8px;
+  border-bottom: 2px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.settings-section-header-danger {
+  color: var(--red);
+  border-bottom-color: var(--red);
+}
+
+.settings-section-icon {
+  font-size: 15px;
+}
+
+/* Cards within sections */
+.settings-card {
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  margin-bottom: 10px;
+  background: var(--bg-card);
+}
+
+.settings-card-danger {
+  border-color: color-mix(in srgb, var(--red) 30%, var(--border));
+}
+
+/* Layout for label + control on same row */
+.settings-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.settings-label-group {
+  flex: 1;
+  min-width: 0;
+}
+
+.settings-label {
+  font-weight: 600;
+  font-size: 14px;
+  margin-bottom: 2px;
+}
+
+.settings-helper {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  margin-top: 2px;
+  margin-bottom: 4px;
+}
+
+/* Select & input styling */
+.settings-select {
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font-size: 13px;
+  min-width: 170px;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+
+.settings-input {
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-hover);
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+/* Option detail descriptions (for scouting mode, difficulty) */
+.settings-option-details {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-light);
+}
+
+.settings-option-item {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  padding: 4px 0 4px 12px;
+  border-left: 2px solid var(--border-light);
+  margin-bottom: 6px;
+}
+
+.settings-option-item:last-child {
+  margin-bottom: 0;
+}
+
+.settings-option-item strong {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+/* Rating scale preview */
+.settings-preview {
+  margin-top: 10px;
+  padding: 10px 12px;
+  background: var(--bg-hover);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.settings-preview-title {
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  color: var(--text-secondary);
+  margin-bottom: 6px;
+}
+
+.settings-preview-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 0;
+}
+
+.settings-preview-label {
+  color: var(--text-secondary);
+  min-width: 110px;
+}
+
+.settings-preview-value {
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 600;
+}
+
+/* Danger zone styling */
+.settings-danger-zone {
+  border: 1px solid color-mix(in srgb, var(--red) 25%, var(--border));
+  border-radius: var(--radius-md);
+  padding: 16px;
+  background: color-mix(in srgb, var(--red) 3%, var(--bg-card));
+}
+
+.settings-danger-notice {
+  font-size: 12px;
+  color: var(--red);
+  font-weight: 500;
+  margin-bottom: 12px;
+  line-height: 1.5;
+}
+
+.settings-danger-warning {
+  font-size: 12px;
+  color: var(--red);
+  font-weight: 500;
+  line-height: 1.5;
+  margin: 8px 0;
+  padding: 8px 10px;
+  background: var(--red-soft);
+  border-radius: var(--radius-sm);
+  border-left: 3px solid var(--red);
+}
+
+.settings-btn-danger {
+  background: var(--red) !important;
+  color: white !important;
+  border-color: var(--red) !important;
+}
+
+.settings-btn-danger:hover {
+  filter: brightness(1.1);
+}

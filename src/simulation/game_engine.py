@@ -1550,7 +1550,8 @@ def simulate_game(home_lineup: list[BatterStats], away_lineup: list[BatterStats]
                   home_strategy: dict = None, away_strategy: dict = None,
                   weather: dict = None, game_month: int = None,
                   home_chemistry: int = 50, away_chemistry: int = 50,
-                  detailed_log: bool = False, use_dh: bool = True) -> dict:
+                  detailed_log: bool = False, use_dh: bool = True,
+                  home_analytics: dict = None, away_analytics: dict = None) -> dict:
     """
     Simulate a full baseball game.
     Returns dict with full box score data and play-by-play.
@@ -1562,6 +1563,8 @@ def simulate_game(home_lineup: list[BatterStats], away_lineup: list[BatterStats]
         away_chemistry: away team chemistry score (0-100)
         use_dh: if True (default), use designated hitter. If False, pitcher bats
                 and double switches are available during pitching changes.
+        home_analytics: dict with chemistry_bonus, defense_effects from analytics_integration
+        away_analytics: dict with chemistry_bonus, defense_effects from analytics_integration
     """
     from .strategy import (
         DEFAULT_STRATEGY, STEAL_FREQUENCY_MULTIPLIER, BUNT_FREQUENCY_CONFIG,
@@ -1572,6 +1575,34 @@ def simulate_game(home_lineup: list[BatterStats], away_lineup: list[BatterStats]
         home_strategy = dict(DEFAULT_STRATEGY)
     if away_strategy is None:
         away_strategy = dict(DEFAULT_STRATEGY)
+
+    # Unpack Phase 5 analytics modifiers (chemistry bonus + relationship defense)
+    _default_chem = {"contact_bonus": 0, "power_bonus": 0, "fielding_bonus": 0,
+                     "pitching_bonus": 0, "error_rate_modifier": 1.0, "clutch_bonus": 0,
+                     "double_play_bonus": 0, "chemistry_score": 50}
+    _default_def = {"dp_modifier": 1.0, "error_modifier": 1.0, "relay_modifier": 1.0}
+    home_chem_bonus = (home_analytics or {}).get("chemistry_bonus", _default_chem)
+    away_chem_bonus = (away_analytics or {}).get("chemistry_bonus", _default_chem)
+    home_def_effects = (home_analytics or {}).get("defense_effects", _default_def)
+    away_def_effects = (away_analytics or {}).get("defense_effects", _default_def)
+
+    # Apply chemistry bonuses to batter/pitcher ratings (Phase 5)
+    for b in home_lineup:
+        b.contact = max(1, b.contact + int(home_chem_bonus.get("contact_bonus", 0)))
+        b.power = max(1, b.power + int(home_chem_bonus.get("power_bonus", 0)))
+        b.fielding = max(1, b.fielding + int(home_chem_bonus.get("fielding_bonus", 0)))
+        b.clutch = max(1, b.clutch + int(home_chem_bonus.get("clutch_bonus", 0)))
+    for b in away_lineup:
+        b.contact = max(1, b.contact + int(away_chem_bonus.get("contact_bonus", 0)))
+        b.power = max(1, b.power + int(away_chem_bonus.get("power_bonus", 0)))
+        b.fielding = max(1, b.fielding + int(away_chem_bonus.get("fielding_bonus", 0)))
+        b.clutch = max(1, b.clutch + int(away_chem_bonus.get("clutch_bonus", 0)))
+    for p in home_pitchers:
+        p.stuff = max(1, p.stuff + int(home_chem_bonus.get("pitching_bonus", 0)))
+        p.control = max(1, p.control + int(home_chem_bonus.get("pitching_bonus", 0)))
+    for p in away_pitchers:
+        p.stuff = max(1, p.stuff + int(away_chem_bonus.get("pitching_bonus", 0)))
+        p.control = max(1, p.control + int(away_chem_bonus.get("pitching_bonus", 0)))
 
     # Mark home/away batters for home field advantage
     for b in home_lineup:
@@ -1949,6 +1980,9 @@ def simulate_game(home_lineup: list[BatterStats], away_lineup: list[BatterStats]
                                 runner_speed = b.speed
                                 break
                         dp_chance = _calculate_dp_chance(runner_speed, batter.speed)
+                        # Phase 5: chemistry + relationship DP modifier (home fielding)
+                        dp_chance *= home_chem_bonus.get("double_play_bonus", 0) + 1.0
+                        dp_chance *= home_def_effects.get("dp_modifier", 1.0)
                         if random.random() < dp_chance:
                             outs += 1
                             bases.first = 0
@@ -2028,6 +2062,9 @@ def simulate_game(home_lineup: list[BatterStats], away_lineup: list[BatterStats]
                     fielding = fielder.fielding if fielder else 50
                     error_prob = _calculate_error_probability(fielding, is_ground_ball=True,
                                                               position=fielder_pos, batter_speed=batter.speed)
+                    # Phase 5: apply chemistry + relationship error modifiers (home fielding)
+                    error_prob *= home_chem_bonus.get("error_rate_modifier", 1.0)
+                    error_prob *= home_def_effects.get("error_modifier", 1.0)
                     if random.random() < error_prob:
                         batter.reached_on_error += 1
                         if fielder:
@@ -2047,6 +2084,9 @@ def simulate_game(home_lineup: list[BatterStats], away_lineup: list[BatterStats]
                     fielding = fielder.fielding if fielder else 50
                     error_prob = _calculate_error_probability(fielding, is_ground_ball=False,
                                                               position=fielder_pos, batter_speed=batter.speed)
+                    # Phase 5: apply chemistry + relationship error modifiers (home fielding)
+                    error_prob *= home_chem_bonus.get("error_rate_modifier", 1.0)
+                    error_prob *= home_def_effects.get("error_modifier", 1.0)
                     if random.random() < error_prob:
                         batter.reached_on_error += 1
                         if fielder:
@@ -2086,6 +2126,9 @@ def simulate_game(home_lineup: list[BatterStats], away_lineup: list[BatterStats]
                             runner_speed = b.speed
                             break
                     dp_chance = _calculate_dp_chance(runner_speed, batter.speed)
+                    # Phase 5: chemistry + relationship DP modifier (home fielding)
+                    dp_chance *= home_chem_bonus.get("double_play_bonus", 0) + 1.0
+                    dp_chance *= home_def_effects.get("dp_modifier", 1.0)
                     if random.random() < dp_chance:
                         outs += 1
                         bases.first = 0
@@ -2349,6 +2392,9 @@ def simulate_game(home_lineup: list[BatterStats], away_lineup: list[BatterStats]
                                 runner_speed = b.speed
                                 break
                         dp_chance = _calculate_dp_chance(runner_speed, batter.speed)
+                        # Phase 5: chemistry + relationship DP modifier (away fielding)
+                        dp_chance *= away_chem_bonus.get("double_play_bonus", 0) + 1.0
+                        dp_chance *= away_def_effects.get("dp_modifier", 1.0)
                         if random.random() < dp_chance:
                             outs += 1
                             bases.first = 0
@@ -2426,6 +2472,9 @@ def simulate_game(home_lineup: list[BatterStats], away_lineup: list[BatterStats]
                     fielding = fielder.fielding if fielder else 50
                     error_prob = _calculate_error_probability(fielding, is_ground_ball=True,
                                                               position=fielder_pos, batter_speed=batter.speed)
+                    # Phase 5: apply chemistry + relationship error modifiers (away fielding)
+                    error_prob *= away_chem_bonus.get("error_rate_modifier", 1.0)
+                    error_prob *= away_def_effects.get("error_modifier", 1.0)
                     if random.random() < error_prob:
                         batter.reached_on_error += 1
                         if fielder:
@@ -2444,6 +2493,9 @@ def simulate_game(home_lineup: list[BatterStats], away_lineup: list[BatterStats]
                     fielding = fielder.fielding if fielder else 50
                     error_prob = _calculate_error_probability(fielding, is_ground_ball=False,
                                                               position=fielder_pos, batter_speed=batter.speed)
+                    # Phase 5: apply chemistry + relationship error modifiers (away fielding)
+                    error_prob *= away_chem_bonus.get("error_rate_modifier", 1.0)
+                    error_prob *= away_def_effects.get("error_modifier", 1.0)
                     if random.random() < error_prob:
                         batter.reached_on_error += 1
                         if fielder:
@@ -2482,6 +2534,9 @@ def simulate_game(home_lineup: list[BatterStats], away_lineup: list[BatterStats]
                             runner_speed = b.speed
                             break
                     dp_chance = _calculate_dp_chance(runner_speed, batter.speed)
+                    # Phase 5: chemistry + relationship DP modifier (away fielding)
+                    dp_chance *= away_chem_bonus.get("double_play_bonus", 0) + 1.0
+                    dp_chance *= away_def_effects.get("dp_modifier", 1.0)
                     if random.random() < dp_chance:
                         outs += 1
                         bases.first = 0

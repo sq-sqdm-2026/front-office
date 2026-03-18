@@ -598,6 +598,27 @@
 
   </div><!-- /main-wrap -->
 
+  <!-- 8-BIT GAME VIEWER -->
+  <div id="retro-modal" class="modal" style="display:none">
+    <div class="modal-content" style="max-width:800px;background:#000;padding:0">
+      <button class="modal-close" onclick="closeRetroGame()" style="color:#fff;z-index:10">&times;</button>
+      <div id="retro-header" style="background:#1a1a2e;padding:8px 16px;display:flex;justify-content:space-between;align-items:center;font-family:monospace">
+        <span id="retro-away" style="color:#fff;font-size:14px;font-weight:bold"></span>
+        <span id="retro-score" style="color:#ffe66d;font-size:20px;font-weight:bold"></span>
+        <span id="retro-home" style="color:#fff;font-size:14px;font-weight:bold"></span>
+      </div>
+      <canvas id="retro-canvas" width="760" height="500" style="display:block;margin:0 auto;image-rendering:pixelated"></canvas>
+      <div id="retro-info" style="background:#1a1a2e;padding:8px 16px;font-family:monospace;color:#aaa;font-size:12px;text-align:center">
+        <span id="retro-count"></span> | <span id="retro-situation"></span>
+      </div>
+      <div id="retro-controls" style="background:#111;padding:8px;text-align:center">
+        <button onclick="retroPlayPause()" id="retro-play-btn" style="background:#4a90d9;color:#fff;border:none;padding:6px 16px;border-radius:4px;cursor:pointer;font-family:monospace">&#9654; Play</button>
+        <button onclick="retroSpeed()" id="retro-speed-btn" style="background:#333;color:#fff;border:none;padding:6px 16px;border-radius:4px;cursor:pointer;font-family:monospace">1x</button>
+        <button onclick="retroSkip()" style="background:#333;color:#fff;border:none;padding:6px 16px;border-radius:4px;cursor:pointer;font-family:monospace">Skip &#9654;&#9654;</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Player / Box Score Modal -->
   <div id="player-modal" class="modal" style="display:none" onclick="if(event.target === this) closeModal()">
     <div class="modal-content">
@@ -628,121 +649,226 @@
 
   <!-- Settings Modal -->
   <div id="settings-modal" class="modal" style="display:none" onclick="if(event.target === this) closeSettingsModal()">
-    <div class="modal-content" style="width: 500px;">
+    <div class="modal-content settings-modal-content">
       <button class="modal-close" onclick="closeSettingsModal()">&times;</button>
-      <div style="padding: 24px;">
-        <h2 style="font-size: 18px; font-weight: 700; margin-bottom: 20px;">Settings</h2>
+      <div class="settings-body">
+        <h2 class="settings-title">Settings</h2>
 
-        <div style="margin-bottom: 16px; padding: 16px; border: 1px solid var(--border); border-radius: var(--radius-md);">
-          <div style="display: flex; justify-content: space-between; align-items: center;">
-            <div>
-              <div style="font-weight: 600; font-size: 14px;">Commissioner Mode</div>
-              <div style="font-size: 12px; color: var(--text-secondary); margin-top: 2px;">Advanced editing and control</div>
+        <!-- ====== SAVE / LOAD ====== -->
+        <div class="settings-section">
+          <div class="settings-section-header">
+            <span class="settings-section-icon">&#128190;</span> Save / Load Game
+          </div>
+          <div class="settings-card">
+            <div class="settings-helper">Save your progress so you can return later, or load a previous save.</div>
+            <div style="display: flex; gap: 8px; margin-bottom: 12px;">
+              <input type="text" id="save-name-input" placeholder="Save name..." class="settings-input" style="flex:1;">
+              <button class="btn btn-sm btn-primary" onclick="saveGame()">Save</button>
             </div>
-            <button class="btn btn-sm" id="commissioner-toggle-btn" onclick="toggleCommissionerMode()">OFF</button>
+            <div id="saves-list" style="font-size: 12px; color: var(--text-secondary);">Loading saves...</div>
           </div>
         </div>
 
-        <div style="margin-bottom: 16px; padding: 16px; border: 1px solid var(--border); border-radius: var(--radius-md);">
-          <div style="font-weight: 600; font-size: 14px; margin-bottom: 12px;">Save / Load Game</div>
-          <div style="display: flex; gap: 8px; margin-bottom: 12px;">
-            <input type="text" id="save-name-input" placeholder="Save name..." style="flex:1; padding:6px 10px; border:1px solid var(--border); border-radius:var(--radius-sm); background:var(--bg-hover); color:var(--text-primary); font-size:13px;">
-            <button class="btn btn-sm btn-primary" onclick="saveGame()">Save</button>
+        <!-- ====== DISPLAY SETTINGS ====== -->
+        <div class="settings-section">
+          <div class="settings-section-header">
+            <span class="settings-section-icon">&#127912;</span> Display Settings
           </div>
-          <div id="saves-list" style="font-size: 12px; color: var(--text-secondary);">Loading saves...</div>
-        </div>
 
-        <div style="margin-bottom: 16px; padding: 16px; border: 1px solid var(--border); border-radius: var(--radius-md);">
-          <div style="display: flex; justify-content: space-between; align-items: center;">
-            <div>
-              <div style="font-weight: 600; font-size: 14px;">Rating Scale</div>
-              <div style="font-size: 12px; color: var(--text-secondary); margin-top: 2px;">How player ratings are displayed</div>
+          <!-- Rating Scale -->
+          <div class="settings-card">
+            <div class="settings-row">
+              <div class="settings-label-group">
+                <div class="settings-label">Rating Scale</div>
+                <div class="settings-helper">Choose how player ratings are shown. All scales represent the same underlying value, just displayed differently.</div>
+              </div>
+              <select id="rating-scale-select" onchange="setRatingScale(this.value)" class="settings-select">
+                <option value="20-80">Scout (20-80)</option>
+                <option value="50-100">Baseball Mogul (50-100)</option>
+                <option value="1-20">Football Manager (1-20)</option>
+                <option value="1-100">Percentage (1-100)</option>
+                <option value="letter">Letter Grade (A+ - F)</option>
+              </select>
             </div>
-            <select id="rating-scale-select" onchange="setRatingScale(this.value)" style="padding:6px 10px; border:1px solid var(--border); border-radius:var(--radius-sm); background:var(--bg-input); color:var(--text-primary); font-size:13px; min-width:180px;">
-              <option value="20-80">Scout (20-80)</option>
-              <option value="50-100">Baseball Mogul (50-100)</option>
-              <option value="1-20">Football Manager (1-20)</option>
-              <option value="1-100">Percentage (1-100)</option>
-              <option value="letter">Letter Grade (A+ - F)</option>
-            </select>
-          </div>
-        </div>
-
-        <div style="margin-bottom: 16px; padding: 16px; border: 1px solid var(--border); border-radius: var(--radius-md);">
-          <div style="font-weight: 600; font-size: 14px; margin-bottom: 12px;">Stat Columns</div>
-          <div style="display: flex; gap: 8px;">
-            <button class="btn btn-sm" onclick="openColumnPickerModal('batting')">Batting Columns</button>
-            <button class="btn btn-sm" onclick="openColumnPickerModal('pitching')">Pitching Columns</button>
-          </div>
-        </div>
-
-        <div id="expansion-draft-btn" style="margin-bottom: 16px; padding: 16px; border: 1px solid var(--border); border-radius: var(--radius-md); display: none;">
-          <div style="display: flex; justify-content: space-between; align-items: center;">
-            <div>
-              <div style="font-weight: 600; font-size: 14px;">Expansion Draft</div>
-              <div style="font-size: 12px; color: var(--text-secondary); margin-top: 2px;">Add a new franchise and stock it via expansion draft</div>
+            <div id="rating-scale-preview" class="settings-preview">
+              <!-- Filled by JS -->
             </div>
-            <button class="btn btn-sm btn-primary" onclick="openExpansionDraftModal()">Start</button>
+          </div>
+
+          <!-- Stat Columns -->
+          <div class="settings-card">
+            <div class="settings-label">Stat Columns</div>
+            <div class="settings-helper">Choose which stats appear in batting and pitching tables throughout the app. Click to customize.</div>
+            <div style="display: flex; gap: 8px; margin-top: 8px;">
+              <button class="btn btn-sm" onclick="openColumnPickerModal('batting')">Batting Columns</button>
+              <button class="btn btn-sm" onclick="openColumnPickerModal('pitching')">Pitching Columns</button>
+            </div>
           </div>
         </div>
 
-        <div style="margin-bottom: 16px; padding: 16px; border: 1px solid var(--border); border-radius: var(--radius-md);">
-          <div style="font-weight: 600; font-size: 14px; margin-bottom: 12px;">CSV Export / Import</div>
-          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
-            <button class="btn btn-sm" onclick="exportCSV('roster')">Export Roster</button>
-            <button class="btn btn-sm btn-import" onclick="importCSV('roster')">Import Roster</button>
-            <button class="btn btn-sm" onclick="exportCSV('batting-stats', {season: STATE.season})">Export Batting</button>
-            <button class="btn btn-sm btn-import" onclick="importCSV('batting-stats')">Import Batting</button>
-            <button class="btn btn-sm" onclick="exportCSV('pitching-stats', {season: STATE.season})">Export Pitching</button>
-            <button class="btn btn-sm btn-import" onclick="importCSV('pitching-stats')">Import Pitching</button>
-            <button class="btn btn-sm" onclick="exportCSV('financials')">Export Financials</button>
-            <div></div>
+        <!-- ====== GAMEPLAY SETTINGS ====== -->
+        <div class="settings-section">
+          <div class="settings-section-header">
+            <span class="settings-section-icon">&#127918;</span> Gameplay Settings
+          </div>
+
+          <!-- Scouting Mode -->
+          <div class="settings-card">
+            <div class="settings-row">
+              <div class="settings-label-group">
+                <div class="settings-label">Scouting Mode</div>
+                <div class="settings-helper">Controls how accurate player ratings are when you view them.</div>
+              </div>
+              <select id="scouting-mode-select" onchange="setScoutingMode(this.value)" class="settings-select">
+                <option value="traditional">Traditional</option>
+                <option value="stat_based">Stat-Based</option>
+                <option value="variable">Variable</option>
+              </select>
+            </div>
+            <div class="settings-option-details">
+              <div class="settings-option-item">
+                <strong>Traditional</strong> &mdash; Your scouts estimate ratings with some uncertainty. Better scouting budget = more accuracy. Ratings are stable but may not be exact.
+              </div>
+              <div class="settings-option-item">
+                <strong>Stat-Based</strong> &mdash; Ratings are derived directly from a player's stats. No guesswork, but they only reflect past performance, not potential.
+              </div>
+              <div class="settings-option-item">
+                <strong>Variable</strong> &mdash; Ratings fluctuate daily based on recent performance. A hot streak boosts ratings; a slump lowers them. Most realistic but hardest to evaluate.
+              </div>
+            </div>
+          </div>
+
+          <!-- Difficulty -->
+          <div class="settings-card">
+            <div class="settings-row">
+              <div class="settings-label-group">
+                <div class="settings-label">Difficulty</div>
+                <div class="settings-helper">Affects your team's revenue, trade success rates, player development, and AI competitiveness.</div>
+              </div>
+              <select id="difficulty-select" onchange="setDifficulty(this.value)" class="settings-select">
+                <option value="fan">Fan</option>
+                <option value="coach">Coach</option>
+                <option value="manager">Manager</option>
+                <option value="mogul">Mogul</option>
+              </select>
+            </div>
+            <div class="settings-option-details">
+              <div class="settings-option-item">
+                <strong>Fan</strong> &mdash; Easiest. Boosted revenue, favorable trades, and faster player development. Great for learning.
+              </div>
+              <div class="settings-option-item">
+                <strong>Coach</strong> &mdash; Moderate. Slight advantages to help you compete. Good for casual play.
+              </div>
+              <div class="settings-option-item">
+                <strong>Manager</strong> &mdash; Balanced. No bonuses or penalties. The default experience.
+              </div>
+              <div class="settings-option-item">
+                <strong>Mogul</strong> &mdash; Hardest. Reduced revenue, tougher trades, and slower development. For experienced players who want a real challenge.
+              </div>
+            </div>
           </div>
         </div>
 
-        <div style="padding: 16px; border: 1px solid var(--border); border-radius: var(--radius-md);">
-          <div style="font-weight: 600; font-size: 14px; margin-bottom: 12px;">Database</div>
-
-          <div style="margin-bottom: 12px; padding: 12px; background: var(--bg-hover); border-radius: var(--radius-sm);">
-            <div style="font-weight: 600; font-size: 13px; margin-bottom: 2px;">Apply Schema Updates</div>
-            <p style="margin: 0 0 8px 0; font-size: 12px; color: var(--text-secondary);">
-              Add new columns and tables without losing your save.
-            </p>
-            <button class="btn btn-sm btn-primary" id="migrate-btn" onclick="migrateDatabase()">Run Migrations</button>
+        <!-- ====== ADVANCED ====== -->
+        <div class="settings-section">
+          <div class="settings-section-header">
+            <span class="settings-section-icon">&#128295;</span> Advanced
           </div>
 
-          <div style="margin-bottom: 12px; padding: 12px; background: var(--bg-hover); border-radius: var(--radius-sm);">
-            <div style="font-weight: 600; font-size: 13px; margin-bottom: 2px;">Reseed with Real MLB Rosters</div>
-            <p style="margin: 0 0 8px 0; font-size: 12px; color: var(--text-secondary);">
-              Deletes your current save and rebuilds with real player data.
-            </p>
-            <div id="reseed-confirm" style="display:none; margin-bottom:8px; padding:8px; background:var(--red-soft); border:1px solid var(--red); border-radius:var(--radius-sm);">
-              <div style="font-size:12px; color:var(--red); font-weight:600; margin-bottom:6px;">This will delete your current save. Are you sure?</div>
+          <!-- Commissioner Mode -->
+          <div class="settings-card">
+            <div class="settings-row">
+              <div class="settings-label-group">
+                <div class="settings-label">Commissioner Mode</div>
+                <div class="settings-helper">God mode. When enabled, you can directly edit any player's ratings, contracts, ages, and team finances. Use the player card or team finance page to make edits. <strong>Changes cannot be undone</strong> (except by loading a save).</div>
+              </div>
+              <button class="btn btn-sm" id="commissioner-toggle-btn" onclick="toggleCommissionerMode()">OFF</button>
+            </div>
+          </div>
+
+          <!-- Expansion Draft (conditionally shown) -->
+          <div id="expansion-draft-btn" class="settings-card" style="display: none;">
+            <div class="settings-row">
+              <div class="settings-label-group">
+                <div class="settings-label">Expansion Draft</div>
+                <div class="settings-helper">Add a brand new franchise to the league and stock its roster via an expansion draft. Only available during the offseason.</div>
+              </div>
+              <button class="btn btn-sm btn-primary" onclick="openExpansionDraftModal()">Start</button>
+            </div>
+          </div>
+
+          <!-- CSV Export/Import -->
+          <div class="settings-card">
+            <div class="settings-label">CSV Export / Import</div>
+            <div class="settings-helper">Export your data to spreadsheets (CSV format), or import data to overwrite current values. Useful for custom edits or backups.</div>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px;">
+              <button class="btn btn-sm" onclick="exportCSV('roster')">Export Roster</button>
+              <button class="btn btn-sm btn-import" onclick="importCSV('roster')">Import Roster</button>
+              <button class="btn btn-sm" onclick="exportCSV('batting-stats', {season: STATE.season})">Export Batting</button>
+              <button class="btn btn-sm btn-import" onclick="importCSV('batting-stats')">Import Batting</button>
+              <button class="btn btn-sm" onclick="exportCSV('pitching-stats', {season: STATE.season})">Export Pitching</button>
+              <button class="btn btn-sm btn-import" onclick="importCSV('pitching-stats')">Import Pitching</button>
+              <button class="btn btn-sm" onclick="exportCSV('financials')">Export Financials</button>
+              <div></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ====== DANGER ZONE ====== -->
+        <div class="settings-section settings-danger-zone">
+          <div class="settings-section-header settings-section-header-danger">
+            <span class="settings-section-icon">&#9888;&#65039;</span> Danger Zone
+          </div>
+          <div class="settings-danger-notice">These actions are destructive and cannot be undone. Make sure to save your game first if you want to keep your progress.</div>
+
+          <!-- Schema Migrations -->
+          <div class="settings-card">
+            <div class="settings-row">
+              <div class="settings-label-group">
+                <div class="settings-label">Apply Schema Updates</div>
+                <div class="settings-helper">Adds new database columns and tables needed by updated versions of the app. <strong>Safe</strong> &mdash; this does not delete your save data.</div>
+              </div>
+              <button class="btn btn-sm btn-primary" id="migrate-btn" onclick="migrateDatabase()">Run Migrations</button>
+            </div>
+          </div>
+
+          <!-- Reseed -->
+          <div class="settings-card settings-card-danger">
+            <div class="settings-label">Reseed with Real MLB Rosters</div>
+            <div class="settings-helper">Completely wipes your current database and rebuilds it from scratch using real MLB player data cached on disk.</div>
+            <div class="settings-danger-warning">
+              &#9888;&#65039; This will <strong>DELETE all your progress</strong> &mdash; your roster moves, trades, draft picks, financial decisions, and game history will be permanently lost.
+            </div>
+            <div id="reseed-confirm" style="display:none; margin-bottom:8px; padding:10px; background:var(--red-soft); border:1px solid var(--red); border-radius:var(--radius-sm);">
+              <div style="font-size:13px; color:var(--red); font-weight:600; margin-bottom:8px;">Are you absolutely sure? This cannot be undone.</div>
               <div style="display:flex; gap:8px;">
-                <button class="btn btn-sm" onclick="executeReseed(false)" style="background:var(--red); color:white; border-color:var(--red);">Yes, Reseed</button>
+                <button class="btn btn-sm" onclick="executeReseed(false)" style="background:var(--red); color:white; border-color:var(--red);">Yes, Delete Everything &amp; Reseed</button>
                 <button class="btn btn-sm" onclick="document.getElementById('reseed-confirm').style.display='none'">Cancel</button>
               </div>
             </div>
-            <button class="btn btn-sm" id="reseed-btn" onclick="document.getElementById('reseed-confirm').style.display='block'" style="background:var(--red); color:white; border-color:var(--red);">Reseed Database</button>
+            <button class="btn btn-sm settings-btn-danger" id="reseed-btn" onclick="document.getElementById('reseed-confirm').style.display='block'">Reseed Database</button>
           </div>
 
-          <div style="padding: 12px; background: var(--bg-hover); border-radius: var(--radius-sm);">
-            <div style="font-weight: 600; font-size: 13px; margin-bottom: 2px;">Force Re-fetch from MLB API</div>
-            <p style="margin: 0 0 8px 0; font-size: 12px; color: var(--text-secondary);">
-              Re-downloads all player data, then reseeds.
-            </p>
-            <div id="refetch-confirm" style="display:none; margin-bottom:8px; padding:8px; background:var(--orange-soft); border:1px solid var(--orange); border-radius:var(--radius-sm);">
-              <div style="font-size:12px; color:var(--orange); font-weight:600; margin-bottom:6px;">This will delete your save and re-download everything. Continue?</div>
+          <!-- Force Re-fetch -->
+          <div class="settings-card settings-card-danger">
+            <div class="settings-label">Force Re-fetch from MLB API</div>
+            <div class="settings-helper">Re-downloads all player data from the MLB Stats API (requires internet), then reseeds the entire database. Use this if player data seems outdated or corrupted. Takes 3-5 minutes.</div>
+            <div class="settings-danger-warning">
+              &#9888;&#65039; This will <strong>DELETE all your progress</strong> and re-download everything from scratch. Even slower than a regular reseed.
+            </div>
+            <div id="refetch-confirm" style="display:none; margin-bottom:8px; padding:10px; background:var(--red-soft); border:1px solid var(--red); border-radius:var(--radius-sm);">
+              <div style="font-size:13px; color:var(--red); font-weight:600; margin-bottom:8px;">This will delete your save and re-download everything. Are you sure?</div>
               <div style="display:flex; gap:8px;">
-                <button class="btn btn-sm" onclick="executeReseed(true)" style="background:var(--orange); color:white; border-color:var(--orange);">Yes, Re-fetch</button>
+                <button class="btn btn-sm" onclick="executeReseed(true)" style="background:var(--red); color:white; border-color:var(--red);">Yes, Delete &amp; Re-fetch</button>
                 <button class="btn btn-sm" onclick="document.getElementById('refetch-confirm').style.display='none'">Cancel</button>
               </div>
             </div>
-            <button class="btn btn-sm" id="refetch-btn" onclick="document.getElementById('refetch-confirm').style.display='block'" style="background:var(--orange); color:white; border-color:var(--orange);">Force Re-fetch</button>
+            <button class="btn btn-sm settings-btn-danger" id="refetch-btn" onclick="document.getElementById('refetch-confirm').style.display='block'">Force Re-fetch</button>
           </div>
 
           <div id="db-status" style="margin-top: 8px; font-size: 11px; color: var(--text-tertiary); display: none;"></div>
         </div>
+
       </div>
     </div>
   </div>
@@ -764,6 +890,7 @@
 
 </div>
 
+<script src="/static/retro-game.js"></script>
 <script src="/static/app.js"></script>
 </body>
 </html>

@@ -138,6 +138,8 @@ async function setRatingScale(scale) {
     STATE.ratingScale = scale;
     await loadRatingScale();
     showToast(`Rating scale changed to ${scale}`, 'success');
+    // Update the preview in settings modal
+    if (typeof updateRatingScalePreview === 'function') updateRatingScalePreview();
     // Refresh current view
     const activeScreen = document.querySelector('.screen.active');
     if (activeScreen) {
@@ -798,6 +800,7 @@ async function loadCalendar() {
           <span class="ha">${ha}</span> <span class="opp">${opp}</span><br>
           <span class="${won ? 'win' : 'loss'}">${won ? 'W' : 'L'}</span>
           <span class="score">${myScore}-${theirScore}</span>
+          <span class="retro-watch-btn" onclick="event.stopPropagation();watchGame(${g.id},'${g.home_abbr}','${g.away_abbr}')" title="Watch 8-bit replay">\uD83C\uDFAE</span>
         </div>`;
       } else {
         content += `<div class="cal-game">
@@ -3385,7 +3388,7 @@ async function loadSchedule() {
       <td class="text-col">${g.away_abbr}</td><td class="c" style="color:var(--text-muted)">@</td>
       <td class="text-col">${g.home_abbr}</td>
       <td class="r">${g.is_played ? g.away_score + '-' + g.home_score : '-'}</td>
-      <td class="c">${g.is_played ? '<span class="clickable" onclick="showBoxScore(' + g.id + ')">Box</span>' : ''}</td>
+      <td class="c">${g.is_played ? '<span class="clickable" onclick="showBoxScore(' + g.id + ')">Box</span> <span class="clickable" onclick="watchGame(' + g.id + ',\'' + g.home_abbr + '\',\'' + g.away_abbr + '\')" title="Watch 8-bit replay">\uD83C\uDFAE</span>' : ''}</td>
     </tr>`).join('')}
     </tbody>
   </table></div>`;
@@ -4455,10 +4458,77 @@ function openSettingsModal() {
   // Update rating scale dropdown
   const scaleSelect = document.getElementById('rating-scale-select');
   if (scaleSelect) scaleSelect.value = STATE.ratingScale || '20-80';
+  updateRatingScalePreview();
+  // Update scouting mode dropdown
+  loadScoutingModeUI();
+  // Update difficulty dropdown
+  loadDifficultyUI();
   // Show/hide expansion draft button based on phase
   const expansionBtn = document.getElementById('expansion-draft-btn');
   if (expansionBtn) {
     expansionBtn.style.display = STATE.phase === 'offseason' ? 'block' : 'none';
+  }
+}
+
+// --- Rating Scale Preview ---
+function updateRatingScalePreview() {
+  const el = document.getElementById('rating-scale-preview');
+  if (!el) return;
+  // Show example ratings at key points on the 20-80 scale
+  const examples = [
+    { label: 'Elite (80 contact)', val: 80 },
+    { label: 'Above Avg (65 contact)', val: 65 },
+    { label: 'Average (50 contact)', val: 50 },
+    { label: 'Below Avg (35 contact)', val: 35 },
+    { label: 'Poor (20 contact)', val: 20 },
+  ];
+  let html = '<div class="settings-preview-title">Preview: How a player\'s Contact rating looks</div>';
+  examples.forEach(ex => {
+    const display = convertRating(ex.val);
+    const cls = gradeClass(ex.val);
+    html += `<div class="settings-preview-row">
+      <span class="settings-preview-label">${ex.label}</span>
+      <span class="grade ${cls} settings-preview-value">${display}</span>
+    </div>`;
+  });
+  el.innerHTML = html;
+}
+
+// --- Scouting Mode ---
+async function loadScoutingModeUI() {
+  try {
+    const data = await api('/settings/scouting-mode');
+    const mode = data?.scouting_mode || 'traditional';
+    STATE.scoutingMode = mode;
+    const sel = document.getElementById('scouting-mode-select');
+    if (sel) sel.value = mode;
+  } catch(e) { /* use default */ }
+}
+
+async function setScoutingMode(mode) {
+  const result = await post('/settings/scouting-mode', { mode });
+  if (result && result.success) {
+    STATE.scoutingMode = mode;
+    showToast(`Scouting mode changed to ${mode.replace('_', ' ')}`, 'success');
+  }
+}
+
+// --- Difficulty ---
+async function loadDifficultyUI() {
+  try {
+    const data = await api('/settings/difficulty');
+    const diff = data?.difficulty || 'manager';
+    STATE.difficulty = diff;
+    const sel = document.getElementById('difficulty-select');
+    if (sel) sel.value = diff;
+  } catch(e) { /* use default */ }
+}
+
+async function setDifficulty(difficulty) {
+  const result = await post('/settings/difficulty', { difficulty });
+  if (result && result.success) {
+    STATE.difficulty = difficulty;
+    showToast(`Difficulty changed to ${difficulty.charAt(0).toUpperCase() + difficulty.slice(1)}`, 'success');
   }
 }
 
@@ -6002,6 +6072,13 @@ function renderTransactionCard(item) {
     <div class="news-headline">${item.headline}</div>
     <div class="news-body">${item.body}</div>
   </div>`;
+}
+
+// ============================================================
+// 8-BIT RETRO GAME VIEWER
+// ============================================================
+function watchGame(scheduleId, homeAbbr, awayAbbr) {
+  initRetroGame(scheduleId, homeAbbr, awayAbbr);
 }
 
 init();

@@ -290,6 +290,26 @@ async def get_scouting_mode():
     return {"scouting_mode": mode}
 
 
+class SetDifficulty(BaseModel):
+    difficulty: str  # fan, coach, manager, mogul
+
+@app.post("/settings/difficulty")
+async def set_difficulty(req: SetDifficulty):
+    """Change the difficulty level."""
+    if req.difficulty not in ["fan", "coach", "manager", "mogul"]:
+        raise HTTPException(400, "Invalid difficulty. Must be: fan, coach, manager, or mogul")
+    execute("UPDATE game_state SET difficulty=? WHERE id=1", (req.difficulty,))
+    return {"success": True, "difficulty": req.difficulty}
+
+
+@app.get("/settings/difficulty")
+async def get_difficulty():
+    """Get the current difficulty level."""
+    state = query("SELECT difficulty FROM game_state WHERE id=1")
+    difficulty = state[0]["difficulty"] if state else "manager"
+    return {"difficulty": difficulty}
+
+
 # ============================================================
 # SIMULATION
 # ============================================================
@@ -683,6 +703,16 @@ async def get_team(team_id: int):
 async def list_teams():
     """List all 30 teams."""
     return query("SELECT id, city, name, abbreviation, league, division FROM teams")
+
+
+# ============================================================
+# ANALYTICS INTEGRATION (Phase 5)
+# ============================================================
+@app.get("/analytics/{team_id}")
+async def get_analytics_dashboard(team_id: int):
+    """Get the full analytics dashboard for a team."""
+    from ..ai.analytics_integration import get_team_analytics_dashboard
+    return get_team_analytics_dashboard(team_id)
 
 
 # ============================================================
@@ -1461,6 +1491,20 @@ async def fire_coach_endpoint(team_id: int, coach_id: int):
     """Fire a coach."""
     from ..transactions.coaching import fire_coach
     return fire_coach(team_id, coach_id)
+
+
+@app.get("/manager-ai/{team_id}/strategy")
+async def get_manager_strategy(team_id: int):
+    """Get the manager AI's current strategy adjustments."""
+    from ..ai.manager_ai import get_manager_ai
+    ai = get_manager_ai(team_id)
+    return {
+        "manager": ai.name,
+        "personality": ai.personality,
+        "mood": ai.mood,
+        "recent_record": f"{ai.recent_wins}-{ai.recent_losses}",
+        "strategy": ai.get_strategy_adjustments(),
+    }
 
 
 # ============================================================
