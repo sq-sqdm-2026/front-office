@@ -940,6 +940,28 @@ CREATE TABLE IF NOT EXISTS coaching_staff (
 );
 
 -- ============================================================
+-- CHARACTER CAREERS (dynamic NPC career arcs)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS character_careers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    character_id TEXT NOT NULL,
+    character_type TEXT NOT NULL,  -- scouting, coaching, media, agent
+    name TEXT NOT NULL,
+    current_role TEXT NOT NULL,  -- Scout, GM, TV Analyst, Manager, etc.
+    current_team_id INTEGER,
+    reputation INTEGER NOT NULL DEFAULT 50,  -- 0-100
+    personality_json TEXT NOT NULL DEFAULT '{}',
+    career_history_json TEXT NOT NULL DEFAULT '[]',  -- JSON array of past roles
+    created_date TEXT NOT NULL,
+    last_updated TEXT NOT NULL,
+    FOREIGN KEY (current_team_id) REFERENCES teams(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_character_careers_type ON character_careers(character_type);
+CREATE INDEX IF NOT EXISTS idx_character_careers_team ON character_careers(current_team_id);
+CREATE INDEX IF NOT EXISTS idx_character_careers_role ON character_careers(current_role);
+
+-- ============================================================
 -- PROACTIVE MESSAGE LOG (cooldown tracking for AI character messages)
 -- ============================================================
 CREATE TABLE IF NOT EXISTS proactive_message_log (

@@ -58,6 +58,9 @@ def get_free_agents(db_path: str = None) -> list:
                 "years": bidding["offers"][best_tid]["years"],
                 "date": bidding["offers"][best_tid].get("day_offered", 0),
             }
+        # Non-money preferences for this player (what they value beyond salary)
+        prefs = get_player_fa_preferences(p["id"], db_path=db_path)
+
         result.append({
             **p,
             "asking_salary": value["salary"],
@@ -66,6 +69,13 @@ def get_free_agents(db_path: str = None) -> list:
             "tier": value["tier"],
             "best_offer": best_offer,
             "qo_status": bidding.get("qo_status"),
+            "non_money_preferences": {
+                "money_weight": prefs.get("money_weight", 0.65),
+                "non_money_weight": prefs.get("non_money_weight", 0.35),
+                "personality_summary": prefs.get("personality_summary", []),
+                "top_factor": prefs.get("top_factor", "Playing Time"),
+                "factor_weights": prefs.get("factor_weights", {}),
+            },
         })
     return result
 
@@ -1034,8 +1044,16 @@ def process_free_agency_day(game_date: str, offseason_day: int = 0,
         if not bidding["offers"]:
             continue
 
-        # Score each offer: salary weight + non-money attraction factors
+        # Score each offer using greed-based money_weight.
+        # High greed (100) = money_weight 0.80, low greed (0) = money_weight 0.50
+        # This means a non-greedy player might choose a lower offer from a
+        # contender with friends over top dollar from a rebuilding team.
+        fa_greed = fa_dict.get("greed", 50) or 50
+        money_weight = 0.50 + (fa_greed / 100.0) * 0.30
+        non_money_weight = 1.0 - money_weight
+
         offer_scores = {}
+        offer_attractions = {}
         for tid, offer in bidding["offers"].items():
             # Salary score: normalized to asking price
             salary_score = offer["salary"] / max(1, effective_asking)
@@ -1043,15 +1061,17 @@ def process_free_agency_day(game_date: str, offseason_day: int = 0,
             attraction = _calculate_non_money_attraction(
                 fa_dict, tid, conn, db_path=db_path
             )
-            # Combined score: salary is primary (70%), non-money is secondary (30%)
-            offer_scores[tid] = salary_score * 0.70 + (1.0 + attraction) * 0.30
+            offer_attractions[tid] = attraction
+            # Combined score: weighted by player's greed
+            offer_scores[tid] = (
+                salary_score * money_weight +
+                (1.0 + attraction) * non_money_weight
+            )
 
         # Pick the best overall offer (not just highest salary)
         best_team_id = max(offer_scores, key=lambda t: offer_scores[t])
         best_offer = bidding["offers"][best_team_id]
-        best_attraction = _calculate_non_money_attraction(
-            fa_dict, best_team_id, conn, db_path=db_path
-        )
+        best_attraction = offer_attractions[best_team_id]
 
         should_sign = False
 

@@ -10,7 +10,10 @@ from ..database.db import query, execute, get_connection
 from ..simulation.season import get_standings, advance_date, sim_day, _load_team_lineup, _get_park_factors, _load_team_strategy, _generate_key_plays
 from ..simulation.chemistry import calculate_team_chemistry
 from ..transactions.trades import propose_trade, execute_trade
-from ..transactions.free_agency import get_free_agents, sign_free_agent
+from ..transactions.free_agency import (
+    get_free_agents, sign_free_agent, calculate_non_money_score,
+    get_player_fa_preferences,
+)
 from ..ai.ollama_client import check_health
 from ..ai.gm_brain import generate_scouting_report
 from ..ai.scouting_modes import get_displayed_ratings
