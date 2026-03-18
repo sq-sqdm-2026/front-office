@@ -1215,6 +1215,33 @@ def sim_day(game_date: str = None, db_path: str = None) -> list:
                         height_inches=callup.get("height_inches") or 73,
                     ))
 
+            # Away team callups too
+            away_callups = query("""
+                SELECT p.*, c.annual_salary FROM players p
+                LEFT JOIN contracts c ON c.player_id = p.id
+                WHERE p.team_id=? AND p.roster_status LIKE 'minors%%'
+                AND p.position NOT IN ('SP', 'RP')
+                ORDER BY p.power_rating + p.contact_rating DESC
+                LIMIT ?
+            """, (away_id, callup_limit), db_path=db_path)
+
+            for callup in away_callups:
+                if callup["position"] not in ("SP", "RP"):
+                    away_lineup.append(BatterStats(
+                        player_id=callup["id"],
+                        name=f"{callup['first_name']} {callup['last_name']}",
+                        position=callup["position"],
+                        batting_order=len(away_lineup) + 1,
+                        bats=callup["bats"],
+                        contact=callup["contact_rating"],
+                        power=callup["power_rating"],
+                        speed=callup["speed_rating"],
+                        clutch=callup["clutch"],
+                        fielding=callup["fielding_rating"],
+                        eye=callup.get("eye_rating", 50),
+                        height_inches=callup.get("height_inches") or 73,
+                    ))
+
         if not home_lineup or not away_lineup or not home_pitchers or not away_pitchers:
             continue
 

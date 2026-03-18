@@ -1212,9 +1212,15 @@ async function renderBattingLineup() {
     bench.forEach(p => {
       const con = p.contact_rating || 50;
       const pow = p.power_rating || 50;
+      const fld = p.fielding_rating || 50;
+      const bats = p.bats || '?';
+      const ovr = Math.round((con + pow) / 2);
+      const ovrColor = ovr >= 65 ? 'var(--green)' : ovr >= 45 ? 'var(--text)' : 'var(--text-dim)';
       html += `
         <div style="padding: 6px; margin-bottom: 4px; background: var(--bg-2); border-radius: 2px; font-size: 11px; cursor: pointer; border: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center;" onclick="addToLineup(${p.id})">
           <span onclick="event.stopPropagation(); showPlayer(${p.id}); event.stopPropagation();" style="text-decoration: underline; text-decoration-color: transparent; flex: 1;">${p.first_name.charAt(0)} ${p.last_name}</span>
+          <span style="font-size: 10px; color: var(--text-dim); margin: 0 4px;">${bats}</span>
+          <span style="font-size: 10px; color: ${ovrColor}; margin: 0 4px; font-weight: 600;">${ovr}</span>
           <span style="font-size: 10px; color: var(--text-dim);">${p.position}</span>
         </div>`;
     });

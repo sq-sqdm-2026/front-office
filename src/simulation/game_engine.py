@@ -1347,8 +1347,8 @@ def _should_pinch_hit(lineup: list[BatterStats], current_batter_idx: int,
 
     batter = lineup[current_batter_idx % len(lineup)]
 
-    # Close game check (within 3 runs)
-    if abs(score_diff) > 3:
+    # Close game check (within 2 runs)
+    if abs(score_diff) > 2:
         return False
 
     # Overall rating: average of contact and power
