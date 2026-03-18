@@ -549,6 +549,300 @@ def _calculate_non_money_attraction(player: dict, team_id: int, conn,
     return max(-0.30, min(0.40, modifier))
 
 
+def calculate_non_money_score(player_id: int, team_id: int, db_path: str = None) -> dict:
+    """
+    Calculate a non-money attraction score (0-100) for a free agent toward a team.
+
+    Breaks down into weighted components:
+    - Playing Time (30%): Will this team start the player?
+    - Friends on Team (20%): player_relationships friends on this team
+    - Clubhouse/Chemistry (15%): Team chemistry score
+    - Contender Status (25%): Team win/loss record and playoff chances
+    - Market Size (10%): Big market exposure advantage
+
+    Personality modifiers adjust component weights:
+    - High sociability increases Friends weight
+    - High ego/ambition increases Contender + Market weight
+    - High loyalty adds bonus for previous team
+    - High greed reduces overall non-money influence (reflected in money_weight)
+
+    Returns dict with:
+    - score: 0-100 overall non-money score
+    - components: breakdown of each factor's contribution
+    - money_weight: how much this player weights money vs non-money (greed-based)
+    - top_factors: ordered list of what this player values most
+    """
+    conn = get_connection(db_path)
+
+    player_row = conn.execute("SELECT * FROM players WHERE id=?", (player_id,)).fetchone()
+    if not player_row:
+        conn.close()
+        return {"score": 50, "components": {}, "money_weight": 0.65, "top_factors": []}
+
+    player = dict(player_row)
+    position = player.get("position", "")
+
+    # Personality traits
+    greed = player.get("greed", 50) or 50
+    ego = player.get("ego", 50) or 50
+    sociability = player.get("sociability", 50) or 50
+    loyalty = player.get("loyalty", 50) or 50
+
+    # --- Playing Time (0-100) ---
+    playing_time_score = 70  # default: decent chance
+    try:
+        incumbent = conn.execute("""
+            SELECT contact_rating, power_rating, stuff_rating, control_rating,
+                   speed_rating, fielding_rating, position
+            FROM players
+            WHERE team_id = ? AND position = ? AND roster_status = 'active'
+            ORDER BY (contact_rating + power_rating + stuff_rating + control_rating) DESC
+            LIMIT 1
+        """, (team_id, position)).fetchone()
+
+        if incumbent:
+            inc_dict = dict(incumbent)
+            inc_overall = _calculate_overall(inc_dict)
+            player_overall = _calculate_overall(player)
+            if inc_overall >= player_overall + 10:
+                playing_time_score = 20  # clear backup role
+            elif inc_overall >= player_overall:
+                playing_time_score = 40  # platoon/competition
+            elif player_overall > inc_overall + 5:
+                playing_time_score = 90  # clear starter
+            else:
+                playing_time_score = 65  # slight edge
+        else:
+            playing_time_score = 95  # no incumbent, guaranteed starter
+    except Exception:
+        pass
+
+    # --- Friends on Team (0-100) ---
+    friends_score = 30  # baseline: no friends
+    try:
+        friend_count = conn.execute("""
+            SELECT COUNT(*) as cnt FROM player_relationships pr
+            JOIN players p ON (
+                (pr.player_id_1 = ? AND pr.player_id_2 = p.id) OR
+                (pr.player_id_2 = ? AND pr.player_id_1 = p.id)
+            )
+            WHERE pr.relationship_type = 'friend'
+            AND p.team_id = ?
+        """, (player_id, player_id, team_id)).fetchone()["cnt"]
+        if friend_count >= 3:
+            friends_score = 90
+        elif friend_count == 2:
+            friends_score = 75
+        elif friend_count == 1:
+            friends_score = 55
+    except Exception:
+        pass
+
+    # --- Clubhouse / Chemistry (0-100) ---
+    chemistry_score = 50
+    try:
+        from ..simulation.chemistry import calculate_team_chemistry
+        chem = calculate_team_chemistry(team_id, db_path=db_path)
+        team_chem = chem if isinstance(chem, (int, float)) else (
+            chem.get("overall", 50) if isinstance(chem, dict) else 50
+        )
+        chemistry_score = max(0, min(100, int(team_chem)))
+    except Exception:
+        pass
+
+    # --- Contender Status (0-100) ---
+    contender_score = 50
+    try:
+        record = conn.execute(
+            "SELECT wins, losses FROM teams WHERE id = ?", (team_id,)
+        ).fetchone()
+        if record:
+            total_games = (record["wins"] or 0) + (record["losses"] or 0)
+            if total_games > 0:
+                win_pct = record["wins"] / total_games
+                # Map win% to 0-100: .400 = 20, .500 = 50, .600 = 80, .650+ = 95
+                contender_score = max(0, min(100, int((win_pct - 0.300) * 250)))
+    except Exception:
+        pass
+
+    # --- Market Size (0-100) ---
+    market_score = 50
+    try:
+        team_info = conn.execute(
+            "SELECT market_size FROM teams WHERE id = ?", (team_id,)
+        ).fetchone()
+        if team_info:
+            mkt = team_info["market_size"] or 3
+            market_score = max(0, min(100, mkt * 20))  # 1->20, 3->60, 5->100
+    except Exception:
+        pass
+
+    # --- Loyalty bonus (adds to score if this was player's previous team) ---
+    loyalty_bonus = 0
+    try:
+        if loyalty > 50:
+            prev_contract = conn.execute("""
+                SELECT team_id FROM contracts
+                WHERE player_id = ?
+                ORDER BY signed_date DESC LIMIT 1
+            """, (player_id,)).fetchone()
+            if prev_contract and prev_contract["team_id"] == team_id:
+                loyalty_bonus = int((loyalty - 50) * 0.3)  # up to +15
+    except Exception:
+        pass
+
+    conn.close()
+
+    # --- Personality-adjusted weights ---
+    # Base weights: playing_time=30, friends=20, chemistry=15, contender=25, market=10
+    w_playing_time = 30
+    w_friends = 20 * (0.5 + sociability / 100.0)       # 10-30 based on sociability
+    w_contender = 25 * (0.6 + ego * 0.008)              # 15-35 based on ego/ambition
+    w_market = 10 * (0.6 + ego * 0.008)                  # 6-14 based on ego/ambition
+    w_chemistry = 15
+
+    # Normalize weights to sum to 100
+    total_w = w_playing_time + w_friends + w_chemistry + w_contender + w_market
+    w_playing_time = w_playing_time / total_w * 100
+    w_friends = w_friends / total_w * 100
+    w_chemistry = w_chemistry / total_w * 100
+    w_contender = w_contender / total_w * 100
+    w_market = w_market / total_w * 100
+
+    # Weighted score
+    score = (
+        playing_time_score * w_playing_time / 100 +
+        friends_score * w_friends / 100 +
+        chemistry_score * w_chemistry / 100 +
+        contender_score * w_contender / 100 +
+        market_score * w_market / 100 +
+        loyalty_bonus
+    )
+    score = max(0, min(100, int(score)))
+
+    # Money weight based on greed: high greed = 0.80, low greed = 0.50
+    money_weight = 0.50 + (greed / 100.0) * 0.30  # 0.50 at greed=0, 0.80 at greed=100
+
+    components = {
+        "playing_time": {"score": playing_time_score, "weight": round(w_playing_time, 1)},
+        "friends": {"score": friends_score, "weight": round(w_friends, 1)},
+        "chemistry": {"score": chemistry_score, "weight": round(w_chemistry, 1)},
+        "contender": {"score": contender_score, "weight": round(w_contender, 1)},
+        "market_size": {"score": market_score, "weight": round(w_market, 1)},
+    }
+    if loyalty_bonus > 0:
+        components["loyalty_bonus"] = {"score": loyalty_bonus, "weight": 0}
+
+    # Top factors — what this player cares most about (sorted by effective weight)
+    factor_labels = {
+        "playing_time": "Playing Time",
+        "friends": "Friends on Team",
+        "chemistry": "Clubhouse Atmosphere",
+        "contender": "Winning / Contender",
+        "market_size": "Big Market / Exposure",
+    }
+    top_factors = sorted(
+        [(k, components[k]["weight"]) for k in factor_labels],
+        key=lambda x: x[1],
+        reverse=True,
+    )
+    top_factors = [
+        {"factor": factor_labels[k], "weight": w}
+        for k, w in top_factors
+    ]
+
+    return {
+        "score": score,
+        "components": components,
+        "money_weight": round(money_weight, 2),
+        "non_money_weight": round(1.0 - money_weight, 2),
+        "top_factors": top_factors,
+    }
+
+
+def get_player_fa_preferences(player_id: int, db_path: str = None) -> dict:
+    """
+    Get a free agent's non-money preferences for scouting reports / FA listings.
+
+    Shows what factors this player values most so the user can understand
+    which teams might appeal to them beyond salary.
+
+    Returns dict with personality summary, factor weights, and advice text.
+    """
+    player_rows = query(
+        "SELECT * FROM players WHERE id=?", (player_id,), db_path=db_path
+    )
+    if not player_rows:
+        return {"error": "Player not found"}
+
+    player = player_rows[0]
+    greed = player.get("greed", 50) or 50
+    ego = player.get("ego", 50) or 50
+    sociability = player.get("sociability", 50) or 50
+    loyalty = player.get("loyalty", 50) or 50
+
+    # Money weight
+    money_weight = 0.50 + (greed / 100.0) * 0.30
+
+    # Describe personality tendencies
+    traits = []
+    if greed >= 70:
+        traits.append("Motivated primarily by money")
+    elif greed <= 30:
+        traits.append("Willing to take a discount for the right fit")
+
+    if ego >= 70:
+        traits.append("Drawn to contenders and big markets")
+    elif ego <= 30:
+        traits.append("Content with a quiet role on any team")
+
+    if sociability >= 70:
+        traits.append("Values having friends on the team")
+    elif sociability <= 30:
+        traits.append("Prefers to keep to himself")
+
+    if loyalty >= 70:
+        traits.append("Strongly prefers staying with his current team")
+    elif loyalty <= 30:
+        traits.append("No attachment to any particular team")
+
+    if not traits:
+        traits.append("Balanced — weighs money and fit equally")
+
+    # Build factor weight summary
+    w_friends = 20 * (0.5 + sociability / 100.0)
+    w_contender = 25 * (0.6 + ego * 0.008)
+    w_market = 10 * (0.6 + ego * 0.008)
+    w_playing_time = 30
+    w_chemistry = 15
+    total_w = w_playing_time + w_friends + w_chemistry + w_contender + w_market
+
+    factor_weights = {
+        "Playing Time": round(w_playing_time / total_w * 100, 1),
+        "Friends on Team": round(w_friends / total_w * 100, 1),
+        "Clubhouse Atmosphere": round(w_chemistry / total_w * 100, 1),
+        "Winning / Contender": round(w_contender / total_w * 100, 1),
+        "Big Market / Exposure": round(w_market / total_w * 100, 1),
+    }
+
+    # Sort by weight descending
+    sorted_factors = sorted(factor_weights.items(), key=lambda x: x[1], reverse=True)
+
+    return {
+        "player_id": player_id,
+        "player_name": f"{player['first_name']} {player['last_name']}",
+        "money_weight": round(money_weight, 2),
+        "non_money_weight": round(1.0 - money_weight, 2),
+        "personality_summary": traits,
+        "factor_weights": dict(sorted_factors),
+        "top_factor": sorted_factors[0][0] if sorted_factors else "Playing Time",
+        "greed": greed,
+        "ego": ego,
+        "sociability": sociability,
+        "loyalty": loyalty,
+    }
+
+
 def _initialize_bidding(fa: dict, offseason_day: int, db_path: str = None) -> dict:
     """Set up initial bidding state for a free agent if not already tracked."""
     player_id = fa["id"]

@@ -245,6 +245,39 @@ try:
 except Exception:
     pass
 
+# --- Schema migration: create scouting_assignments and intelligence_reports tables ---
+try:
+    _conn = get_connection()
+    _conn.execute("""CREATE TABLE IF NOT EXISTS scouting_assignments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        team_id INTEGER NOT NULL,
+        player_id INTEGER NOT NULL,
+        scout_quality INTEGER NOT NULL DEFAULT 50,
+        started_date TEXT NOT NULL,
+        info_level INTEGER NOT NULL DEFAULT 2,
+        FOREIGN KEY (team_id) REFERENCES teams(id),
+        FOREIGN KEY (player_id) REFERENCES players(id)
+    )""")
+    _conn.execute("""CREATE TABLE IF NOT EXISTS intelligence_reports (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        team_id INTEGER NOT NULL,
+        subject_type TEXT NOT NULL DEFAULT 'player',
+        subject_id INTEGER NOT NULL,
+        info_level INTEGER NOT NULL DEFAULT 0,
+        report_data TEXT,
+        source TEXT NOT NULL DEFAULT 'scout',
+        game_date TEXT NOT NULL,
+        FOREIGN KEY (team_id) REFERENCES teams(id)
+    )""")
+    _conn.execute("CREATE INDEX IF NOT EXISTS idx_scouting_assignments_team ON scouting_assignments(team_id)")
+    _conn.execute("CREATE INDEX IF NOT EXISTS idx_scouting_assignments_player ON scouting_assignments(team_id, player_id)")
+    _conn.execute("CREATE INDEX IF NOT EXISTS idx_intelligence_reports_team ON intelligence_reports(team_id)")
+    _conn.execute("CREATE INDEX IF NOT EXISTS idx_intelligence_reports_subject ON intelligence_reports(subject_type, subject_id)")
+    _conn.commit()
+    _conn.close()
+except Exception:
+    pass
+
 
 # ============================================================
 # FRONTEND
