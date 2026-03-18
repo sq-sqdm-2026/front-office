@@ -1711,21 +1711,45 @@ async def update_budget(team_id: int, req: BudgetUpdate):
 # MESSAGES
 # ============================================================
 @app.get("/messages")
-async def get_messages_auto(unread_only: bool = False):
+async def get_messages_auto(unread_only: bool = False, priority: str = None):
     """Get messages for the user's team (auto-detect team)."""
     state = query("SELECT user_team_id FROM game_state WHERE id=1")
     team_id = state[0]["user_team_id"] if state else None
     if not team_id:
         return []
     from ..transactions.messages import get_messages_for_team
-    return get_messages_for_team(team_id, unread_only=unread_only) or []
+    return get_messages_for_team(team_id, unread_only=unread_only, priority=priority) or []
+
+
+
+@app.get("/messages/priorities")
+async def get_message_priorities():
+    """Get message counts by priority level for the user's team."""
+    state = query("SELECT user_team_id FROM game_state WHERE id=1")
+    team_id = state[0]["user_team_id"] if state else None
+    if not team_id:
+        return {"urgent": {"total": 0, "unread": 0}, "important": {"total": 0, "unread": 0},
+                "normal": {"total": 0, "unread": 0}, "low": {"total": 0, "unread": 0}}
+    from ..transactions.messages import get_message_priorities
+    return get_message_priorities(team_id)
+
+
+@app.get("/messages/categories")
+async def get_message_categories():
+    """Get message counts by category for the user's team."""
+    state = query("SELECT user_team_id FROM game_state WHERE id=1")
+    team_id = state[0]["user_team_id"] if state else None
+    if not team_id:
+        return {}
+    from ..transactions.messages import get_message_categories
+    return get_message_categories(team_id)
 
 
 @app.get("/messages/{team_id}")
-async def get_team_messages(team_id: int, unread_only: bool = False):
+async def get_team_messages(team_id: int, unread_only: bool = False, priority: str = None):
     """Get messages for a specific team."""
     from ..transactions.messages import get_messages_for_team
-    messages = get_messages_for_team(team_id, unread_only=unread_only)
+    messages = get_messages_for_team(team_id, unread_only=unread_only, priority=priority)
     return messages or []
 
 
