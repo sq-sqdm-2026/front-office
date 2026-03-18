@@ -3,6 +3,13 @@ Front Office - Beat Writer Characters
 Generates beat writers for each team and template-based articles
 covering game recaps, trade analysis, prospect profiles, hot takes,
 rumors, and weekly columns.
+
+Includes 5 named national beat writer characters with distinct personalities:
+  - The Insider (Marcus Webb) - breaks trade rumors, has sources
+  - The Stat Nerd (Dr. Sarah Chen) - analytics-heavy coverage
+  - The Old School Reporter (Buck Morrison) - traditional baseball narratives
+  - The Hot Take Artist (Jake Ryder) - controversial opinions, clickbait
+  - The Beat Reporter (Elena Vasquez) - straight news, game recaps
 """
 import random
 from ..database.db import query, execute
