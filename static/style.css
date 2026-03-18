@@ -3416,3 +3416,75 @@ tr.standings-playoff:hover {
 .settings-btn-danger:hover {
   filter: brightness(1.1);
 }
+
+/* ============================================================
+   RECORDS TRACKING
+   ============================================================ */
+.records-section { margin-bottom: 24px; }
+.records-section-title {
+  font-size: 15px; font-weight: 700; margin: 0 0 10px 0;
+  padding: 6px 12px; background: var(--bg-card); border-left: 3px solid var(--accent);
+}
+
+.records-table {
+  width: 100%; border-collapse: collapse; font-size: 13px; margin-bottom: 8px;
+}
+.records-table th {
+  text-align: left; padding: 6px 10px; font-weight: 600; font-size: 11px;
+  text-transform: uppercase; color: var(--text-tertiary);
+  border-bottom: 2px solid var(--border-light);
+}
+.records-table td {
+  padding: 6px 10px; border-bottom: 1px solid var(--border-light);
+}
+.records-table tr:hover { background: var(--accent-soft); }
+.record-value { font-variant-numeric: tabular-nums; }
+.record-game-set td { background: rgba(52,199,89,0.06); }
+
+.record-badge-real {
+  display: inline-block; font-size: 9px; font-weight: 700; padding: 2px 6px;
+  border-radius: 3px; background: var(--accent-soft); color: var(--accent);
+}
+.record-badge-game {
+  display: inline-block; font-size: 9px; font-weight: 700; padding: 2px 6px;
+  border-radius: 3px; background: var(--green-soft); color: var(--green);
+}
+
+/* Record Watch Cards */
+.records-watch-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 12px; margin-bottom: 16px;
+}
+.record-watch-card {
+  background: var(--bg-card); border: 1px solid var(--border-light);
+  border-radius: var(--radius); padding: 12px; transition: box-shadow 0.2s;
+}
+.record-watch-card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
+.record-watch-hot {
+  border-color: var(--red); background: var(--red-soft);
+}
+.record-watch-header {
+  display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;
+}
+.record-watch-player { font-weight: 700; font-size: 14px; }
+.record-watch-type {
+  font-size: 10px; font-weight: 600; text-transform: uppercase;
+  color: var(--text-tertiary); padding: 2px 6px;
+  background: var(--border-light); border-radius: 3px;
+}
+.record-watch-stat {
+  font-size: 12px; color: var(--text-secondary); margin-bottom: 8px;
+}
+.record-watch-numbers {
+  display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 8px;
+}
+.record-watch-bar-bg {
+  height: 6px; background: var(--border-light); border-radius: 3px; overflow: hidden;
+}
+.record-watch-bar-fill {
+  height: 100%; background: var(--accent); border-radius: 3px; transition: width 0.5s;
+}
+.record-watch-bar-fill.hot { background: var(--red); }
+.record-watch-pct {
+  font-size: 11px; color: var(--text-tertiary); text-align: right; margin-top: 4px;
+}

@@ -1096,7 +1096,7 @@ function renderRosterTab(tab) {
       <th class="r">Salary</th><th class="r">Yrs</th></tr></thead>
       <tbody>
       ${pos.map(p => `<tr>
-        <td class="text-col clickable" onclick="showPlayer(${p.id})">${p.first_name} ${p.last_name}</td>
+        <td class="text-col clickable" onclick="showPlayer(${p.id})"><span class="roster-portrait-wrap"><img src="/player/${p.id}/portrait" class="roster-portrait-thumb" onerror="this.style.display='none'"/></span>${p.first_name} ${p.last_name}</td>
         <td class="c">${p.position}</td><td class="r">${p.age}</td><td class="c">${p.bats}/${p.throws}</td>
         <td class="c">${gradeHtml(p.contact_rating)}</td><td class="c">${gradeHtml(p.power_rating)}</td>
         <td class="c">${gradeHtml(p.speed_rating)}</td><td class="c">${gradeHtml(p.fielding_rating)}</td>
@@ -1117,7 +1117,7 @@ function renderRosterTab(tab) {
       <th class="r">Salary</th><th class="r">Yrs</th></tr></thead>
       <tbody>
       ${pit.map(p => `<tr>
-        <td class="text-col clickable" onclick="showPlayer(${p.id})">${p.first_name} ${p.last_name}</td>
+        <td class="text-col clickable" onclick="showPlayer(${p.id})"><span class="roster-portrait-wrap"><img src="/player/${p.id}/portrait" class="roster-portrait-thumb" onerror="this.style.display='none'"/></span>${p.first_name} ${p.last_name}</td>
         <td class="c">${p.position}</td><td class="r">${p.age}</td><td class="c">${p.throws}</td>
         <td class="c">${gradeHtml(p.stuff_rating)}</td><td class="c">${gradeHtml(p.control_rating)}</td>
         <td class="c">${gradeHtml(p.stamina_rating)}</td>
