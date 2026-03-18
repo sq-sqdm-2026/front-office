@@ -3,7 +3,7 @@ Front Office - API Routes
 All FastAPI endpoints for the baseball simulation.
 """
 from pathlib import Path
-from fastapi import FastAPI, HTTPException, Query, UploadFile, File
+from fastapi import FastAPI, HTTPException, Query, UploadFile, File, BackgroundTasks
 from fastapi.responses import HTMLResponse, FileResponse
 from pydantic import BaseModel
 from ..database.db import query, execute, get_connection
@@ -14,6 +14,17 @@ from ..transactions.free_agency import get_free_agents, sign_free_agent
 from ..ai.ollama_client import check_health
 from ..ai.gm_brain import generate_scouting_report
 from ..ai.scouting_modes import get_displayed_ratings
+from ..ai.agent_characters import (
+    generate_agents, assign_agents_to_players, get_all_agents,
+    get_agent_details, get_player_agent, modify_free_agent_negotiation,
+    get_agent_negotiation_message,
+)
+from ..ai.player_backstories import generate_all_backstories, generate_backstory
+from ..ai.owner_pressure import (
+    set_owner_objectives, evaluate_gm_performance, check_firing,
+    get_owner_mood_message, send_owner_pressure_messages,
+    get_job_security, get_owner_objectives_for_team
+)
 from ..transactions.roster import (
     call_up_player, option_player, dfa_player, get_roster_summary,
     add_to_forty_man, remove_from_forty_man, release_player
@@ -26,6 +37,204 @@ from ..simulation.game_engine import simulate_game
 
 app = FastAPI(title="Front Office", version="0.1.0",
               description="Baseball Universe Simulation powered by Local LLMs")
+
+# --- Schema migration: add current_hour column if missing ---
+try:
+    _conn = get_connection()
+    _conn.execute("ALTER TABLE game_state ADD COLUMN current_hour INTEGER NOT NULL DEFAULT 8")
+    _conn.commit()
+    _conn.close()
+except Exception:
+    pass  # Column already exists
+
+# --- Schema migration: add auto_sim columns if missing ---
+for _col_def in [
+    "ALTER TABLE game_state ADD COLUMN auto_sim_enabled INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE game_state ADD COLUMN auto_sim_speed INTEGER NOT NULL DEFAULT 120000",
+    "ALTER TABLE game_state ADD COLUMN auto_sim_last_tick TEXT DEFAULT NULL",
+]:
+    try:
+        _conn2 = get_connection()
+        _conn2.execute(_col_def)
+        _conn2.commit()
+        _conn2.close()
+    except Exception:
+        pass  # Column already exists
+
+# --- Schema migration: create MiLB tables if missing ---
+for _milb_sql in [
+    """CREATE TABLE IF NOT EXISTS milb_standings (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        team_id INTEGER NOT NULL,
+        level TEXT NOT NULL,
+        season INTEGER NOT NULL,
+        wins INTEGER NOT NULL DEFAULT 0,
+        losses INTEGER NOT NULL DEFAULT 0,
+        runs_scored INTEGER NOT NULL DEFAULT 0,
+        runs_allowed INTEGER NOT NULL DEFAULT 0,
+        FOREIGN KEY (team_id) REFERENCES teams(id),
+        UNIQUE(team_id, level, season)
+    )""",
+    """CREATE TABLE IF NOT EXISTS milb_batting_stats (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        player_id INTEGER NOT NULL,
+        team_id INTEGER NOT NULL,
+        level TEXT NOT NULL,
+        season INTEGER NOT NULL,
+        games INTEGER NOT NULL DEFAULT 0,
+        ab INTEGER NOT NULL DEFAULT 0,
+        hits INTEGER NOT NULL DEFAULT 0,
+        doubles INTEGER NOT NULL DEFAULT 0,
+        triples INTEGER NOT NULL DEFAULT 0,
+        hr INTEGER NOT NULL DEFAULT 0,
+        rbi INTEGER NOT NULL DEFAULT 0,
+        bb INTEGER NOT NULL DEFAULT 0,
+        so INTEGER NOT NULL DEFAULT 0,
+        sb INTEGER NOT NULL DEFAULT 0,
+        cs INTEGER NOT NULL DEFAULT 0,
+        FOREIGN KEY (player_id) REFERENCES players(id),
+        FOREIGN KEY (team_id) REFERENCES teams(id),
+        UNIQUE(player_id, level, season)
+    )""",
+    """CREATE TABLE IF NOT EXISTS milb_pitching_stats (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        player_id INTEGER NOT NULL,
+        team_id INTEGER NOT NULL,
+        level TEXT NOT NULL,
+        season INTEGER NOT NULL,
+        games INTEGER NOT NULL DEFAULT 0,
+        games_started INTEGER NOT NULL DEFAULT 0,
+        wins INTEGER NOT NULL DEFAULT 0,
+        losses INTEGER NOT NULL DEFAULT 0,
+        saves INTEGER NOT NULL DEFAULT 0,
+        ip_outs INTEGER NOT NULL DEFAULT 0,
+        hits_allowed INTEGER NOT NULL DEFAULT 0,
+        er INTEGER NOT NULL DEFAULT 0,
+        bb INTEGER NOT NULL DEFAULT 0,
+        so INTEGER NOT NULL DEFAULT 0,
+        hr_allowed INTEGER NOT NULL DEFAULT 0,
+        FOREIGN KEY (player_id) REFERENCES players(id),
+        FOREIGN KEY (team_id) REFERENCES teams(id),
+        UNIQUE(player_id, level, season)
+    )""",
+]:
+    try:
+        _conn3 = get_connection()
+        _conn3.execute(_milb_sql)
+        _conn3.commit()
+        _conn3.close()
+    except Exception:
+        pass
+
+# --- Schema migration: create coaching_staff table if missing ---
+try:
+    _conn = get_connection()
+    _conn.execute("""CREATE TABLE IF NOT EXISTS coaching_staff (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        team_id INTEGER NOT NULL,
+        role TEXT NOT NULL,
+        first_name TEXT NOT NULL,
+        last_name TEXT NOT NULL,
+        age INTEGER NOT NULL DEFAULT 50,
+        experience INTEGER NOT NULL DEFAULT 5,
+        skill_rating INTEGER NOT NULL DEFAULT 50,
+        philosophy TEXT DEFAULT 'balanced',
+        specialty TEXT DEFAULT NULL,
+        salary INTEGER NOT NULL DEFAULT 1000000,
+        contract_years INTEGER NOT NULL DEFAULT 2,
+        is_available INTEGER NOT NULL DEFAULT 0,
+        FOREIGN KEY (team_id) REFERENCES teams(id)
+    )""")
+    _conn.commit()
+    _conn.close()
+except Exception:
+    pass
+
+# --- Schema migration: create owner_objectives and gm_job_security tables if missing ---
+try:
+    _conn = get_connection()
+    _conn.execute("""CREATE TABLE IF NOT EXISTS owner_objectives (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        team_id INTEGER NOT NULL,
+        season INTEGER NOT NULL,
+        objective_type TEXT NOT NULL,
+        target_value TEXT,
+        priority INTEGER NOT NULL DEFAULT 1,
+        status TEXT NOT NULL DEFAULT 'active',
+        FOREIGN KEY (team_id) REFERENCES teams(id)
+    )""")
+    _conn.execute("""CREATE TABLE IF NOT EXISTS gm_job_security (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        team_id INTEGER NOT NULL,
+        security_score INTEGER NOT NULL DEFAULT 70,
+        owner_patience INTEGER NOT NULL DEFAULT 50,
+        consecutive_losing_seasons INTEGER NOT NULL DEFAULT 0,
+        playoff_appearances INTEGER NOT NULL DEFAULT 0,
+        owner_mood TEXT NOT NULL DEFAULT 'neutral',
+        last_evaluation_date TEXT,
+        warnings_given INTEGER NOT NULL DEFAULT 0,
+        FOREIGN KEY (team_id) REFERENCES teams(id)
+    )""")
+    _conn.execute("CREATE INDEX IF NOT EXISTS idx_owner_objectives_team ON owner_objectives(team_id, season)")
+    _conn.execute("CREATE INDEX IF NOT EXISTS idx_owner_objectives_status ON owner_objectives(status)")
+    _conn.commit()
+    _conn.close()
+except Exception:
+    pass
+
+# --- Schema migration: create agent_characters and player_agents tables if missing ---
+try:
+    _conn = get_connection()
+    _conn.execute("""CREATE TABLE IF NOT EXISTS agent_characters (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        agency_name TEXT,
+        personality TEXT NOT NULL DEFAULT 'collaborative',
+        negotiation_style TEXT NOT NULL DEFAULT 'fair',
+        greed_factor REAL NOT NULL DEFAULT 1.0,
+        loyalty_to_client REAL NOT NULL DEFAULT 0.7,
+        market_knowledge INTEGER NOT NULL DEFAULT 70,
+        bluff_tendency REAL NOT NULL DEFAULT 0.3,
+        patience INTEGER NOT NULL DEFAULT 50,
+        reputation INTEGER NOT NULL DEFAULT 50,
+        num_clients INTEGER NOT NULL DEFAULT 0,
+        notable_deals TEXT DEFAULT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )""")
+    _conn.execute("""CREATE TABLE IF NOT EXISTS player_agents (
+        player_id INTEGER PRIMARY KEY,
+        agent_id INTEGER NOT NULL,
+        FOREIGN KEY (player_id) REFERENCES players(id),
+        FOREIGN KEY (agent_id) REFERENCES agent_characters(id)
+    )""")
+    _conn.execute("CREATE INDEX IF NOT EXISTS idx_player_agents_agent ON player_agents(agent_id)")
+    _conn.commit()
+    _conn.close()
+except Exception:
+    pass
+
+# --- Schema migration: create podcast_episodes table if missing ---
+try:
+    _conn = get_connection()
+    _conn.execute("""CREATE TABLE IF NOT EXISTS podcast_episodes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        episode_number INTEGER NOT NULL,
+        game_date TEXT NOT NULL,
+        title TEXT NOT NULL,
+        hosts TEXT NOT NULL,
+        script TEXT NOT NULL,
+        duration_estimate INTEGER NOT NULL DEFAULT 5,
+        season INTEGER NOT NULL,
+        topics TEXT,
+        is_read INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )""")
+    _conn.execute("CREATE INDEX IF NOT EXISTS idx_podcast_episodes_season ON podcast_episodes(season)")
+    _conn.execute("CREATE INDEX IF NOT EXISTS idx_podcast_episodes_date ON podcast_episodes(game_date)")
+    _conn.commit()
+    _conn.close()
+except Exception:
+    pass
 
 
 # ============================================================
@@ -100,6 +309,140 @@ async def sim_advance(req: AdvanceRequest):
 async def sim_advance_week():
     """Advance the simulation by 7 days."""
     return advance_date(7)
+
+
+@app.post("/sim/advance-hour")
+async def sim_advance_hour():
+    """Advance the game clock by 1 hour. When hour reaches 24, advance to next day and reset to 8 AM."""
+    state = query("SELECT * FROM game_state WHERE id=1")
+    if not state:
+        raise HTTPException(500, "Game state not found")
+    current_hour = state[0].get("current_hour", 8)
+    new_hour = current_hour + 1
+    if new_hour >= 24:
+        # New day: advance the date and reset hour to 8 AM
+        result = advance_date(1)
+        execute("UPDATE game_state SET current_hour=8 WHERE id=1")
+        result["current_hour"] = 8
+        result["new_day"] = True
+        return result
+    else:
+        execute("UPDATE game_state SET current_hour=? WHERE id=1", (new_hour,))
+        return {
+            "current_hour": new_hour,
+            "new_day": False,
+            "new_date": state[0]["current_date"],
+            "phase": state[0]["phase"],
+        }
+
+
+# ============================================================
+# AUTO-SIM (Server-side Progressive Time)
+# ============================================================
+import asyncio
+
+_auto_sim_task = None
+
+
+async def run_auto_sim_loop():
+    """Background loop that advances game time when auto_sim is enabled."""
+    global _auto_sim_task
+    while True:
+        try:
+            state = query("SELECT auto_sim_enabled, auto_sim_speed, auto_sim_last_tick FROM game_state WHERE id=1")
+            if not state or not state[0].get("auto_sim_enabled"):
+                break
+
+            speed_ms = state[0].get("auto_sim_speed", 120000)
+            speed_sec = speed_ms / 1000.0
+
+            # Check if enough time has passed since last tick
+            last_tick = state[0].get("auto_sim_last_tick")
+            if last_tick:
+                from datetime import datetime, timedelta
+                try:
+                    last = datetime.fromisoformat(last_tick.replace('Z', '+00:00'))
+                    now = datetime.now()
+                    elapsed = (now - last).total_seconds()
+                    if elapsed < speed_sec:
+                        await asyncio.sleep(max(1, speed_sec - elapsed))
+                        continue
+                except Exception:
+                    pass
+
+            # Advance one day
+            result = advance_date(1)
+            execute("UPDATE game_state SET auto_sim_last_tick=datetime('now') WHERE id=1")
+
+            await asyncio.sleep(speed_sec)
+        except Exception as e:
+            print(f"Auto-sim error: {e}")
+            execute("UPDATE game_state SET auto_sim_enabled=0 WHERE id=1")
+            break
+
+
+@app.post("/sim/auto-start")
+async def auto_sim_start(background_tasks: BackgroundTasks):
+    """Start server-side auto-sim."""
+    execute("UPDATE game_state SET auto_sim_enabled=1, auto_sim_last_tick=datetime('now') WHERE id=1")
+    background_tasks.add_task(run_auto_sim_loop)
+    return {"auto_sim": True}
+
+
+@app.post("/sim/auto-stop")
+async def auto_sim_stop():
+    """Stop server-side auto-sim."""
+    execute("UPDATE game_state SET auto_sim_enabled=0 WHERE id=1")
+    return {"auto_sim": False}
+
+
+@app.get("/sim/auto-status")
+async def auto_sim_status():
+    """Get auto-sim status."""
+    state = query("SELECT auto_sim_enabled, auto_sim_speed, auto_sim_last_tick FROM game_state WHERE id=1")
+    if not state:
+        return {"auto_sim_enabled": False}
+    return state[0]
+
+
+class AutoSimSpeedRequest(BaseModel):
+    speed: int
+
+
+@app.post("/sim/auto-speed")
+async def auto_sim_set_speed(req: AutoSimSpeedRequest):
+    """Set auto-sim speed in milliseconds."""
+    execute("UPDATE game_state SET auto_sim_speed=? WHERE id=1", (req.speed,))
+    return {"speed": req.speed}
+
+
+@app.on_event("startup")
+async def startup_auto_sim_catchup():
+    """On server start, catch up on missed auto-sim time."""
+    state = query("SELECT auto_sim_enabled, auto_sim_speed, auto_sim_last_tick FROM game_state WHERE id=1")
+    if not state or not state[0].get("auto_sim_enabled"):
+        return
+
+    last_tick = state[0].get("auto_sim_last_tick")
+    speed_ms = state[0].get("auto_sim_speed", 120000)
+
+    if last_tick:
+        from datetime import datetime
+        try:
+            last = datetime.fromisoformat(last_tick)
+            elapsed = (datetime.now() - last).total_seconds()
+            missed_ticks = int(elapsed / (speed_ms / 1000.0))
+            if missed_ticks > 0:
+                # Cap at 30 days to prevent massive catch-up
+                days_to_advance = min(missed_ticks, 30)
+                if days_to_advance > 0:
+                    advance_date(days_to_advance)
+                    execute("UPDATE game_state SET auto_sim_last_tick=datetime('now') WHERE id=1")
+        except Exception:
+            pass
+
+    # Restart the auto-sim loop
+    asyncio.create_task(run_auto_sim_loop())
 
 
 @app.post("/sim/game-live")
@@ -758,7 +1101,16 @@ class FreeAgentNegotiationRequest(BaseModel):
 
 @app.post("/free-agents/negotiate")
 async def negotiate_free_agent(req: FreeAgentNegotiationRequest):
-    """Negotiate with a free agent (can offer less than asking price)."""
+    """Negotiate with a free agent (can offer less than asking price).
+
+    Factors affecting outcome:
+    - Agent personality (greed_factor * market_value)
+    - Player personality (greed, ego, loyalty traits)
+    - Non-money factors: playing time, friends, chemistry, winning, market size
+    - Counter-offer behavior and messaging
+    - How many years they want
+    - Whether they demand NTC/opt-out
+    """
     import random
 
     # Get player and their asking terms
@@ -776,8 +1128,24 @@ async def negotiate_free_agent(req: FreeAgentNegotiationRequest):
     asking_salary = p.get('asking_salary', 5000000)
     asking_years = p.get('asking_years', 3)
 
+    # --- Agent personality hook ---
+    # Get the agent's modified demands; this adjusts the asking price,
+    # years, NTC demands, and acceptance probability
+    agent_info = modify_free_agent_negotiation(
+        req.player_id, asking_salary, asking_years,
+        req.salary, req.years
+    )
+
+    # If agent is involved, use their adjusted asking price
+    if agent_info["agent_involved"]:
+        asking_salary = agent_info["adjusted_asking_salary"]
+        asking_years = agent_info["adjusted_asking_years"]
+
     # Calculate acceptance probability based on offer quality
     salary_ratio = req.salary / asking_salary if asking_salary > 0 else 1.0
+
+    # Apply agent acceptance modifier (positive = more willing, negative = harder)
+    acceptance_modifier = agent_info.get("acceptance_modifier", 0.0)
 
     accepted = False
     counter_offer = None
@@ -788,12 +1156,14 @@ async def negotiate_free_agent(req: FreeAgentNegotiationRequest):
         accepted = True
         reason = "Offer meets or exceeds asking price"
     elif salary_ratio >= 0.95:
-        # 95-99%: 80% chance accept
-        accepted = random.random() < 0.80
+        # 95-99%: 80% chance accept (modified by agent)
+        accept_chance = min(0.95, max(0.10, 0.80 + acceptance_modifier))
+        accepted = random.random() < accept_chance
         reason = "Offer close to asking price" if accepted else "Wants more money"
     elif salary_ratio >= 0.80:
-        # 80-94%: 50% chance accept, likely counter
-        if random.random() < 0.50:
+        # 80-94%: 50% chance accept, likely counter (modified by agent)
+        accept_chance = min(0.85, max(0.10, 0.50 + acceptance_modifier))
+        if random.random() < accept_chance:
             accepted = True
             reason = "Accepted slightly reduced offer"
         else:
@@ -803,8 +1173,9 @@ async def negotiate_free_agent(req: FreeAgentNegotiationRequest):
             }
             reason = "Countered with closer offer"
     elif salary_ratio >= 0.60:
-        # 60-79%: 20% chance accept, likely counter
-        if random.random() < 0.20:
+        # 60-79%: 20% chance accept, likely counter (modified by agent)
+        accept_chance = min(0.60, max(0.05, 0.20 + acceptance_modifier))
+        if random.random() < accept_chance:
             accepted = True
             reason = "Accepted despite lower offer"
         else:
@@ -821,6 +1192,18 @@ async def negotiate_free_agent(req: FreeAgentNegotiationRequest):
         }
         reason = "Offer too low, countered"
 
+    # Use agent's counter-offer if available and we're not accepting
+    if not accepted and agent_info.get("counter_offer"):
+        agent_counter = agent_info["counter_offer"]
+        counter_offer = {
+            "salary": agent_counter["salary"],
+            "years": agent_counter["years"],
+        }
+        if agent_counter.get("wants_ntc"):
+            counter_offer["wants_ntc"] = True
+        if agent_counter.get("wants_opt_out"):
+            counter_offer["wants_opt_out"] = True
+
     # Factor in team competitiveness if accepted
     if accepted:
         team = query("SELECT wins, losses FROM teams WHERE id=?", (req.team_id,))
@@ -835,17 +1218,35 @@ async def negotiate_free_agent(req: FreeAgentNegotiationRequest):
     if accepted:
         # Sign the player
         result = sign_free_agent(req.player_id, req.team_id, req.salary, req.years)
-        return {
+        response = {
             "accepted": True,
             "result": result,
             "reason": reason
         }
+        # Include agent message on acceptance
+        if agent_info.get("agent_message"):
+            response["agent_message"] = agent_info["agent_message"]
+        if agent_info.get("agent_name"):
+            response["agent_name"] = agent_info["agent_name"]
+        return response
 
-    return {
+    response = {
         "accepted": False,
         "counter_offer": counter_offer,
         "reason": reason
     }
+    # Include agent messaging and bluff info
+    if agent_info.get("agent_message"):
+        response["agent_message"] = agent_info["agent_message"]
+    if agent_info.get("agent_name"):
+        response["agent_name"] = agent_info["agent_name"]
+    if agent_info.get("bluffing") and agent_info.get("bluff_message"):
+        response["bluff_message"] = agent_info["bluff_message"]
+    if agent_info.get("wants_ntc"):
+        response["agent_demands_ntc"] = True
+    if agent_info.get("wants_opt_out"):
+        response["agent_demands_opt_out"] = True
+    return response
 
 
 @app.post("/admin/generate-free-agents")
@@ -857,6 +1258,51 @@ async def generate_free_agents(min_count: int = 50):
     from ..transactions.free_agency import ensure_minimum_free_agents
 
     result = ensure_minimum_free_agents(min_count)
+    return result
+
+
+# ============================================================
+# PLAYER AGENTS
+# ============================================================
+@app.get("/agents")
+async def list_agents():
+    """List all player agents."""
+    agents = get_all_agents()
+    if not agents:
+        # Auto-generate agents if none exist
+        agents = generate_agents()
+    return agents
+
+
+@app.get("/agent/{agent_id}")
+async def get_agent(agent_id: int):
+    """Get agent details with client list."""
+    agent = get_agent_details(agent_id)
+    if not agent:
+        raise HTTPException(404, "Agent not found")
+    return agent
+
+
+@app.get("/player/{player_id}/agent")
+async def get_player_agent_endpoint(player_id: int):
+    """Get the agent representing a player."""
+    agent = get_player_agent(player_id)
+    if not agent:
+        raise HTTPException(404, "No agent found for this player")
+    return agent
+
+
+@app.post("/admin/generate-agents")
+async def admin_generate_agents(count: int = 15):
+    """Generate player agents (admin endpoint)."""
+    agents = generate_agents(count)
+    return {"success": True, "count": len(agents), "agents": agents}
+
+
+@app.post("/admin/assign-agents")
+async def admin_assign_agents():
+    """Assign agents to all players based on player quality (admin endpoint)."""
+    result = assign_agents_to_players()
     return result
 
 
@@ -988,6 +1434,36 @@ async def extend_contract(req: ContractExtensionRequest):
 
 
 # ============================================================
+# COACHING STAFF
+# ============================================================
+@app.get("/coaching-staff/{team_id}")
+async def get_team_coaching_staff(team_id: int):
+    """Get coaching staff for a team."""
+    from ..transactions.coaching import get_coaching_staff, get_coaching_impact
+    staff = get_coaching_staff(team_id)
+    impact = get_coaching_impact(team_id)
+    return {"staff": staff or [], "impact": impact}
+
+@app.get("/coaching-staff/available")
+async def get_available_coaches_endpoint(role: str = None):
+    """Get available free agent coaches."""
+    from ..transactions.coaching import get_available_coaches
+    return get_available_coaches(role)
+
+@app.post("/coaching-staff/{team_id}/hire/{coach_id}")
+async def hire_coach_endpoint(team_id: int, coach_id: int):
+    """Hire a free agent coach."""
+    from ..transactions.coaching import hire_coach
+    return hire_coach(team_id, coach_id)
+
+@app.post("/coaching-staff/{team_id}/fire/{coach_id}")
+async def fire_coach_endpoint(team_id: int, coach_id: int):
+    """Fire a coach."""
+    from ..transactions.coaching import fire_coach
+    return fire_coach(team_id, coach_id)
+
+
+# ============================================================
 # SCHEDULE
 # ============================================================
 @app.get("/schedule")
@@ -1079,6 +1555,17 @@ async def update_budget(team_id: int, req: BudgetUpdate):
 # ============================================================
 # MESSAGES
 # ============================================================
+@app.get("/messages")
+async def get_messages_auto(unread_only: bool = False):
+    """Get messages for the user's team (auto-detect team)."""
+    state = query("SELECT user_team_id FROM game_state WHERE id=1")
+    team_id = state[0]["user_team_id"] if state else None
+    if not team_id:
+        return []
+    from ..transactions.messages import get_messages_for_team
+    return get_messages_for_team(team_id, unread_only=unread_only) or []
+
+
 @app.get("/messages/{team_id}")
 async def get_team_messages(team_id: int, unread_only: bool = False):
     """Get messages for a specific team."""
@@ -1810,7 +2297,7 @@ async def batting_leaders(stat: str = "hr", limit: int = 10):
         raise HTTPException(400, f"Invalid stat. Use: {valid_stats}")
     return query(f"""
         SELECT p.first_name, p.last_name, t.abbreviation,
-               bs.games, bs.ab, bs.hits, bs.hr, bs.rbi, bs.bb, bs.so,
+               bs.player_id, bs.games, bs.ab, bs.hits, bs.hr, bs.rbi, bs.bb, bs.so,
                bs.doubles, bs.triples, bs.sb, bs.runs,
                CASE WHEN bs.ab > 0 THEN ROUND(1.0 * bs.hits / bs.ab, 3) END as avg
         FROM batting_stats bs
@@ -1830,7 +2317,7 @@ async def pitching_leaders(stat: str = "wins", limit: int = 10):
         raise HTTPException(400, f"Invalid stat. Use: {valid_stats}")
     return query(f"""
         SELECT p.first_name, p.last_name, t.abbreviation,
-               ps.games, ps.games_started, ps.wins, ps.losses, ps.saves,
+               ps.player_id, ps.games, ps.games_started, ps.wins, ps.losses, ps.saves,
                ps.ip_outs, ps.er, ps.so, ps.bb, ps.hr_allowed,
                CASE WHEN ps.ip_outs > 0
                     THEN ROUND(9.0 * ps.er / (ps.ip_outs / 3.0), 2) END as era
@@ -3759,6 +4246,10 @@ async def migrate_database():
         player_migrations = {
             "trading_block_json": "TEXT DEFAULT '{\"players\":[],\"offers\":[]}'",
             "height_inches": "INTEGER DEFAULT NULL",
+            "backstory": "TEXT DEFAULT NULL",
+            "nickname": "TEXT DEFAULT NULL",
+            "quirks": "TEXT DEFAULT NULL",
+            "origin_story": "TEXT DEFAULT NULL",
         }
         for col, col_def in player_migrations.items():
             if col not in player_cols:
@@ -3783,6 +4274,16 @@ async def migrate_database():
                              (_rnd.randint(low, high), p[0]))
             if players_no_height:
                 changes.append(f"Seeded heights for {len(players_no_height)} players")
+
+        # Generate backstories for players that don't have one yet
+        if "players.backstory" in changes:
+            try:
+                conn.commit()  # Commit column additions first
+                backstory_count = generate_all_backstories(force=False)
+                if backstory_count:
+                    changes.append(f"Generated backstories for {backstory_count} players")
+            except Exception:
+                pass  # Non-critical, can be generated later via API
 
         # --- New tables ---
         conn.execute("""
@@ -4525,3 +5026,255 @@ async def recalibrate_ratings():
     conn.close()
 
     return {"success": True, "adjustments": adjustments}
+
+
+# ============================================================
+# OWNER PRESSURE & JOB SECURITY
+# ============================================================
+
+@app.get("/owner/objectives/{team_id}")
+async def api_get_owner_objectives(team_id: int, season: int = None):
+    """Get owner objectives for a team."""
+    if season is None:
+        state = query("SELECT season FROM game_state WHERE id=1")
+        season = state[0]["season"] if state else 2026
+    objectives = get_owner_objectives_for_team(team_id, season)
+    return {"team_id": team_id, "season": season, "objectives": objectives}
+
+
+@app.get("/owner/job-security")
+async def api_get_job_security():
+    """Get current GM job security status."""
+    return get_job_security()
+
+
+@app.post("/owner/evaluate")
+async def api_evaluate_performance():
+    """Trigger end-of-season GM performance evaluation."""
+    state = query("SELECT user_team_id FROM game_state WHERE id=1")
+    if not state or not state[0]["user_team_id"]:
+        raise HTTPException(status_code=400, detail="No user team set")
+    team_id = state[0]["user_team_id"]
+    result = evaluate_gm_performance(team_id)
+    firing_check = check_firing(team_id)
+    return {
+        "evaluation": result,
+        "firing_status": firing_check,
+    }
+
+
+@app.post("/owner/set-objectives")
+async def api_set_objectives(season: int = None):
+    """Have the owner set objectives for the current or specified season."""
+    state = query("SELECT user_team_id, season FROM game_state WHERE id=1")
+    if not state or not state[0]["user_team_id"]:
+        raise HTTPException(status_code=400, detail="No user team set")
+    team_id = state[0]["user_team_id"]
+    if season is None:
+        season = state[0]["season"]
+    objectives = set_owner_objectives(team_id, season)
+    return {"team_id": team_id, "season": season, "objectives": objectives}
+
+
+@app.get("/owner/mood")
+async def api_get_owner_mood():
+    """Get current owner mood and message."""
+    state = query("SELECT user_team_id FROM game_state WHERE id=1")
+    if not state or not state[0]["user_team_id"]:
+        raise HTTPException(status_code=400, detail="No user team set")
+    team_id = state[0]["user_team_id"]
+    return get_owner_mood_message(team_id)
+
+
+# ============================================================
+# MINOR LEAGUE (Farm System)
+# ============================================================
+@app.get("/milb/standings/{team_id}")
+async def api_get_milb_standings(team_id: int, level: str = "AAA"):
+    """Get minor league standings for a team's affiliate."""
+    from ..simulation.minor_leagues import get_milb_standings as _get_milb_standings
+    state = query("SELECT season FROM game_state WHERE id=1")
+    season = state[0]["season"] if state else 2026
+    return _get_milb_standings(team_id, level, season)
+
+
+@app.get("/milb/stats/{team_id}")
+async def api_get_milb_stats(team_id: int, level: str = "AAA"):
+    """Get minor league player stats."""
+    from ..simulation.minor_leagues import get_milb_stats as _get_milb_stats
+    state = query("SELECT season FROM game_state WHERE id=1")
+    season = state[0]["season"] if state else 2026
+    return _get_milb_stats(team_id, level, season)
+
+
+@app.get("/milb/all-standings")
+async def api_get_all_milb_standings(level: str = "AAA"):
+    """Get all minor league standings for a level."""
+    from ..simulation.minor_leagues import get_all_milb_standings as _get_all
+    state = query("SELECT season FROM game_state WHERE id=1")
+    season = state[0]["season"] if state else 2026
+    return _get_all(level, season)
+
+
+@app.post("/generate-backstories")
+async def api_generate_backstories(force: bool = False):
+    """Generate backstories for all players that don't have one."""
+    try:
+        count = generate_all_backstories(force=force)
+        return {"status": "ok", "players_updated": count}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/player/{player_id}/generate-backstory")
+async def api_generate_player_backstory(player_id: int):
+    """Generate or regenerate backstory for a single player."""
+    player = query("SELECT * FROM players WHERE id=?", (player_id,))
+    if not player:
+        raise HTTPException(404, "Player not found")
+
+    result = generate_backstory(player[0])
+    execute(
+        """UPDATE players SET backstory=?, nickname=?, quirks=?, origin_story=?
+           WHERE id=?""",
+        (result['backstory'], result['nickname'], result['quirks'],
+         result['origin_story'], player_id)
+    )
+    return {"status": "ok", "backstory": result}
+
+
+# ============================================================
+# PODCAST
+# ============================================================
+@app.get("/podcast/episodes")
+async def api_get_podcast_episodes(limit: int = 10):
+    """Get recent podcast episodes."""
+    from ..ai.podcast import get_podcast_episodes
+    state = query("SELECT season FROM game_state WHERE id=1")
+    season = state[0]["season"] if state else 2026
+    episodes = get_podcast_episodes(season=season, limit=limit)
+    return episodes
+
+
+@app.get("/podcast/latest")
+async def api_get_latest_podcast():
+    """Get the most recent podcast episode."""
+    from ..ai.podcast import get_latest_podcast
+    episode = get_latest_podcast()
+    if not episode:
+        return {"message": "No podcast episodes yet"}
+    # Mark as read
+    execute("UPDATE podcast_episodes SET is_read = 1 WHERE id = ?", (episode["id"],))
+    return episode
+
+
+@app.post("/podcast/generate")
+async def api_generate_podcast():
+    """Manually trigger podcast generation for the current date."""
+    from ..ai.podcast import generate_weekly_podcast
+    state = query("SELECT * FROM game_state WHERE id=1")
+    if not state:
+        raise HTTPException(400, "No game state found")
+    game_date = state[0]["current_date"]
+    season = state[0]["season"]
+    result = await generate_weekly_podcast(game_date, season)
+    return result
+
+
+@app.post("/podcast/{episode_id}/read")
+async def api_mark_podcast_read(episode_id: int):
+    """Mark a podcast episode as read."""
+    execute("UPDATE podcast_episodes SET is_read = 1 WHERE id = ?", (episode_id,))
+    return {"success": True}
+
+
+@app.get("/news/feed")
+async def get_news_feed(limit: int = 30):
+    """Aggregated news feed from all sources - articles, TV segments, podcasts, transactions."""
+    feed = []
+
+    # Get articles (if table exists)
+    try:
+        articles = query("""
+            SELECT a.*, bw.name as writer_name, bw.outlet, bw.personality as writer_personality
+            FROM articles a
+            LEFT JOIN beat_writers bw ON bw.id = a.writer_id
+            ORDER BY a.game_date DESC, a.id DESC LIMIT ?
+        """, (limit,)) or []
+        for a in articles:
+            feed.append({
+                "type": "article",
+                "date": a.get("game_date", ""),
+                "headline": a.get("headline", ""),
+                "body": a.get("body", ""),
+                "source": a.get("outlet", "Unknown"),
+                "author": a.get("writer_name", "Staff"),
+                "sentiment": a.get("sentiment", "neutral"),
+                "article_type": a.get("article_type", "news"),
+                "id": a.get("id"),
+            })
+    except Exception:
+        pass  # Table may not exist yet
+
+    # Get TV segments (if table exists)
+    try:
+        segments = query("""
+            SELECT ts.*, ta.name as analyst_name, ta.network, ta.personality as analyst_personality
+            FROM tv_segments ts
+            LEFT JOIN tv_analysts ta ON ta.id = ts.analyst_id
+            ORDER BY ts.game_date DESC, ts.id DESC LIMIT ?
+        """, (limit,)) or []
+        for s in segments:
+            feed.append({
+                "type": "tv_segment",
+                "date": s.get("game_date", ""),
+                "headline": s.get("headline", ""),
+                "body": s.get("content", ""),
+                "source": s.get("network", "ESPN"),
+                "author": s.get("analyst_name", "Analyst"),
+                "segment_type": s.get("segment_type", "commentary"),
+                "id": s.get("id"),
+            })
+    except Exception:
+        pass
+
+    # Get podcast episodes (if table exists)
+    try:
+        podcasts = query("""
+            SELECT * FROM podcast_episodes
+            ORDER BY game_date DESC, id DESC LIMIT 5
+        """) or []
+        for p in podcasts:
+            feed.append({
+                "type": "podcast",
+                "date": p.get("game_date", ""),
+                "headline": p.get("title", ""),
+                "body": (p.get("script", "") or "")[:500] + "...",
+                "source": "The Front Office Podcast",
+                "episode": p.get("episode_number"),
+                "id": p.get("id"),
+            })
+    except Exception:
+        pass
+
+    # Get recent transactions as news items
+    try:
+        txns = query("""
+            SELECT * FROM transactions
+            ORDER BY game_date DESC, id DESC LIMIT 10
+        """) or []
+        for t in txns:
+            feed.append({
+                "type": "transaction",
+                "date": t.get("game_date", ""),
+                "headline": f"Transaction: {t.get('description', 'Unknown')}",
+                "body": t.get("details", t.get("description", "")),
+                "source": "Front Office Wire",
+                "id": t.get("id"),
+            })
+    except Exception:
+        pass
+
+    # Sort all items by date descending
+    feed.sort(key=lambda x: x.get("date", ""), reverse=True)
+    return feed[:limit]

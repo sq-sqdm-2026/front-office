@@ -113,7 +113,7 @@ function gradeClass(val) {
 }
 function gradeHtml(val) {
   const display = convertRating(val);
-  return `<span class="grade ${gradeClass(val)}">${display}</span>`;
+  return `<span class="grade ${gradeClass(val)}" data-sort-value="${val}">${display}</span>`;
 }
 function ratingBar(val) {
   const pct = Math.max(0, Math.min(100, ((val - 20) / 60) * 100));
@@ -195,10 +195,25 @@ async function post(path, body) {
 function makeSortable(tableId) {
   const table = document.getElementById(tableId);
   if (!table) return;
-  const headers = table.querySelectorAll('th.sortable');
+  const headers = table.querySelectorAll('thead th');
   headers.forEach((th, idx) => {
+    // Skip empty headers or action columns (buttons)
+    if (!th.textContent.trim() || th.querySelector('button')) return;
+    th.classList.add('sortable');
     th.onclick = () => sortTable(tableId, idx);
   });
+}
+
+function parseSortValue(raw) {
+  if (!raw || raw === '-' || raw === '') return { num: -Infinity, str: '' };
+  let cleaned = raw.replace(/^\$/, '');
+  if (/[\d.]+B$/i.test(cleaned)) return { num: parseFloat(cleaned) * 1e9, str: raw };
+  if (/[\d.]+M$/i.test(cleaned)) return { num: parseFloat(cleaned) * 1e6, str: raw };
+  if (/[\d.]+K$/i.test(cleaned)) return { num: parseFloat(cleaned) * 1e3, str: raw };
+  if (cleaned.toLowerCase() === 'min') return { num: 0, str: raw };
+  const num = parseFloat(cleaned);
+  if (!isNaN(num)) return { num, str: raw };
+  return { num: NaN, str: raw };
 }
 
 function sortTable(tableId, colIdx, type = 'auto') {
@@ -212,19 +227,28 @@ function sortTable(tableId, colIdx, type = 'auto') {
   state.col = colIdx;
   state.asc = !wasAsc;
 
+  function getCellSortVal(row, idx) {
+    const cell = row.cells[idx];
+    if (!cell) return '';
+    // Check for data-sort-value on child elements (e.g., gradeHtml spans)
+    const sortEl = cell.querySelector('[data-sort-value]');
+    if (sortEl) return sortEl.getAttribute('data-sort-value');
+    return cell.textContent.trim();
+  }
+
   const rows = Array.from(tbody.querySelectorAll('tr'));
   rows.sort((a, b) => {
-    const aVal = a.cells[colIdx]?.textContent.trim() || '';
-    const bVal = b.cells[colIdx]?.textContent.trim() || '';
+    const aRaw = getCellSortVal(a, colIdx);
+    const bRaw = getCellSortVal(b, colIdx);
 
-    let aNum = parseFloat(aVal);
-    let bNum = parseFloat(bVal);
+    const aP = parseSortValue(aRaw);
+    const bP = parseSortValue(bRaw);
     let cmp = 0;
 
-    if (!isNaN(aNum) && !isNaN(bNum)) {
-      cmp = aNum - bNum;
+    if (!isNaN(aP.num) && !isNaN(bP.num)) {
+      cmp = aP.num - bP.num;
     } else {
-      cmp = aVal.localeCompare(bVal);
+      cmp = aP.str.toLowerCase().localeCompare(bP.str.toLowerCase());
     }
 
     return state.asc ? cmp : -cmp;
@@ -427,8 +451,8 @@ const PAGE_TITLES = {
   lineup: 'Lineup', depthchart: 'Depth Chart', standings: 'Standings',
   schedule: 'Schedule', playoffs: 'Playoffs', finances: 'Finances',
   trades: 'Trade Center', draft: 'Draft', freeagents: 'Free Agents',
-  findplayers: 'Find Players', leaders: 'Leaders', messages: 'Messages',
-  gameday: 'Game Day',
+  findplayers: 'Find Players', leaders: 'Leaders', podcast: 'Podcast', messages: 'Messages',
+  gameday: 'Game Day', farm: 'Farm System', news: 'News & Media',
 };
 
 function showScreen(name) {
@@ -449,7 +473,7 @@ function showScreen(name) {
     calendar: loadCalendar, roster: loadRoster, transactions: loadTransactions, lineup: loadLineup, depthchart: loadDepthChart, standings: loadStandings,
     schedule: loadSchedule, playoffs: loadPlayoffs, finances: loadFinances, trades: loadTrades, draft: loadDraft,
     freeagents: loadFA, findplayers: loadFindPlayers, leaders: loadLeaders, messages: loadMessages,
-    gameday: loadGameDay,
+    gameday: loadGameDay, podcast: loadPodcast, farm: () => loadFarm('AAA'), news: () => loadNews('all'),
   };
   if (loaders[name]) loaders[name]();
 }
@@ -1585,31 +1609,26 @@ async function displayStatsBrowser(position, teamId, minPA) {
   }
 }
 
+function statSortTh(cls, key, label, type) {
+  const ss = STATE.statsPage;
+  const isSorted = ss.sort === key;
+  const sortCls = isSorted ? (ss.order === 'asc' ? ' sorted asc' : ' sorted') : '';
+  return `<th class="${cls} sortable${sortCls}" onclick="reloadStats('${type}', '${key}')">${label}</th>`;
+}
+
 function displayBatterStats(stats) {
   const results = document.getElementById('find-results');
 
+  const batCols = [
+    ['text-col','first_name','Name'],['c','position','Pos'],['r','games','G'],['r','ab','AB'],
+    ['r','runs','R'],['r','hits','H'],['r','doubles','2B'],['r','triples','3B'],['r','hr','HR'],
+    ['r','rbi','RBI'],['r','bb','BB'],['r','so','SO'],['r','sb','SB'],['r','avg','AVG'],
+    ['r','obp','OBP'],['r','slg','SLG'],['r','ops','OPS'],['c','contact_rating','CON'],
+    ['c','power_rating','POW'],['c','speed_rating','SPD']
+  ];
   let html = `<div class="table-wrap"><table id="stats-table" style="font-size: 12px;">
     <thead><tr>
-      <th class="text-col" onclick="reloadStats('batters', 'first_name')" style="cursor:pointer;">Name</th>
-      <th class="c" onclick="reloadStats('batters', 'position')" style="cursor:pointer;">Pos</th>
-      <th class="r" onclick="reloadStats('batters', 'games')" style="cursor:pointer;">G</th>
-      <th class="r" onclick="reloadStats('batters', 'ab')" style="cursor:pointer;">AB</th>
-      <th class="r" onclick="reloadStats('batters', 'runs')" style="cursor:pointer;">R</th>
-      <th class="r" onclick="reloadStats('batters', 'hits')" style="cursor:pointer;">H</th>
-      <th class="r" onclick="reloadStats('batters', 'doubles')" style="cursor:pointer;">2B</th>
-      <th class="r" onclick="reloadStats('batters', 'triples')" style="cursor:pointer;">3B</th>
-      <th class="r" onclick="reloadStats('batters', 'hr')" style="cursor:pointer;">HR</th>
-      <th class="r" onclick="reloadStats('batters', 'rbi')" style="cursor:pointer;">RBI</th>
-      <th class="r" onclick="reloadStats('batters', 'bb')" style="cursor:pointer;">BB</th>
-      <th class="r" onclick="reloadStats('batters', 'so')" style="cursor:pointer;">SO</th>
-      <th class="r" onclick="reloadStats('batters', 'sb')" style="cursor:pointer;">SB</th>
-      <th class="r" onclick="reloadStats('batters', 'avg')" style="cursor:pointer;">AVG</th>
-      <th class="r" onclick="reloadStats('batters', 'obp')" style="cursor:pointer;">OBP</th>
-      <th class="r" onclick="reloadStats('batters', 'slg')" style="cursor:pointer;">SLG</th>
-      <th class="r" onclick="reloadStats('batters', 'ops')" style="cursor:pointer;">OPS</th>
-      <th class="c" onclick="reloadStats('batters', 'contact_rating')" style="cursor:pointer;">CON</th>
-      <th class="c" onclick="reloadStats('batters', 'power_rating')" style="cursor:pointer;">POW</th>
-      <th class="c" onclick="reloadStats('batters', 'speed_rating')" style="cursor:pointer;">SPD</th>
+      ${batCols.map(([cls, key, label]) => statSortTh(cls, key, label, 'batters')).join('')}
       <th class="text-col">Team</th>
     </tr></thead><tbody>`;
 
@@ -1646,29 +1665,16 @@ function displayBatterStats(stats) {
 function displayPitcherStats(stats) {
   const results = document.getElementById('find-results');
 
+  const pitCols = [
+    ['text-col','first_name','Name'],['c','position','Pos'],['r','games','G'],['r','games_started','GS'],
+    ['r','wins','W'],['r','losses','L'],['r','saves','SV'],['r','ip_outs','IP'],['r','hits_allowed','H'],
+    ['r','er','ER'],['r','bb','BB'],['r','so','SO'],['r','hr_allowed','HR'],['r','era','ERA'],
+    ['r','whip','WHIP'],['r','k9','K/9'],['r','bb9','BB/9'],['r','k_bb','K/BB'],
+    ['c','stuff_rating','STF'],['c','control_rating','CTL'],['c','stamina_rating','STA']
+  ];
   let html = `<div class="table-wrap"><table id="stats-table" style="font-size: 12px;">
     <thead><tr>
-      <th class="text-col" onclick="reloadStats('pitchers', 'first_name')" style="cursor:pointer;">Name</th>
-      <th class="c" onclick="reloadStats('pitchers', 'position')" style="cursor:pointer;">Pos</th>
-      <th class="r" onclick="reloadStats('pitchers', 'games')" style="cursor:pointer;">G</th>
-      <th class="r" onclick="reloadStats('pitchers', 'games_started')" style="cursor:pointer;">GS</th>
-      <th class="r" onclick="reloadStats('pitchers', 'wins')" style="cursor:pointer;">W</th>
-      <th class="r" onclick="reloadStats('pitchers', 'losses')" style="cursor:pointer;">L</th>
-      <th class="r" onclick="reloadStats('pitchers', 'saves')" style="cursor:pointer;">SV</th>
-      <th class="r" onclick="reloadStats('pitchers', 'ip_outs')" style="cursor:pointer;">IP</th>
-      <th class="r" onclick="reloadStats('pitchers', 'hits_allowed')" style="cursor:pointer;">H</th>
-      <th class="r" onclick="reloadStats('pitchers', 'er')" style="cursor:pointer;">ER</th>
-      <th class="r" onclick="reloadStats('pitchers', 'bb')" style="cursor:pointer;">BB</th>
-      <th class="r" onclick="reloadStats('pitchers', 'so')" style="cursor:pointer;">SO</th>
-      <th class="r" onclick="reloadStats('pitchers', 'hr_allowed')" style="cursor:pointer;">HR</th>
-      <th class="r" onclick="reloadStats('pitchers', 'era')" style="cursor:pointer;">ERA</th>
-      <th class="r" onclick="reloadStats('pitchers', 'whip')" style="cursor:pointer;">WHIP</th>
-      <th class="r" onclick="reloadStats('pitchers', 'k9')" style="cursor:pointer;">K/9</th>
-      <th class="r" onclick="reloadStats('pitchers', 'bb9')" style="cursor:pointer;">BB/9</th>
-      <th class="r" onclick="reloadStats('pitchers', 'k_bb')" style="cursor:pointer;">K/BB</th>
-      <th class="c" onclick="reloadStats('pitchers', 'stuff_rating')" style="cursor:pointer;">STF</th>
-      <th class="c" onclick="reloadStats('pitchers', 'control_rating')" style="cursor:pointer;">CTL</th>
-      <th class="c" onclick="reloadStats('pitchers', 'stamina_rating')" style="cursor:pointer;">STA</th>
+      ${pitCols.map(([cls, key, label]) => statSortTh(cls, key, label, 'pitchers')).join('')}
       <th class="text-col">Team</th>
     </tr></thead><tbody>`;
 
@@ -1892,10 +1898,30 @@ async function showPlayer(pid) {
     actionBarHtml += '</div>';
   }
 
+  // Backstory section
+  let backstoryHtml = '';
+  if (p.backstory) {
+    let quirksHtml = '';
+    try {
+      const quirks = JSON.parse(p.quirks || '[]');
+      if (quirks.length) {
+        quirksHtml = `<div class="player-quirks">${quirks.map(q => `<span class="quirk-tag">${q}</span>`).join('')}</div>`;
+      }
+    } catch(e) {}
+    backstoryHtml = `
+      <div class="player-backstory">
+        ${p.nickname ? `<div class="player-nickname">"${p.nickname}"</div>` : ''}
+        <div class="backstory-text">${p.backstory}</div>
+        ${quirksHtml}
+      </div>`;
+  } else {
+    backstoryHtml = `<div style="margin-top:8px"><button class="btn btn-sm" onclick="generateBackstory(${p.id})">Generate Backstory</button></div>`;
+  }
+
   body.innerHTML = `
     <div class="modal-header">
       <div>
-        <div class="player-name">${p.first_name} ${p.last_name}</div>
+        <div class="player-name">${p.first_name} ${p.last_name}${p.nickname ? ` <span style="font-size:14px;color:var(--accent);font-style:italic">"${p.nickname}"</span>` : ''}</div>
         <div class="player-meta">${p.position} | Age ${p.age} | ${p.bats}/${p.throws} | ${p.birth_country || 'USA'}</div>
         <div class="player-meta">${p.abbreviation || ''} ${p.team_name || 'Free Agent'}</div>
       </div>
@@ -1931,6 +1957,7 @@ async function showPlayer(pid) {
         ${miniStatHtml ? `<div class="section-title" style="margin-top:12px">${STATE.season} Season</div>${miniStatHtml}` : ''}
         <div class="section-title" style="margin-top:12px">Personality</div>
         <div class="grades-row">${persHtml}</div>
+        ${backstoryHtml}
       </div>
       <div id="player-tab-stats" style="display:none">
         ${statsHtml || '<div class="empty-state">No stats available</div>'}
@@ -1955,6 +1982,17 @@ async function showPlayer(pid) {
       </div>
     </div>
   `;
+}
+
+async function generateBackstory(pid) {
+  try {
+    const r = await post(`/player/${pid}/generate-backstory`, {});
+    if (r?.status === 'ok') {
+      showPlayer(pid);  // Refresh the modal to show the new backstory
+    }
+  } catch(e) {
+    console.error('Failed to generate backstory:', e);
+  }
 }
 
 function switchPlayerTab(e, tab) {
@@ -3938,6 +3976,120 @@ async function loadLeaders() {
 }
 
 // ============================================================
+// PODCAST
+// ============================================================
+async function loadPodcast() {
+  const el = document.getElementById('podcast-body');
+  if (!el) return;
+  el.innerHTML = '<div class="empty-state">Loading podcast episodes...</div>';
+
+  const episodes = await api('/podcast/episodes?limit=10') || [];
+
+  if (!episodes.length || episodes.message) {
+    el.innerHTML = `
+      <div class="podcast-empty">
+        <div class="podcast-empty-icon">&#127908;</div>
+        <div style="font-size:16px;font-weight:600;margin-bottom:4px">No Episodes Yet</div>
+        <div style="font-size:13px">Podcast episodes are generated automatically each week during the regular season.</div>
+        <div style="font-size:12px;margin-top:8px">You can also click "Generate Episode" above to create one now.</div>
+      </div>`;
+    return;
+  }
+
+  let html = '';
+  episodes.forEach((ep, idx) => {
+    const isUnread = !ep.is_read;
+    const scriptId = `podcast-script-${ep.id}`;
+    // Format the script: bold the host names
+    const formattedScript = (ep.script || '')
+      .replace(/^(MIKE:)/gm, '<strong>MIKE:</strong>')
+      .replace(/^(LISA:)/gm, '<strong>LISA:</strong>')
+      .replace(/^(EARL:)/gm, '<strong>EARL:</strong>')
+      .replace(/^(THE FRONT OFFICE PODCAST.*)/gm, '<strong>$1</strong>');
+
+    const topics = (() => {
+      try { return JSON.parse(ep.topics || '[]'); } catch { return []; }
+    })();
+    const topicLabels = {
+      hot_hitters: 'Hot Bats', cold_hitters: 'Cold Streaks', pitching: 'Pitching',
+      trades: 'Trades', injuries: 'Injuries', milestones: 'Milestones',
+      user_team: 'Your Team', prospect_watch: 'Prospects'
+    };
+
+    html += `
+      <div class="podcast-card ${isUnread ? 'unread' : ''}" onclick="markPodcastRead(${ep.id}, this)">
+        <div class="podcast-header">
+          <span class="podcast-icon">&#127908;</span>
+          <span class="podcast-title">Episode ${ep.episode_number}: ${ep.title}</span>
+          <span style="font-size:11px;color:var(--text-tertiary)">${ep.duration_estimate} min</span>
+        </div>
+        <div class="podcast-meta">
+          ${ep.game_date} &bull; Season ${ep.season}
+          ${topics.length ? ' &bull; ' + topics.map(t => topicLabels[t] || t).join(', ') : ''}
+        </div>
+        <div class="podcast-script" id="${scriptId}" ${idx > 0 ? 'style="max-height:0;padding:0;border:none;overflow:hidden"' : ''}>${formattedScript}</div>
+        <button class="podcast-toggle" onclick="event.stopPropagation();togglePodcastScript('${scriptId}', this)">
+          ${idx > 0 ? 'Show Script' : 'Collapse'}
+        </button>
+      </div>`;
+  });
+
+  el.innerHTML = html;
+}
+
+function togglePodcastScript(id, btn) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  if (el.style.maxHeight === '0px' || el.style.maxHeight === '0') {
+    el.style.maxHeight = '300px';
+    el.style.padding = '12px';
+    el.style.border = '1px solid var(--border-light)';
+    el.style.overflow = 'auto';
+    btn.textContent = 'Collapse';
+  } else if (el.classList.contains('podcast-script-expanded')) {
+    el.classList.remove('podcast-script-expanded');
+    el.style.maxHeight = '300px';
+    btn.textContent = 'Expand Full';
+  } else if (el.style.maxHeight === '300px' || el.style.maxHeight === '') {
+    el.classList.add('podcast-script-expanded');
+    el.style.maxHeight = 'none';
+    btn.textContent = 'Collapse';
+  } else {
+    el.style.maxHeight = '0px';
+    el.style.padding = '0';
+    el.style.border = 'none';
+    el.style.overflow = 'hidden';
+    btn.textContent = 'Show Script';
+  }
+}
+
+function markPodcastRead(episodeId, card) {
+  if (card && card.classList.contains('unread')) {
+    card.classList.remove('unread');
+    api(`/podcast/${episodeId}/read`, { method: 'POST' });
+  }
+}
+
+async function generatePodcast() {
+  const btn = document.querySelector('#s-podcast .btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Generating...'; }
+  try {
+    const result = await api('/podcast/generate', { method: 'POST' });
+    if (result && !result.error) {
+      showToast('Podcast episode generated!');
+      loadPodcast();
+    } else {
+      showToast('Failed to generate podcast: ' + (result?.error || 'Unknown error'));
+    }
+  } catch (e) {
+    showToast('Error generating podcast');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Generate Episode'; }
+  }
+}
+
+
+// ============================================================
 // MESSAGES
 // ============================================================
 async function loadMessages() {
@@ -5610,6 +5762,140 @@ async function autoExpansionPickAll() {
 
 
 // ============================================================
+// FARM SYSTEM (Minor Leagues)
+// ============================================================
+let _farmCurrentLevel = 'AAA';
+
+async function loadFarm(level) {
+  _farmCurrentLevel = level || 'AAA';
+  const body = document.getElementById('farm-body');
+  if (!body) return;
+  body.innerHTML = '<div class="empty-state">Loading farm system...</div>';
+
+  // Update tab active states
+  ['AAA', 'AA', 'A'].forEach(lv => {
+    const tab = document.getElementById('farm-tab-' + lv);
+    if (tab) tab.classList.toggle('active', lv === _farmCurrentLevel);
+  });
+
+  const teamId = STATE.userTeamId;
+  if (!teamId) {
+    body.innerHTML = '<div class="empty-state">Select a team first</div>';
+    return;
+  }
+
+  const [standings, allStandings, stats] = await Promise.all([
+    api(`/milb/standings/${teamId}?level=${_farmCurrentLevel}`),
+    api(`/milb/all-standings?level=${_farmCurrentLevel}`),
+    api(`/milb/stats/${teamId}?level=${_farmCurrentLevel}`),
+  ]);
+
+  let html = '';
+
+  // Team record header
+  const levelLabel = _farmCurrentLevel === 'A' ? 'Low-A' : _farmCurrentLevel;
+  if (standings) {
+    html += `<div style="display:flex;gap:16px;align-items:center;margin-bottom:16px;padding:12px 16px;background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-md);">
+      <div style="font-size:18px;font-weight:700;">${levelLabel} Affiliate</div>
+      <div class="mono" style="font-size:16px;">${standings.wins}-${standings.losses}</div>
+      <div class="mono" style="font-size:14px;color:var(--text-secondary);">.${String(standings.pct).replace('0.','').padEnd(3,'0')}</div>
+      <div style="font-size:12px;color:var(--text-tertiary);">RS: ${standings.runs_scored} | RA: ${standings.runs_allowed}</div>
+    </div>`;
+  }
+
+  // League standings table
+  if (allStandings && allStandings.length > 0) {
+    html += `<div style="margin-bottom:16px;">
+      <div class="section-title" style="margin-bottom:8px;">${levelLabel} Standings</div>
+      <table class="data-table"><thead><tr>
+        <th>#</th><th>Team</th><th>W</th><th>L</th><th>PCT</th><th>RS</th><th>RA</th>
+      </tr></thead><tbody>`;
+    allStandings.forEach((s, i) => {
+      const isUser = s.team_id === teamId;
+      const cls = isUser ? ' style="background:var(--bg-hover);font-weight:600;"' : '';
+      html += `<tr${cls}>
+        <td>${i + 1}</td>
+        <td>${s.city} ${s.name}</td>
+        <td class="mono">${s.wins}</td>
+        <td class="mono">${s.losses}</td>
+        <td class="mono">.${String(s.pct).replace('0.','').padEnd(3,'0')}</td>
+        <td class="mono">${s.runs_scored}</td>
+        <td class="mono">${s.runs_allowed}</td>
+      </tr>`;
+    });
+    html += '</tbody></table></div>';
+  }
+
+  // Batting stats
+  if (stats && stats.batting && stats.batting.length > 0) {
+    html += `<div style="margin-bottom:16px;">
+      <div class="section-title" style="margin-bottom:8px;">Batting</div>
+      <table class="data-table"><thead><tr>
+        <th>Player</th><th>Pos</th><th>Age</th><th>G</th><th>AB</th><th>H</th><th>2B</th><th>3B</th><th>HR</th><th>RBI</th><th>BB</th><th>SO</th><th>SB</th><th>AVG</th><th>OBP</th><th>SLG</th><th>OPS</th>
+      </tr></thead><tbody>`;
+    stats.batting.forEach(b => {
+      html += `<tr onclick="openPlayerModal(${b.player_id})" style="cursor:pointer;">
+        <td style="font-weight:500;">${b.first_name} ${b.last_name}</td>
+        <td>${b.position}</td>
+        <td>${b.age}</td>
+        <td class="mono">${b.games}</td>
+        <td class="mono">${b.ab}</td>
+        <td class="mono">${b.hits}</td>
+        <td class="mono">${b.doubles}</td>
+        <td class="mono">${b.triples}</td>
+        <td class="mono">${b.hr}</td>
+        <td class="mono">${b.rbi}</td>
+        <td class="mono">${b.bb}</td>
+        <td class="mono">${b.so}</td>
+        <td class="mono">${b.sb}</td>
+        <td class="mono" style="font-weight:600;">${b.avg.toFixed(3)}</td>
+        <td class="mono">${b.obp.toFixed(3)}</td>
+        <td class="mono">${b.slg.toFixed(3)}</td>
+        <td class="mono" style="font-weight:600;">${b.ops.toFixed(3)}</td>
+      </tr>`;
+    });
+    html += '</tbody></table></div>';
+  } else {
+    html += '<div class="empty-state" style="margin-bottom:16px;">No batting stats yet. Advance the sim into the season (Apr-Sep) to see MiLB stats.</div>';
+  }
+
+  // Pitching stats
+  if (stats && stats.pitching && stats.pitching.length > 0) {
+    html += `<div style="margin-bottom:16px;">
+      <div class="section-title" style="margin-bottom:8px;">Pitching</div>
+      <table class="data-table"><thead><tr>
+        <th>Player</th><th>Pos</th><th>Age</th><th>G</th><th>GS</th><th>W</th><th>L</th><th>SV</th><th>IP</th><th>H</th><th>ER</th><th>BB</th><th>SO</th><th>HR</th><th>ERA</th><th>WHIP</th>
+      </tr></thead><tbody>`;
+    stats.pitching.forEach(p => {
+      html += `<tr onclick="openPlayerModal(${p.player_id})" style="cursor:pointer;">
+        <td style="font-weight:500;">${p.first_name} ${p.last_name}</td>
+        <td>${p.position}</td>
+        <td>${p.age}</td>
+        <td class="mono">${p.games}</td>
+        <td class="mono">${p.games_started}</td>
+        <td class="mono">${p.wins}</td>
+        <td class="mono">${p.losses}</td>
+        <td class="mono">${p.saves}</td>
+        <td class="mono">${p.ip.toFixed(1)}</td>
+        <td class="mono">${p.hits_allowed}</td>
+        <td class="mono">${p.er}</td>
+        <td class="mono">${p.bb}</td>
+        <td class="mono">${p.so}</td>
+        <td class="mono">${p.hr_allowed}</td>
+        <td class="mono" style="font-weight:600;">${p.era.toFixed(2)}</td>
+        <td class="mono">${p.whip.toFixed(2)}</td>
+      </tr>`;
+    });
+    html += '</tbody></table></div>';
+  } else {
+    html += '<div class="empty-state">No pitching stats yet. Advance the sim into the season (Apr-Sep) to see MiLB stats.</div>';
+  }
+
+  body.innerHTML = html;
+}
+
+
+// ============================================================
 // INIT
 // ============================================================
 async function init() {
@@ -5627,6 +5913,89 @@ async function init() {
       playIntro();
     }
   } catch (e) { playIntro(); }
+}
+
+// ============================================================
+// NEWS & MEDIA
+// ============================================================
+let newsFeedData = [];
+let newsFilter = 'all';
+
+async function loadNews(filter) {
+  newsFilter = filter || 'all';
+
+  // Update tab active states
+  document.querySelectorAll('[id^="news-tab-"]').forEach(t => t.classList.remove('active'));
+  const activeTab = document.getElementById('news-tab-' + newsFilter);
+  if (activeTab) activeTab.classList.add('active');
+
+  const feed = await api('/news/feed?limit=50') || [];
+  newsFeedData = feed;
+
+  const filtered = newsFilter === 'all' ? feed : feed.filter(f => f.type === newsFilter);
+
+  const el = document.getElementById('news-feed');
+  if (!filtered.length) {
+    el.innerHTML = '<div class="empty-state">No news yet. Advance the simulation to generate content.</div>';
+    return;
+  }
+
+  el.innerHTML = filtered.map(item => {
+    if (item.type === 'article') return renderArticleCard(item);
+    if (item.type === 'tv_segment') return renderTVCard(item);
+    if (item.type === 'podcast') return renderPodcastCard(item);
+    if (item.type === 'transaction') return renderTransactionCard(item);
+    return '';
+  }).join('');
+}
+
+function renderArticleCard(item) {
+  const sentimentIcon = item.sentiment === 'positive' ? '\u{1F4C8}' :
+                        item.sentiment === 'negative' ? '\u{1F4C9}' :
+                        item.sentiment === 'critical' ? '\u{1F525}' : '\u{1F4F0}';
+  return `<div class="news-card news-article">
+    <div class="news-card-header">
+      <span class="news-source">${sentimentIcon} ${item.source || 'News'}</span>
+      <span class="news-date">${item.date}</span>
+    </div>
+    <div class="news-headline">${item.headline}</div>
+    <div class="news-byline">By ${item.author}</div>
+    <div class="news-body">${item.body}</div>
+  </div>`;
+}
+
+function renderTVCard(item) {
+  return `<div class="news-card news-tv">
+    <div class="news-card-header">
+      <span class="news-network-badge">${item.source || 'ESPN'}</span>
+      <span class="news-date">${item.date}</span>
+    </div>
+    <div class="news-headline">${item.headline}</div>
+    <div class="news-byline">${item.author} \u2014 ${item.segment_type || 'Analysis'}</div>
+    <div class="news-body">${item.body}</div>
+  </div>`;
+}
+
+function renderPodcastCard(item) {
+  return `<div class="news-card news-podcast">
+    <div class="news-card-header">
+      <span class="news-source">\u{1F399}\uFE0F ${item.source}</span>
+      <span class="news-date">${item.date}</span>
+    </div>
+    <div class="news-headline">Episode ${item.episode || '?'}: ${item.headline}</div>
+    <div class="news-body news-podcast-preview">${item.body}</div>
+  </div>`;
+}
+
+function renderTransactionCard(item) {
+  return `<div class="news-card news-transaction">
+    <div class="news-card-header">
+      <span class="news-source">\u{1F4CB} ${item.source}</span>
+      <span class="news-date">${item.date}</span>
+    </div>
+    <div class="news-headline">${item.headline}</div>
+    <div class="news-body">${item.body}</div>
+  </div>`;
 }
 
 init();

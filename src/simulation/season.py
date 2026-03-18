@@ -923,6 +923,17 @@ def _generate_key_plays(game_result: dict, home_team_id: int, away_team_id: int)
                     "team_id": team_id,
                 })
 
+    # Bench usage events (pinch hitters and defensive substitutions)
+    bench_usage = game_result.get("bench_usage", {})
+    for side, team_id in [("home_subbed_out", home_team_id), ("away_subbed_out", away_team_id)]:
+        for sub in bench_usage.get(side, []):
+            key_plays.append({
+                "type": "SUBSTITUTION",
+                "player": sub["name"],
+                "team_id": team_id,
+                "description": f"{sub['name']} removed ({sub['position']})",
+            })
+
     return key_plays
 
 
@@ -1465,6 +1476,21 @@ def advance_date(days: int = 1, db_path: str = None) -> dict:
 
         # Detect transition from regular season to postseason
         if last_phase == "regular_season" and phase == "postseason":
+            # Evaluate GM performance at end of regular season
+            try:
+                from ..ai.owner_pressure import evaluate_gm_performance, check_firing
+                user_state = query("SELECT user_team_id FROM game_state WHERE id=1", db_path=db_path)
+                if user_state and user_state[0]["user_team_id"]:
+                    eval_result = evaluate_gm_performance(user_state[0]["user_team_id"], db_path)
+                    fire_check = check_firing(user_state[0]["user_team_id"], db_path)
+                    offseason_events.append({
+                        "type": "gm_evaluation",
+                        "evaluation": eval_result,
+                        "firing_status": fire_check
+                    })
+            except Exception as e:
+                offseason_events.append({"type": "gm_evaluation_error", "error": str(e)})
+
             # Calculate season awards at the end of regular season
             from .awards import calculate_season_awards
             try:
@@ -1519,6 +1545,13 @@ def advance_date(days: int = 1, db_path: str = None) -> dict:
             # Spring training: exhibition games (stats don't count)
             st_results = sim_spring_training_day(game_date, db_path)
             spring_training_results.extend(st_results)
+
+            # Simulate minor league games during spring training
+            from .minor_leagues import simulate_all_milb_day
+            try:
+                simulate_all_milb_day(game_date, season, db_path)
+            except Exception:
+                pass  # Don't let MiLB errors block main sim
         elif phase == "postseason":
             # Handle playoff advancement
             from .playoffs import advance_playoff_round, get_playoff_bracket, generate_playoff_bracket
@@ -1568,12 +1601,69 @@ def advance_date(days: int = 1, db_path: str = None) -> dict:
                 if trading_offers:
                     ai_trade_events.extend([{"type": "trading_block_offer", "offer": o} for o in trading_offers])
 
+                # Owner pressure messages on the 1st of each month
+                if game_date_obj.day == 1:
+                    try:
+                        from ..ai.owner_pressure import send_owner_pressure_messages
+                        user_state = query("SELECT user_team_id FROM game_state WHERE id=1", db_path=db_path)
+                        if user_state and user_state[0]["user_team_id"]:
+                            owner_msgs = send_owner_pressure_messages(
+                                user_state[0]["user_team_id"], game_date, db_path
+                            )
+                            if owner_msgs:
+                                offseason_events.extend([{"type": "owner_pressure", **m} for m in owner_msgs])
+                    except Exception:
+                        pass
+
+                # Minor league promotion checks on the 1st of each month
+                if game_date_obj.day == 1:
+                    try:
+                        from .minor_leagues import milb_promotions_check
+                        all_teams = query("SELECT id FROM teams", db_path=db_path)
+                        for t in all_teams:
+                            milb_promotions_check(t["id"], season, game_date, db_path)
+                    except Exception:
+                        pass
+
+            # Simulate minor league games during regular season
+            from .minor_leagues import simulate_all_milb_day
+            try:
+                simulate_all_milb_day(game_date, season, db_path)
+            except Exception:
+                pass  # Don't let MiLB errors block main sim
+
+            # Weekly podcast generation (every 7 days during regular season)
+            if phase == "regular_season" and game_date_obj.weekday() == 0:  # Mondays
+                try:
+                    from ..ai.podcast import should_generate_podcast, generate_weekly_podcast
+                    if should_generate_podcast(game_date, season, db_path):
+                        import asyncio
+                        try:
+                            loop = asyncio.get_event_loop()
+                            if loop.is_running():
+                                import concurrent.futures
+                                with concurrent.futures.ThreadPoolExecutor() as pool:
+                                    pool.submit(
+                                        asyncio.run,
+                                        generate_weekly_podcast(game_date, season, db_path)
+                                    ).result(timeout=60)
+                            else:
+                                loop.run_until_complete(
+                                    generate_weekly_podcast(game_date, season, db_path)
+                                )
+                        except RuntimeError:
+                            asyncio.run(
+                                generate_weekly_podcast(game_date, season, db_path)
+                            )
+                except Exception:
+                    pass  # Don't let podcast errors block sim
+
         last_phase = phase
 
     new_date = (current + timedelta(days=days)).isoformat()
     new_date_obj = current + timedelta(days=days)
     final_phase = _determine_phase(new_date_obj, season)
-    execute("UPDATE game_state SET current_date=?, phase=? WHERE id=1",
+    execute("UPDATE game_state SET current_date=?, phase=?, current_hour=8 WHERE id=1",
             (new_date, final_phase), db_path=db_path)
 
     result = {

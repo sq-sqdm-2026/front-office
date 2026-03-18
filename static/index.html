@@ -65,6 +65,9 @@
         <button class="nav-item" data-s="finances" onclick="showScreen('finances')">
           <span class="nav-icon">&#128176;</span> Finances
         </button>
+        <button class="nav-item" data-s="farm" onclick="showScreen('farm')">
+          <span class="nav-icon">&#127793;</span> Farm
+        </button>
       </div>
 
       <!-- League -->
@@ -101,6 +104,12 @@
         </button>
         <button class="nav-item" data-s="findplayers" onclick="showScreen('findplayers')">
           <span class="nav-icon">&#128269;</span> Find Players
+        </button>
+        <button class="nav-item" data-s="news" onclick="showScreen('news')">
+          <span class="nav-icon">&#128240;</span> News
+        </button>
+        <button class="nav-item" data-s="podcast" onclick="showScreen('podcast')">
+          <span class="nav-icon">&#127908;</span> Podcast
         </button>
         <button class="nav-item" data-s="messages" onclick="showScreen('messages')">
           <span class="nav-icon">&#128172;</span> Messages
@@ -395,10 +404,39 @@
         </div>
       </div>
 
+      <!-- PODCAST -->
+      <div id="s-podcast" class="content-screen">
+        <div class="section-bar">
+          <span class="section-title">The Front Office Podcast</span>
+          <button class="btn btn-sm" onclick="generatePodcast()">Generate Episode</button>
+        </div>
+        <div id="podcast-body"></div>
+      </div>
+
       <!-- MESSAGES -->
       <div id="s-messages" class="content-screen">
-        <div class="section-bar"><span class="section-title">Inbox</span></div>
-        <div id="msg-body"></div>
+        <div class="chat-app">
+          <!-- Left panel: contact list -->
+          <div class="chat-contacts" id="chat-contacts">
+            <div class="chat-contacts-header">
+              <span class="section-title">Messages</span>
+            </div>
+            <div class="chat-contact-list" id="chat-contact-list"></div>
+          </div>
+          <!-- Right panel: conversation -->
+          <div class="chat-conversation" id="chat-conversation">
+            <div class="chat-conv-header" id="chat-conv-header">
+              <span class="chat-conv-name">Select a conversation</span>
+            </div>
+            <div class="chat-messages" id="chat-messages">
+              <div class="empty-state">Select a contact to view messages</div>
+            </div>
+            <div class="chat-input-area" id="chat-input-area" style="display:none">
+              <input type="text" class="chat-input" id="chat-input" placeholder="Type a message..." />
+              <button class="chat-send-btn" id="chat-send-btn" onclick="sendChatMessage()">Send</button>
+            </div>
+          </div>
+        </div>
       </div>
 
       <!-- DRAFT -->
@@ -519,6 +557,34 @@
           <div class="section-title" style="margin-bottom: 8px;">Recent League Transactions</div>
           <div id="trans-league-log" style="border: 1px solid var(--border); border-radius: var(--radius-md); max-height: 400px; overflow-y: auto;"></div>
         </div>
+      </div>
+
+      <!-- NEWS & MEDIA -->
+      <div id="s-news" class="content-screen">
+        <div class="section-bar">
+          <span class="section-title">News & Media</span>
+          <div style="display:flex;gap:6px;">
+            <button class="tab-btn active" onclick="loadNews('all')" id="news-tab-all">All</button>
+            <button class="tab-btn" onclick="loadNews('article')" id="news-tab-article">Articles</button>
+            <button class="tab-btn" onclick="loadNews('tv_segment')" id="news-tab-tv">TV</button>
+            <button class="tab-btn" onclick="loadNews('podcast')" id="news-tab-podcast">Podcast</button>
+            <button class="tab-btn" onclick="loadNews('transaction')" id="news-tab-txn">Transactions</button>
+          </div>
+        </div>
+        <div id="news-feed"></div>
+      </div>
+
+      <!-- FARM SYSTEM -->
+      <div id="s-farm" class="content-screen">
+        <div class="section-bar">
+          <span class="section-title">Farm System</span>
+          <div style="display:flex;gap:6px;">
+            <button class="tab-btn active" id="farm-tab-AAA" onclick="loadFarm('AAA')">AAA</button>
+            <button class="tab-btn" id="farm-tab-AA" onclick="loadFarm('AA')">AA</button>
+            <button class="tab-btn" id="farm-tab-A" onclick="loadFarm('A')">Low-A</button>
+          </div>
+        </div>
+        <div id="farm-body"></div>
       </div>
 
     </main>

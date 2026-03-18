@@ -15,9 +15,13 @@ CREATE TABLE IF NOT EXISTS game_state (
     user_team_id INTEGER,
     difficulty TEXT NOT NULL DEFAULT 'manager',  -- fan, coach, manager, mogul
     scouting_mode TEXT NOT NULL DEFAULT 'traditional',  -- traditional, stat_based, variable
+    current_hour INTEGER NOT NULL DEFAULT 8,  -- Game hour: 8 AM to 11 PM (8-23)
     commissioner_mode INTEGER NOT NULL DEFAULT 0,  -- 0=off, 1=on
     stat_display_config_json TEXT DEFAULT NULL,  -- JSON: {batting: [...], pitching: [...]}
     rating_scale TEXT NOT NULL DEFAULT '20-80',  -- 20-80, 50-100, 1-20, 1-100, letter
+    auto_sim_enabled INTEGER NOT NULL DEFAULT 0,
+    auto_sim_speed INTEGER NOT NULL DEFAULT 120000,  -- ms between advances
+    auto_sim_last_tick TEXT DEFAULT NULL,  -- ISO timestamp of last tick
     FOREIGN KEY (user_team_id) REFERENCES teams(id)
 );
 
@@ -147,6 +151,11 @@ CREATE TABLE IF NOT EXISTS players (
     height_inches INTEGER DEFAULT NULL,  -- player height in inches for strike zone modeling
     -- Scouted ratings cache: JSON format {"season": 2026, "scouted": {"contact": 55, "power": 48, ...}, "mode": "traditional"}
     scouted_ratings_json TEXT DEFAULT NULL,
+    -- Player narrative / backstory fields
+    backstory TEXT DEFAULT NULL,  -- 3-5 sentence generated backstory
+    nickname TEXT DEFAULT NULL,  -- colorful player nickname
+    quirks TEXT DEFAULT NULL,  -- JSON array of personality quirks
+    origin_story TEXT DEFAULT NULL,  -- how they were discovered/drafted
     FOREIGN KEY (team_id) REFERENCES teams(id)
 );
 
@@ -635,6 +644,130 @@ CREATE INDEX IF NOT EXISTS idx_awards_type_league ON awards(award_type, league);
 CREATE INDEX IF NOT EXISTS idx_awards_player ON awards(player_id);
 
 -- ============================================================
+-- PODCAST EPISODES
+-- ============================================================
+CREATE TABLE IF NOT EXISTS podcast_episodes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    episode_number INTEGER NOT NULL,
+    game_date TEXT NOT NULL,  -- date of recording
+    title TEXT NOT NULL,
+    hosts TEXT NOT NULL,  -- JSON array of host names
+    script TEXT NOT NULL,  -- full podcast script
+    duration_estimate INTEGER NOT NULL DEFAULT 5,  -- estimated minutes
+    season INTEGER NOT NULL,
+    topics TEXT,  -- JSON array of topics covered
+    is_read INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_podcast_episodes_season ON podcast_episodes(season);
+CREATE INDEX IF NOT EXISTS idx_podcast_episodes_date ON podcast_episodes(game_date);
+
+-- ============================================================
+-- TV ANALYST CHARACTERS
+-- ============================================================
+CREATE TABLE IF NOT EXISTS tv_analysts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    network TEXT NOT NULL,  -- ESPN, MLB Network, Fox Sports, TBS, local
+    show_name TEXT,  -- "Baseball Tonight", "MLB Now", "Hot Stove", etc.
+    analyst_type TEXT NOT NULL DEFAULT 'commentator',  -- commentator, insider, hot_take_artist, stat_guru, former_player, former_gm
+    origin TEXT,  -- "Former GM of [Team]", "15-year MLB veteran", "Award-winning journalist"
+    personality TEXT NOT NULL DEFAULT 'balanced',  -- balanced, homer, contrarian, stat_nerd, old_school, provocateur
+    credibility INTEGER NOT NULL DEFAULT 60,  -- 1-100
+    hot_take_tendency REAL NOT NULL DEFAULT 0.3,  -- 0-1
+    favorite_team_id INTEGER,  -- bias toward a team
+    catchphrase TEXT,
+    is_active INTEGER NOT NULL DEFAULT 1,
+    FOREIGN KEY (favorite_team_id) REFERENCES teams(id)
+);
+
+-- TV SEGMENTS / HOT TAKES
+CREATE TABLE IF NOT EXISTS tv_segments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    analyst_id INTEGER NOT NULL,
+    game_date TEXT NOT NULL,
+    segment_type TEXT NOT NULL,  -- hot_take, trade_grade, power_rankings, player_spotlight, weekly_recap, debate
+    headline TEXT NOT NULL,
+    content TEXT NOT NULL,
+    is_read INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (analyst_id) REFERENCES tv_analysts(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_tv_segments_date ON tv_segments(game_date);
+CREATE INDEX IF NOT EXISTS idx_tv_segments_analyst ON tv_segments(analyst_id);
+CREATE INDEX IF NOT EXISTS idx_tv_analysts_active ON tv_analysts(is_active);
+
+-- ============================================================
+-- MINOR LEAGUE STANDINGS
+-- ============================================================
+CREATE TABLE IF NOT EXISTS milb_standings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    team_id INTEGER NOT NULL,
+    level TEXT NOT NULL,  -- AAA, AA, A
+    season INTEGER NOT NULL,
+    wins INTEGER NOT NULL DEFAULT 0,
+    losses INTEGER NOT NULL DEFAULT 0,
+    runs_scored INTEGER NOT NULL DEFAULT 0,
+    runs_allowed INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY (team_id) REFERENCES teams(id),
+    UNIQUE(team_id, level, season)
+);
+
+-- MINOR LEAGUE BATTING STATS
+CREATE TABLE IF NOT EXISTS milb_batting_stats (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    player_id INTEGER NOT NULL,
+    team_id INTEGER NOT NULL,
+    level TEXT NOT NULL,
+    season INTEGER NOT NULL,
+    games INTEGER NOT NULL DEFAULT 0,
+    ab INTEGER NOT NULL DEFAULT 0,
+    hits INTEGER NOT NULL DEFAULT 0,
+    doubles INTEGER NOT NULL DEFAULT 0,
+    triples INTEGER NOT NULL DEFAULT 0,
+    hr INTEGER NOT NULL DEFAULT 0,
+    rbi INTEGER NOT NULL DEFAULT 0,
+    bb INTEGER NOT NULL DEFAULT 0,
+    so INTEGER NOT NULL DEFAULT 0,
+    sb INTEGER NOT NULL DEFAULT 0,
+    cs INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY (player_id) REFERENCES players(id),
+    FOREIGN KEY (team_id) REFERENCES teams(id),
+    UNIQUE(player_id, level, season)
+);
+
+-- MINOR LEAGUE PITCHING STATS
+CREATE TABLE IF NOT EXISTS milb_pitching_stats (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    player_id INTEGER NOT NULL,
+    team_id INTEGER NOT NULL,
+    level TEXT NOT NULL,
+    season INTEGER NOT NULL,
+    games INTEGER NOT NULL DEFAULT 0,
+    games_started INTEGER NOT NULL DEFAULT 0,
+    wins INTEGER NOT NULL DEFAULT 0,
+    losses INTEGER NOT NULL DEFAULT 0,
+    saves INTEGER NOT NULL DEFAULT 0,
+    ip_outs INTEGER NOT NULL DEFAULT 0,
+    hits_allowed INTEGER NOT NULL DEFAULT 0,
+    er INTEGER NOT NULL DEFAULT 0,
+    bb INTEGER NOT NULL DEFAULT 0,
+    so INTEGER NOT NULL DEFAULT 0,
+    hr_allowed INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY (player_id) REFERENCES players(id),
+    FOREIGN KEY (team_id) REFERENCES teams(id),
+    UNIQUE(player_id, level, season)
+);
+
+CREATE INDEX IF NOT EXISTS idx_milb_standings_team ON milb_standings(team_id, season);
+CREATE INDEX IF NOT EXISTS idx_milb_batting_stats_player ON milb_batting_stats(player_id, season);
+CREATE INDEX IF NOT EXISTS idx_milb_batting_stats_team ON milb_batting_stats(team_id, level, season);
+CREATE INDEX IF NOT EXISTS idx_milb_pitching_stats_player ON milb_pitching_stats(player_id, season);
+CREATE INDEX IF NOT EXISTS idx_milb_pitching_stats_team ON milb_pitching_stats(team_id, level, season);
+
+-- ============================================================
 -- PLAYER STRATEGY (per-player tactical settings)
 -- ============================================================
 CREATE TABLE IF NOT EXISTS player_strategy (
@@ -673,6 +806,36 @@ CREATE INDEX IF NOT EXISTS idx_matchup_stats_batter ON matchup_stats(batter_id, 
 CREATE INDEX IF NOT EXISTS idx_matchup_stats_pitcher ON matchup_stats(pitcher_id, season);
 
 -- ============================================================
+-- PLAYER AGENTS (negotiation personalities)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS agent_characters (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    agency_name TEXT,
+    personality TEXT NOT NULL DEFAULT 'collaborative',  -- aggressive, collaborative, passive, shark, player_first
+    negotiation_style TEXT NOT NULL DEFAULT 'fair',  -- hardball, fair, flexible, theatrical
+    greed_factor REAL NOT NULL DEFAULT 1.0,  -- multiplier on salary demands (0.8 = discount, 1.3 = premium)
+    loyalty_to_client REAL NOT NULL DEFAULT 0.7,  -- 0-1, how much they push for client wishes vs money
+    market_knowledge INTEGER NOT NULL DEFAULT 70,  -- 1-100, how well they know player values
+    bluff_tendency REAL NOT NULL DEFAULT 0.3,  -- 0-1, how often they bluff about other offers
+    patience INTEGER NOT NULL DEFAULT 50,  -- 1-100, how long they'll wait for better offers
+    reputation INTEGER NOT NULL DEFAULT 50,  -- 1-100, league-wide reputation
+    num_clients INTEGER NOT NULL DEFAULT 0,
+    notable_deals TEXT DEFAULT NULL,  -- JSON array of past deal highlights
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Link players to their agents
+CREATE TABLE IF NOT EXISTS player_agents (
+    player_id INTEGER PRIMARY KEY,
+    agent_id INTEGER NOT NULL,
+    FOREIGN KEY (player_id) REFERENCES players(id),
+    FOREIGN KEY (agent_id) REFERENCES agent_characters(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_player_agents_agent ON player_agents(agent_id);
+
+-- ============================================================
 -- PITCH LOG (per-pitch tracking data)
 -- ============================================================
 CREATE TABLE IF NOT EXISTS pitch_log (
@@ -701,4 +864,78 @@ CREATE TABLE IF NOT EXISTS pitch_log (
 CREATE INDEX IF NOT EXISTS idx_pitch_log_pitcher ON pitch_log(pitcher_id, season);
 CREATE INDEX IF NOT EXISTS idx_pitch_log_batter ON pitch_log(batter_id, season);
 CREATE INDEX IF NOT EXISTS idx_pitch_log_game ON pitch_log(game_id);
+
+-- ============================================================
+-- OWNER OBJECTIVES & JOB SECURITY
+-- ============================================================
+CREATE TABLE IF NOT EXISTS owner_objectives (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    team_id INTEGER NOT NULL,
+    season INTEGER NOT NULL,
+    objective_type TEXT NOT NULL,  -- win_division, make_playoffs, rebuild, cut_payroll, develop_prospects, win_ws
+    target_value TEXT,  -- e.g., "90" for 90 wins, "$150M" for payroll target
+    priority INTEGER NOT NULL DEFAULT 1,  -- 1=critical, 2=important, 3=nice-to-have
+    status TEXT NOT NULL DEFAULT 'active',  -- active, met, failed
+    FOREIGN KEY (team_id) REFERENCES teams(id)
+);
+
+CREATE TABLE IF NOT EXISTS gm_job_security (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    team_id INTEGER NOT NULL,
+    security_score INTEGER NOT NULL DEFAULT 70,  -- 0-100, below 20 = fired
+    owner_patience INTEGER NOT NULL DEFAULT 50,  -- 0-100
+    consecutive_losing_seasons INTEGER NOT NULL DEFAULT 0,
+    playoff_appearances INTEGER NOT NULL DEFAULT 0,
+    owner_mood TEXT NOT NULL DEFAULT 'neutral',  -- elated, happy, neutral, concerned, angry, furious
+    last_evaluation_date TEXT,
+    warnings_given INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY (team_id) REFERENCES teams(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_owner_objectives_team ON owner_objectives(team_id, season);
+CREATE INDEX IF NOT EXISTS idx_owner_objectives_status ON owner_objectives(status);
+
+-- ============================================================
+-- SEASON HISTORY (multi-season franchise tracking)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS season_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    team_id INTEGER NOT NULL,
+    season INTEGER NOT NULL,
+    wins INTEGER NOT NULL DEFAULT 0,
+    losses INTEGER NOT NULL DEFAULT 0,
+    playoff_result TEXT,  -- none, wc_loss, ds_loss, lcs_loss, ws_loss, ws_win
+    division_finish INTEGER,  -- 1-5
+    payroll INTEGER,
+    attendance INTEGER,
+    mvp_name TEXT,
+    cy_young_name TEXT,
+    notable_events TEXT,  -- JSON array
+    gm_rating INTEGER,  -- end-of-season GM performance rating
+    FOREIGN KEY (team_id) REFERENCES teams(id),
+    UNIQUE(team_id, season)
+);
+
+CREATE INDEX IF NOT EXISTS idx_season_history_team ON season_history(team_id);
+CREATE INDEX IF NOT EXISTS idx_season_history_season ON season_history(season);
+
+-- ============================================================
+-- COACHING STAFF
+-- ============================================================
+CREATE TABLE IF NOT EXISTS coaching_staff (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    team_id INTEGER NOT NULL,
+    role TEXT NOT NULL,  -- manager, hitting_coach, pitching_coach, bench_coach, bullpen_coach, first_base_coach, third_base_coach, development_coordinator
+    first_name TEXT NOT NULL,
+    last_name TEXT NOT NULL,
+    age INTEGER NOT NULL DEFAULT 50,
+    experience INTEGER NOT NULL DEFAULT 5,  -- years of coaching experience
+    skill_rating INTEGER NOT NULL DEFAULT 50,  -- 1-100 coaching ability
+    philosophy TEXT DEFAULT 'balanced',  -- aggressive, balanced, conservative, analytics
+    specialty TEXT DEFAULT NULL,  -- player_development, game_strategy, pitching_mechanics, hitting_approach
+    salary INTEGER NOT NULL DEFAULT 1000000,
+    contract_years INTEGER NOT NULL DEFAULT 2,
+    is_available INTEGER NOT NULL DEFAULT 0,  -- 1 = free agent coach
+    FOREIGN KEY (team_id) REFERENCES teams(id)
+);
 """

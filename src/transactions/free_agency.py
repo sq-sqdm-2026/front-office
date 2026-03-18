@@ -165,9 +165,29 @@ def _calculate_market_value(player: dict, db_path: str = None) -> dict:
     if db_path is not None:
         perf_mult = _get_performance_adjustment(player, db_path)
 
+    # --- Personality adjustment (greed & ego) ---
+    greed = player.get("greed", 50) or 50
+    ego = player.get("ego", 50) or 50
+
+    # Greed affects salary demands
+    if greed > 70:
+        # Greedy players demand 10-25% more (scaled linearly from 70-100)
+        greed_salary_mult = 1.10 + (greed - 70) / 30 * 0.15
+    elif greed < 40:
+        # Generous/team-friendly players accept 5-15% less (scaled from 40-0)
+        greed_salary_mult = 0.95 - (40 - greed) / 40 * 0.10
+    else:
+        greed_salary_mult = 1.0
+
+    # High ego demands longer contracts (players want commitment / respect)
+    if ego > 70:
+        ego_years_bonus = 1 if ego > 85 else (1 if random.random() < 0.5 else 0)
+    else:
+        ego_years_bonus = 0
+
     # --- Compute final values ---
-    salary = int(base_salary * age_salary_mult * pos_salary_mult * perf_mult)
-    years = max(1, int(base_years * age_years_mult * pos_years_mult))
+    salary = int(base_salary * age_salary_mult * pos_salary_mult * perf_mult * greed_salary_mult)
+    years = max(1, int(base_years * age_years_mult * pos_years_mult) + ego_years_bonus)
 
     # Cap years for old players
     if age >= 34:
@@ -389,6 +409,126 @@ def sign_free_agent(player_id: int, team_id: int, salary: int, years: int,
             "salary": salary, "years": years, "details": details}
 
 
+def _calculate_non_money_attraction(player: dict, team_id: int, conn,
+                                    db_path: str = None) -> float:
+    """
+    Calculate non-money attraction factors for a free agent toward a team.
+    Returns a modifier between -0.30 and +0.40 that adjusts signing probability.
+
+    Factors:
+    - Playing time: penalty if team already has a star at the position
+    - Friends on team: bonus for existing friendships
+    - Team chemistry: high-chemistry teams are more attractive
+    - Winning: teams with winning records attract FAs
+    - Market size: big-market teams get a small bonus
+    - Loyalty: players with high loyalty prefer re-signing with previous team
+    """
+    modifier = 0.0
+    position = player.get("position", "")
+    player_id = player["id"]
+
+    # --- Playing time: check if team has a high-rated player at same position ---
+    try:
+        incumbent = conn.execute("""
+            SELECT contact_rating, power_rating, stuff_rating, control_rating,
+                   speed_rating, fielding_rating, position
+            FROM players
+            WHERE team_id = ? AND position = ? AND roster_status = 'active'
+            ORDER BY (contact_rating + power_rating + stuff_rating + control_rating) DESC
+            LIMIT 1
+        """, (team_id, position)).fetchone()
+
+        if incumbent:
+            inc_dict = dict(incumbent)
+            inc_overall = _calculate_overall(inc_dict)
+            player_overall = _calculate_overall(player)
+            if inc_overall >= 65 and inc_overall >= player_overall:
+                # Star incumbent — reduced playing time likelihood
+                modifier -= random.uniform(0.10, 0.20)
+    except Exception:
+        pass
+
+    # --- Friends on team ---
+    try:
+        friend_count = conn.execute("""
+            SELECT COUNT(*) as cnt FROM player_relationships pr
+            JOIN players p ON (
+                (pr.player_id_1 = ? AND pr.player_id_2 = p.id) OR
+                (pr.player_id_2 = ? AND pr.player_id_1 = p.id)
+            )
+            WHERE pr.relationship_type = 'friend'
+            AND p.team_id = ?
+        """, (player_id, player_id, team_id)).fetchone()["cnt"]
+        if friend_count > 0:
+            # 10-15% bonus, capped at 3 friends contributing
+            modifier += min(friend_count, 3) * random.uniform(0.033, 0.05)
+    except Exception:
+        pass
+
+    # --- Team chemistry ---
+    try:
+        from ..simulation.chemistry import calculate_team_chemistry
+        chem = calculate_team_chemistry(team_id, db_path=db_path)
+        team_chem = chem.get("overall", 50) if isinstance(chem, dict) else 50
+        if team_chem > 70:
+            modifier += random.uniform(0.05, 0.10)
+        elif team_chem < 30:
+            modifier -= random.uniform(0.03, 0.07)
+    except Exception:
+        pass
+
+    # --- Winning record ---
+    try:
+        record = conn.execute(
+            "SELECT wins, losses FROM teams WHERE id = ?", (team_id,)
+        ).fetchone()
+        if record:
+            total_games = (record["wins"] or 0) + (record["losses"] or 0)
+            if total_games > 0:
+                win_pct = record["wins"] / total_games
+                if win_pct >= 0.550:
+                    modifier += random.uniform(0.05, 0.10)
+                elif win_pct < 0.400:
+                    modifier -= random.uniform(0.03, 0.07)
+    except Exception:
+        pass
+
+    # --- Market size ---
+    try:
+        team_info = conn.execute(
+            "SELECT market_size FROM teams WHERE id = ?", (team_id,)
+        ).fetchone()
+        if team_info:
+            mkt = team_info["market_size"] or 3
+            if mkt >= 5:
+                modifier += random.uniform(0.03, 0.06)
+            elif mkt >= 4:
+                modifier += random.uniform(0.01, 0.03)
+            elif mkt <= 1:
+                modifier -= random.uniform(0.01, 0.03)
+    except Exception:
+        pass
+
+    # --- Loyalty: prefer re-signing with previous team ---
+    try:
+        loyalty = player.get("loyalty", 50) or 50
+        if loyalty > 60:
+            # Check if this team was the player's most recent team
+            prev_contract = conn.execute("""
+                SELECT team_id FROM contracts
+                WHERE player_id = ?
+                ORDER BY signed_date DESC LIMIT 1
+            """, (player_id,)).fetchone()
+            if prev_contract and prev_contract["team_id"] == team_id:
+                # Loyalty bonus: up to 15% for very loyal players
+                loyalty_bonus = 0.15 * ((loyalty - 60) / 40)
+                modifier += max(0.05, loyalty_bonus)
+    except Exception:
+        pass
+
+    return max(-0.30, min(0.40, modifier))
+
+
 def _initialize_bidding(fa: dict, offseason_day: int, db_path: str = None) -> dict:
     """Set up initial bidding state for a free agent if not already tracked."""
     player_id = fa["id"]
@@ -576,13 +716,30 @@ def process_free_agency_day(game_date: str, offseason_day: int = 0,
                         "years": existing_offer["years"],
                     })
 
-        # --- Phase 3: Check if player should sign ---
+        # --- Phase 3: Check if player should sign (with non-money factors) ---
         if not bidding["offers"]:
             continue
 
-        should_sign = False
-        best_team_id = max(bidding["offers"], key=lambda t: bidding["offers"][t]["salary"])
+        # Score each offer: salary weight + non-money attraction factors
+        offer_scores = {}
+        for tid, offer in bidding["offers"].items():
+            # Salary score: normalized to asking price
+            salary_score = offer["salary"] / max(1, effective_asking)
+            # Non-money factors for this team
+            attraction = _calculate_non_money_attraction(
+                fa_dict, tid, conn, db_path=db_path
+            )
+            # Combined score: salary is primary (70%), non-money is secondary (30%)
+            offer_scores[tid] = salary_score * 0.70 + (1.0 + attraction) * 0.30
+
+        # Pick the best overall offer (not just highest salary)
+        best_team_id = max(offer_scores, key=lambda t: offer_scores[t])
         best_offer = bidding["offers"][best_team_id]
+        best_attraction = _calculate_non_money_attraction(
+            fa_dict, best_team_id, conn, db_path=db_path
+        )
+
+        should_sign = False
 
         # Condition 1: Only 1 bidder remains and they've been on market 3+ days
         if len(bidding["offers"]) == 1 and bidding["days_on_market"] >= 3:
@@ -590,13 +747,21 @@ def process_free_agency_day(game_date: str, offseason_day: int = 0,
 
         # Condition 2: After 7+ days of bidding
         if bidding["days_on_market"] >= 7 and len(bidding["offers"]) >= 1:
-            sign_chance = 0.20 + (bidding["days_on_market"] - 7) * 0.10
-            if random.random() < min(sign_chance, 0.80):
+            # Non-money attraction can accelerate or delay signing
+            sign_chance = 0.20 + (bidding["days_on_market"] - 7) * 0.10 + best_attraction * 0.15
+            if random.random() < min(max(sign_chance, 0.05), 0.85):
                 should_sign = True
 
         # Condition 3: Offer exceeds 120% of asking price
         if best_offer["salary"] > effective_asking * 1.20:
             should_sign = True
+
+        # Condition 4: Offer below asking but strong non-money attraction
+        if (best_offer["salary"] >= effective_asking * 0.90
+                and best_attraction >= 0.20
+                and bidding["days_on_market"] >= 5):
+            if random.random() < 0.40 + best_attraction:
+                should_sign = True
 
         # Don't sign too early in the offseason (wait until day 14 minimum)
         if offseason_day < 14 and not (best_offer["salary"] > effective_asking * 1.30):

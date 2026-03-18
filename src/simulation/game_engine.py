@@ -1383,6 +1383,71 @@ def _should_pinch_hit(lineup: list[BatterStats], current_batter_idx: int,
     return False
 
 
+def _select_best_pinch_hitter(bench: list[BatterStats],
+                               batter: BatterStats,
+                               opposing_pitcher: PitcherStats = None) -> BatterStats:
+    """Select the best pinch hitter from the bench, considering L/R matchups.
+
+    If the current batter has a same-hand disadvantage vs the pitcher,
+    prefer an opposite-hand bench bat. Otherwise pick the strongest overall.
+    """
+    if not bench:
+        return None
+
+    # Check if we should prefer a platoon advantage
+    if opposing_pitcher:
+        pitcher_hand = opposing_pitcher.throws
+        batter_hand = batter.bats
+        same_hand = ((pitcher_hand == "R" and batter_hand == "R") or
+                     (pitcher_hand == "L" and batter_hand == "L"))
+        if same_hand:
+            # Filter to opposite-hand bench bats
+            platoon_options = [
+                b for b in bench
+                if ((pitcher_hand == "R" and b.bats in ("L", "S")) or
+                    (pitcher_hand == "L" and b.bats in ("R", "S")))
+            ]
+            if platoon_options:
+                return max(platoon_options, key=lambda b: b.contact + b.power)
+
+    # No platoon advantage available or not relevant — pick best overall
+    return max(bench, key=lambda b: b.contact + b.power)
+
+
+def _reposition_after_pinch_hit(lineup: list[BatterStats], ph_slot: int):
+    """After a pinch hitter enters, check if they should swap defensive positions.
+
+    If the PH is a poor fielder (fielding < 40) at a demanding position
+    (C, SS, 2B, CF), move them to an easier position (LF, RF, 1B, DH)
+    by swapping with a lineup player at that easier position.
+    """
+    ph = lineup[ph_slot]
+    DEMANDING_POSITIONS = {"C", "SS", "2B", "CF", "3B"}
+    EASY_POSITIONS = {"DH", "LF", "RF", "1B"}
+
+    if ph.position not in DEMANDING_POSITIONS:
+        return  # Already at an easy position
+    if ph.fielding >= 40:
+        return  # Adequate fielder, no swap needed
+
+    # Find a lineup player at an easy position with better fielding
+    best_swap = None
+    best_swap_idx = None
+    for i, b in enumerate(lineup[:9]):
+        if i == ph_slot:
+            continue
+        if b.position in EASY_POSITIONS and b.fielding > ph.fielding:
+            if best_swap is None or b.fielding > best_swap.fielding:
+                best_swap = b
+                best_swap_idx = i
+
+    if best_swap_idx is not None:
+        # Swap positions (not lineup slots — they keep their batting order)
+        old_ph_pos = ph.position
+        ph.position = best_swap.position
+        best_swap.position = old_ph_pos
+
+
 def _should_make_defensive_substitution(lineup: list[BatterStats], inning: int,
                                        score_diff: int, team_ahead: bool,
                                        bench: list[BatterStats] = None) -> tuple:
@@ -1753,10 +1818,14 @@ def simulate_game(home_lineup: list[BatterStats], away_lineup: list[BatterStats]
         while outs < 3:
             batter = away_lineup[away_batter_idx % len(away_lineup)]
 
-            # Skip substituted players
-            if batter.player_id in away_substituted:
+            # Skip substituted players (safety limit to prevent infinite loop)
+            _skip_count = 0
+            while batter.player_id in away_substituted and _skip_count < 18:
                 away_batter_idx += 1
-                continue
+                _skip_count += 1
+                batter = away_lineup[away_batter_idx % len(away_lineup)]
+            if _skip_count >= 18:
+                break  # Safety: all batters substituted (shouldn't happen)
 
             # Pinch-hit check: replace weak hitters in high-leverage late-inning spots
             available_bench = [b for b in away_bench
@@ -1766,7 +1835,8 @@ def simulate_game(home_lineup: list[BatterStats], away_lineup: list[BatterStats]
                                   bench=available_bench,
                                   opposing_pitcher=current_home_pitcher):
                 if available_bench:
-                    ph = max(available_bench, key=lambda b: b.contact + b.power)
+                    ph = _select_best_pinch_hitter(
+                        available_bench, batter, current_home_pitcher)
                     # Permanently remove original batter and insert pinch hitter
                     lineup_slot = away_batter_idx % len(away_lineup)
                     away_substituted.add(batter.player_id)
@@ -1775,6 +1845,11 @@ def simulate_game(home_lineup: list[BatterStats], away_lineup: list[BatterStats]
                     ph.position = batter.position
                     away_lineup[lineup_slot] = ph
                     away_bench.remove(ph)
+                    # Reposition if PH is a poor fielder at a demanding position
+                    _reposition_after_pinch_hit(away_lineup, lineup_slot)
+                    if detailed_log:
+                        play_by_play.append(
+                            f"T{inning}: PH {ph.name} batting for {batter.name}")
                     batter = ph
 
             # Stolen base attempt
@@ -1793,6 +1868,12 @@ def simulate_game(home_lineup: list[BatterStats], away_lineup: list[BatterStats]
             # Intentional walk consideration
             next_batter_idx = (away_batter_idx + 1) % len(away_lineup)
             next_batter = away_lineup[next_batter_idx]
+            # Skip substituted players when finding the on-deck batter
+            _ibb_skip = 0
+            while next_batter.player_id in away_substituted and _ibb_skip < 9:
+                next_batter_idx = (next_batter_idx + 1) % len(away_lineup)
+                next_batter = away_lineup[next_batter_idx]
+                _ibb_skip += 1
             intentional_walk = _attempt_intentional_walk(bases, outs, batter, next_batter, away_ibb_threshold)
 
             # Sac bunt attempt (lower priority than other strategies)
@@ -2084,12 +2165,18 @@ def simulate_game(home_lineup: list[BatterStats], away_lineup: list[BatterStats]
                         # Swap: new pitcher takes the weak hitter's batting slot,
                         # weak hitter moves to the old pitcher slot
                         old_pitcher_slot = home_pitcher_batting_idx
+                        swapped_player = home_lineup[swap_idx]
                         # Move weak hitter to pitcher's old slot
-                        home_lineup[old_pitcher_slot] = home_lineup[swap_idx]
+                        home_lineup[old_pitcher_slot] = swapped_player
                         # Put new pitcher-as-batter in weak hitter's slot
                         home_lineup[swap_idx] = _pitcher_as_batter(
                             current_home_pitcher, swap_idx + 1)
                         home_pitcher_batting_idx = swap_idx
+                        if detailed_log:
+                            play_by_play.append(
+                                f"T{inning}: DOUBLE SWITCH — {current_home_pitcher.name} "
+                                f"enters batting {swap_idx + 1}th, "
+                                f"{swapped_player.name} moves to {old_pitcher_slot + 1}th")
                     else:
                         # No double switch — just update pitcher in his batting slot
                         home_lineup[home_pitcher_batting_idx] = _pitcher_as_batter(
@@ -2117,6 +2204,12 @@ def simulate_game(home_lineup: list[BatterStats], away_lineup: list[BatterStats]
             new_player.position = old_player.position
             away_lineup[def_lineup_idx] = new_player
             away_bench.remove(new_player)
+            # Reposition if the defensive sub is poor at the inherited position
+            _reposition_after_pinch_hit(away_lineup, def_lineup_idx)
+            if detailed_log:
+                play_by_play.append(
+                    f"T{inning}: DEF SUB {new_player.name} replaces "
+                    f"{old_player.name} ({old_player.position})")
 
         # ============================================================
         # BOTTOM OF INNING (home bats vs away pitcher)
@@ -2132,10 +2225,14 @@ def simulate_game(home_lineup: list[BatterStats], away_lineup: list[BatterStats]
         while outs < 3:
             batter = home_lineup[home_batter_idx % len(home_lineup)]
 
-            # Skip substituted players
-            if batter.player_id in home_substituted:
+            # Skip substituted players (safety limit to prevent infinite loop)
+            _skip_count = 0
+            while batter.player_id in home_substituted and _skip_count < 18:
                 home_batter_idx += 1
-                continue
+                _skip_count += 1
+                batter = home_lineup[home_batter_idx % len(home_lineup)]
+            if _skip_count >= 18:
+                break  # Safety: all batters substituted (shouldn't happen)
 
             # Pinch-hit check for home team
             available_bench = [b for b in home_bench
@@ -2145,7 +2242,8 @@ def simulate_game(home_lineup: list[BatterStats], away_lineup: list[BatterStats]
                                   bench=available_bench,
                                   opposing_pitcher=current_away_pitcher):
                 if available_bench:
-                    ph = max(available_bench, key=lambda b: b.contact + b.power)
+                    ph = _select_best_pinch_hitter(
+                        available_bench, batter, current_away_pitcher)
                     # Permanently remove original batter and insert pinch hitter
                     lineup_slot = home_batter_idx % len(home_lineup)
                     home_substituted.add(batter.player_id)
@@ -2154,6 +2252,11 @@ def simulate_game(home_lineup: list[BatterStats], away_lineup: list[BatterStats]
                     ph.position = batter.position
                     home_lineup[lineup_slot] = ph
                     home_bench.remove(ph)
+                    # Reposition if PH is a poor fielder at a demanding position
+                    _reposition_after_pinch_hit(home_lineup, lineup_slot)
+                    if detailed_log:
+                        play_by_play.append(
+                            f"B{inning}: PH {ph.name} batting for {batter.name}")
                     batter = ph
 
             sb_attempt, sb_success, sb_outs = _attempt_stolen_base(
@@ -2171,6 +2274,12 @@ def simulate_game(home_lineup: list[BatterStats], away_lineup: list[BatterStats]
             # Intentional walk consideration
             next_batter_idx = (home_batter_idx + 1) % len(home_lineup)
             next_batter = home_lineup[next_batter_idx]
+            # Skip substituted players when finding the on-deck batter
+            _ibb_skip = 0
+            while next_batter.player_id in home_substituted and _ibb_skip < 9:
+                next_batter_idx = (next_batter_idx + 1) % len(home_lineup)
+                next_batter = home_lineup[next_batter_idx]
+                _ibb_skip += 1
             intentional_walk = _attempt_intentional_walk(bases, outs, batter, next_batter, home_ibb_threshold)
 
             # Sac bunt attempt
@@ -2454,10 +2563,16 @@ def simulate_game(home_lineup: list[BatterStats], away_lineup: list[BatterStats]
                         away_lineup, away_pitcher_batting_idx, away_batter_idx)
                     if swap_idx >= 0:
                         old_pitcher_slot = away_pitcher_batting_idx
-                        away_lineup[old_pitcher_slot] = away_lineup[swap_idx]
+                        swapped_player = away_lineup[swap_idx]
+                        away_lineup[old_pitcher_slot] = swapped_player
                         away_lineup[swap_idx] = _pitcher_as_batter(
                             current_away_pitcher, swap_idx + 1)
                         away_pitcher_batting_idx = swap_idx
+                        if detailed_log:
+                            play_by_play.append(
+                                f"B{inning}: DOUBLE SWITCH — {current_away_pitcher.name} "
+                                f"enters batting {swap_idx + 1}th, "
+                                f"{swapped_player.name} moves to {old_pitcher_slot + 1}th")
                     else:
                         away_lineup[away_pitcher_batting_idx] = _pitcher_as_batter(
                             current_away_pitcher, away_pitcher_batting_idx + 1)
@@ -2481,6 +2596,12 @@ def simulate_game(home_lineup: list[BatterStats], away_lineup: list[BatterStats]
             new_player.position = old_player.position
             home_lineup[def_lineup_idx] = new_player
             home_bench.remove(new_player)
+            # Reposition if the defensive sub is poor at the inherited position
+            _reposition_after_pinch_hit(home_lineup, def_lineup_idx)
+            if detailed_log:
+                play_by_play.append(
+                    f"B{inning}: DEF SUB {new_player.name} replaces "
+                    f"{old_player.name} ({old_player.position})")
 
         if inning >= 9 and home_score != away_score:
             break
@@ -2492,6 +2613,24 @@ def simulate_game(home_lineup: list[BatterStats], away_lineup: list[BatterStats]
     # Include substituted-out players in lineups so their stats get saved
     all_home_lineup = home_lineup + home_removed_players
     all_away_lineup = away_lineup + away_removed_players
+
+    # Build bench usage summary for box score display
+    home_bench_used = [
+        {"player_id": b.player_id, "name": b.name, "position": b.position}
+        for b in home_removed_players
+    ]
+    away_bench_used = [
+        {"player_id": b.player_id, "name": b.name, "position": b.position}
+        for b in away_removed_players
+    ]
+    home_bench_remaining = [
+        {"player_id": b.player_id, "name": b.name, "position": b.position}
+        for b in home_bench
+    ]
+    away_bench_remaining = [
+        {"player_id": b.player_id, "name": b.name, "position": b.position}
+        for b in away_bench
+    ]
 
     # Build matchup stats from pitch log entries
     # Group by (batter_id, pitcher_id) and determine at-bat outcomes
@@ -2539,6 +2678,12 @@ def simulate_game(home_lineup: list[BatterStats], away_lineup: list[BatterStats]
         "pitch_log": pitch_log_entries,
         "matchup_data": matchup_data,
         "final_win_expectancy": final_we,
+        "bench_usage": {
+            "home_subbed_out": home_bench_used,
+            "away_subbed_out": away_bench_used,
+            "home_bench_remaining": home_bench_remaining,
+            "away_bench_remaining": away_bench_remaining,
+        },
     }
 
 
