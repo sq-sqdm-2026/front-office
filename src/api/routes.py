@@ -670,6 +670,27 @@ async def trade_execute(trade: TradeProposal):
     return result
 
 
+@app.post("/trade/accept/{message_id}")
+async def accept_ai_trade(message_id: int):
+    """Accept a trade offer from an AI team (via message inbox)."""
+    from ..transactions.ai_trades import accept_trade_offer
+    return accept_trade_offer(message_id)
+
+
+@app.post("/trade/decline/{message_id}")
+async def decline_ai_trade(message_id: int):
+    """Decline a trade offer from an AI team (via message inbox)."""
+    from ..transactions.ai_trades import decline_trade_offer
+    return decline_trade_offer(message_id)
+
+
+@app.get("/trade-history")
+async def trade_history(season: int = None):
+    """Get all completed trades for a season with formatted descriptions."""
+    from ..transactions.ai_trades import get_trade_history
+    return get_trade_history(season)
+
+
 # ============================================================
 # FREE AGENTS
 # ============================================================
@@ -1255,6 +1276,18 @@ async def roster_release(player_id: int):
     return release_player(player_id)
 
 
+class ExtensionRequest(BaseModel):
+    years: int
+    annual_salary: int
+
+
+@app.post("/player/{player_id}/extend")
+async def offer_player_extension(player_id: int, req: ExtensionRequest):
+    """Offer a contract extension to a player."""
+    from ..transactions.contracts import offer_extension
+    return offer_extension(player_id, req.years, req.annual_salary)
+
+
 @app.get("/waivers")
 async def get_waiver_wire():
     """Get all players currently on waivers (pending claims)."""
@@ -1351,6 +1384,21 @@ async def get_recent_transactions(limit: int = Query(default=50, le=200)):
         try:
             details = _json.loads(t.get("details_json", "{}"))
             entry["details"] = details.get("player_name", details.get("action", ""))
+            # For trades, include the full description
+            if t.get("transaction_type") == "trade":
+                entry["trade_description"] = details.get("description", "")
+                entry["players_to_team1"] = details.get("players_to_proposing_names",
+                                                         details.get("players_to_proposing", []))
+                entry["players_to_team2"] = details.get("players_to_receiving_names",
+                                                         details.get("players_to_receiving", []))
+                # Get team2 info for trades
+                if t.get("team2_id"):
+                    t2 = query("SELECT city, name, abbreviation FROM teams WHERE id=?",
+                              (t["team2_id"],))
+                    if t2:
+                        entry["team2_city"] = t2[0]["city"]
+                        entry["team2_name"] = t2[0]["name"]
+                        entry["team2_abbreviation"] = t2[0]["abbreviation"]
         except (ValueError, TypeError):
             entry["details"] = ""
         results.append(entry)
@@ -2017,6 +2065,7 @@ async def all_pitchers_stats(
         "first_name", "position",
         "games", "games_started", "wins", "losses", "saves", "holds", "ip_outs",
         "hits_allowed", "runs_allowed", "er", "bb", "so", "hr_allowed",
+        "complete_games", "shutouts", "quality_starts",
         "era", "whip", "k9", "bb9", "k_bb",
         "stuff_rating", "control_rating", "stamina_rating"
     }
@@ -2064,6 +2113,7 @@ async def all_pitchers_stats(
             t.abbreviation,
             ps.games, ps.games_started, ps.wins, ps.losses, ps.saves, ps.holds,
             ps.ip_outs, ps.hits_allowed, ps.runs_allowed, ps.er, ps.bb, ps.so, ps.hr_allowed,
+            ps.complete_games, ps.shutouts, ps.quality_starts,
             CASE WHEN ps.ip_outs > 0 THEN ROUND(9.0 * ps.er / (ps.ip_outs / 3.0), 2) ELSE 0 END as era,
             CASE WHEN ps.ip_outs > 0 THEN ROUND((ps.hits_allowed + ps.bb) / (ps.ip_outs / 3.0), 2) ELSE 0 END as whip,
             CASE WHEN ps.ip_outs > 0 THEN ROUND(9.0 * ps.so / (ps.ip_outs / 3.0), 2) ELSE 0 END as k9,
@@ -2168,69 +2218,89 @@ async def auto_generate_lineup(team_id: int):
     if not roster:
         raise HTTPException(400, "No active players found")
 
-    # Generate batting lineup
+    # Generate batting lineup with position constraints
     hitters = [p for p in roster if p["position"] not in ("SP", "RP")]
     if not hitters:
         raise HTTPException(400, "No position players found")
 
-    # Calculate overall hitting value
     def hitting_value(p):
-        contact = p.get("contact_rating") or 50
-        power = p.get("power_rating") or 50
-        speed = p.get("speed_rating") or 50
-        return (contact * 1.2) + (power * 1.0) + (speed * 0.3)
+        return (p.get("contact_rating") or 50) + (p.get("power_rating") or 50)
 
-    hitters_sorted = sorted(hitters, key=hitting_value, reverse=True)
+    def fielding_value(p):
+        return (p.get("fielding_rating") or 50) * 2 + hitting_value(p)
 
-    # Create optimal lineup (9 spots)
+    def speed_field(p):
+        return (p.get("speed_rating") or 50) + (p.get("fielding_rating") or 50)
+
+    # Fill one player per defensive position
+    FIELD_POS = ["C", "1B", "2B", "SS", "3B", "LF", "CF", "RF"]
+    FALLBACKS = {
+        "C": [], "1B": ["3B", "LF", "RF", "DH"],
+        "2B": ["SS", "3B"], "SS": ["2B", "3B"],
+        "3B": ["SS", "2B", "1B"],
+        "LF": ["CF", "RF"], "CF": ["LF", "RF"], "RF": ["LF", "CF"],
+    }
+    POS_SCORE = {
+        "C": fielding_value, "1B": hitting_value, "2B": fielding_value,
+        "SS": fielding_value, "3B": fielding_value,
+        "LF": hitting_value, "CF": speed_field, "RF": hitting_value,
+    }
+
+    used_ids = set()
+    starters = {}  # pos -> player dict
+
+    for pos in FIELD_POS:
+        candidates = [h for h in hitters if h["position"] == pos and h["id"] not in used_ids]
+        if not candidates:
+            for fb in FALLBACKS.get(pos, []):
+                candidates = [h for h in hitters if h["position"] == fb and h["id"] not in used_ids]
+                if candidates:
+                    break
+        if candidates:
+            candidates.sort(key=POS_SCORE.get(pos, hitting_value), reverse=True)
+            starters[pos] = candidates[0]
+            used_ids.add(candidates[0]["id"])
+
+    # DH: best remaining hitter
+    remaining = [h for h in hitters if h["id"] not in used_ids]
+    remaining.sort(key=hitting_value, reverse=True)
+    if remaining:
+        starters["DH"] = remaining[0]
+        used_ids.add(remaining[0]["id"])
+
+    # Build batting order intelligently
+    starter_list = list(starters.items())  # (pos, player)
+    available = list(starter_list)
+    ordered = []
+
+    def pick_best(score_fn):
+        nonlocal available
+        if not available:
+            return None
+        available.sort(key=lambda x: score_fn(x[1]), reverse=True)
+        return available.pop(0)
+
+    def obp(p): return (p.get("speed_rating") or 0) * 0.5 + (p.get("contact_rating") or 0)
+    def contact(p): return p.get("contact_rating") or 0
+    def balanced(p): return (p.get("contact_rating") or 0) * 0.6 + (p.get("power_rating") or 0) * 0.6
+    def power(p): return p.get("power_rating") or 0
+
+    ordered.append(pick_best(obp))      # 1: leadoff
+    ordered.append(pick_best(contact))   # 2: contact
+    ordered.append(pick_best(balanced))  # 3: balanced
+    ordered.append(pick_best(power))     # 4: cleanup
+    ordered.append(pick_best(power))     # 5: power
+    while available:
+        ordered.append(pick_best(hitting_value))  # 6-9
+
+    ordered = [x for x in ordered if x is not None]
+
     batting_lineup = []
-
-    # Slot 1: Highest contact + speed (leadoff)
-    if hitters_sorted:
-        batting_lineup.append({
-            "player_id": hitters_sorted[0]["id"],
-            "batting_order": 1,
-            "position": hitters_sorted[0]["position"]
-        })
-
-    # Slot 2: 2nd highest contact (contact hitter)
-    if len(hitters_sorted) > 1:
-        batting_lineup.append({
-            "player_id": hitters_sorted[1]["id"],
-            "batting_order": 2,
-            "position": hitters_sorted[1]["position"]
-        })
-
-    # Slot 3: Best overall (contact + power)
-    if len(hitters_sorted) > 2:
-        batting_lineup.append({
-            "player_id": hitters_sorted[2]["id"],
-            "batting_order": 3,
-            "position": hitters_sorted[2]["position"]
-        })
-
-    # Slot 4: Best power hitter (cleanup)
-    if len(hitters_sorted) > 3:
-        batting_lineup.append({
-            "player_id": hitters_sorted[3]["id"],
-            "batting_order": 4,
-            "position": hitters_sorted[3]["position"]
-        })
-
-    # Slot 5: 2nd best power
-    if len(hitters_sorted) > 4:
-        batting_lineup.append({
-            "player_id": hitters_sorted[4]["id"],
-            "batting_order": 5,
-            "position": hitters_sorted[4]["position"]
-        })
-
-    # Slots 6-9: Fill remaining by overall value
-    for idx, p in enumerate(hitters_sorted[5:9], start=6):
+    for i, (pos, p) in enumerate(ordered):
         batting_lineup.append({
             "player_id": p["id"],
-            "batting_order": idx,
-            "position": p["position"]
+            "batting_order": i + 1,
+            "position": pos
         })
 
     # Generate rotation
@@ -2572,6 +2642,104 @@ async def get_depth_chart(team_id: int):
                     depth_chart[sec_pos].append(entry_copy)
 
     return depth_chart
+
+
+# ============================================================
+# SAVE / LOAD GAME
+# ============================================================
+@app.get("/saves")
+async def list_saves():
+    """List all saved game slots."""
+    import os
+    from datetime import datetime
+    saves_dir = Path(__file__).parent.parent.parent / "saves"
+    saves_dir.mkdir(exist_ok=True)
+    saves = []
+    for f in sorted(saves_dir.glob("*.db")):
+        stat = f.stat()
+        # Read game state from save file to show date/season
+        try:
+            import sqlite3
+            conn = sqlite3.connect(str(f))
+            conn.row_factory = sqlite3.Row
+            row = conn.execute("SELECT current_date, season, phase, user_team_id FROM game_state WHERE id=1").fetchone()
+            conn.close()
+            save_info = {
+                "name": f.stem,
+                "file_size_mb": round(stat.st_size / 1024 / 1024, 1),
+                "modified": datetime.fromtimestamp(stat.st_mtime).isoformat(),
+                "game_date": row["current_date"] if row else None,
+                "season": row["season"] if row else None,
+                "phase": row["phase"] if row else None,
+            }
+        except Exception:
+            save_info = {
+                "name": f.stem,
+                "file_size_mb": round(stat.st_size / 1024 / 1024, 1),
+                "modified": datetime.fromtimestamp(stat.st_mtime).isoformat(),
+            }
+        saves.append(save_info)
+    return saves
+
+
+class SaveGameRequest(BaseModel):
+    name: str
+
+
+@app.post("/saves/save")
+async def save_game(req: SaveGameRequest):
+    """Save current game state to a named slot."""
+    import shutil
+    import re
+    name = re.sub(r'[^a-zA-Z0-9_\-]', '_', req.name.strip())
+    if not name:
+        raise HTTPException(400, "Save name required")
+
+    db_path = Path(__file__).parent.parent.parent / "front_office.db"
+    saves_dir = Path(__file__).parent.parent.parent / "saves"
+    saves_dir.mkdir(exist_ok=True)
+    save_path = saves_dir / f"{name}.db"
+
+    # Close any WAL transactions first
+    conn = get_connection()
+    conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    conn.close()
+
+    shutil.copy2(str(db_path), str(save_path))
+    return {"saved": name, "path": str(save_path)}
+
+
+@app.post("/saves/load")
+async def load_game(req: SaveGameRequest):
+    """Load game state from a named save slot."""
+    import shutil
+    name = req.name.strip()
+    saves_dir = Path(__file__).parent.parent.parent / "saves"
+    save_path = saves_dir / f"{name}.db"
+
+    if not save_path.exists():
+        raise HTTPException(404, f"Save '{name}' not found")
+
+    db_path = Path(__file__).parent.parent.parent / "front_office.db"
+
+    # Close any WAL transactions on current DB
+    conn = get_connection()
+    conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    conn.close()
+
+    shutil.copy2(str(save_path), str(db_path))
+    return {"loaded": name}
+
+
+@app.delete("/saves/{name}")
+async def delete_save(name: str):
+    """Delete a saved game slot."""
+    saves_dir = Path(__file__).parent.parent.parent / "saves"
+    save_path = saves_dir / f"{name}.db"
+    if not save_path.exists():
+        raise HTTPException(404, f"Save '{name}' not found")
+    save_path.unlink()
+    return {"deleted": name}
 
 
 # ============================================================

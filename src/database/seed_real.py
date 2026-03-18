@@ -13,6 +13,116 @@ from .seed import (GM_FIRST, GM_LAST, OWNER_FIRST, OWNER_LAST,
 
 CACHE_PATH = Path(__file__).parent.parent.parent / "mlb_cache.json"
 
+# Realistic 26-man active roster slots
+ROSTER_SLOTS = {
+    # Position players (13)
+    "C": 2, "1B": 1, "2B": 1, "SS": 1, "3B": 1,
+    "LF": 2, "CF": 1, "RF": 1, "DH": 1,
+    # Utility spots filled by best remaining IF/OF
+}
+# Total position players = 13 (11 above + 1 utility IF + 1 utility OF)
+PITCHER_SLOTS = {"SP": 5, "RP": 8}  # 8 RP includes 1 closer
+
+
+def _assign_realistic_rosters(conn, team_ids):
+    """After all players are inserted as minors_aaa, promote 26 to active
+    with a realistic position distribution: 13 position players + 13 pitchers."""
+
+    for team_id in team_ids:
+        all_players = conn.execute(
+            "SELECT id, position, contact_rating, power_rating, speed_rating, "
+            "fielding_rating, arm_rating, stuff_rating, control_rating, stamina_rating "
+            "FROM players WHERE team_id=?",
+            (team_id,)
+        ).fetchall()
+
+        promoted_ids = set()
+
+        # Helper to pick best available player at a position
+        def pick_best(position, key_fn, count=1):
+            candidates = [p for p in all_players
+                          if p["position"] == position and p["id"] not in promoted_ids]
+            candidates.sort(key=key_fn, reverse=True)
+            picked = []
+            for c in candidates[:count]:
+                promoted_ids.add(c["id"])
+                picked.append(c)
+            return picked
+
+        # Helper for hitting value
+        def hitting_val(p):
+            return (p["contact_rating"] or 0) + (p["power_rating"] or 0)
+
+        def fielding_val(p):
+            return (p["fielding_rating"] or 0) * 2 + hitting_val(p)
+
+        def pitching_val(p):
+            return (p["stuff_rating"] or 0) + (p["control_rating"] or 0)
+
+        # Fill required position player slots
+        pick_best("C", fielding_val, 2)
+        pick_best("1B", hitting_val, 1)
+        pick_best("2B", fielding_val, 1)
+        pick_best("SS", fielding_val, 1)
+        pick_best("3B", fielding_val, 1)
+        pick_best("LF", hitting_val, 2)
+        pick_best("CF", lambda p: (p["speed_rating"] or 0) + (p["fielding_rating"] or 0), 1)
+        pick_best("RF", hitting_val, 1)
+        pick_best("DH", hitting_val, 1)
+
+        # Utility IF: best remaining IF (2B/SS/3B/1B)
+        util_if = [p for p in all_players
+                   if p["position"] in ("2B", "SS", "3B", "1B") and p["id"] not in promoted_ids]
+        util_if.sort(key=hitting_val, reverse=True)
+        if util_if:
+            promoted_ids.add(util_if[0]["id"])
+
+        # Utility OF: best remaining OF (LF/CF/RF)
+        util_of = [p for p in all_players
+                   if p["position"] in ("LF", "CF", "RF") and p["id"] not in promoted_ids]
+        util_of.sort(key=hitting_val, reverse=True)
+        if util_of:
+            promoted_ids.add(util_of[0]["id"])
+
+        # Now we should have 13 position players (or fewer if team lacks depth)
+        pos_count = len(promoted_ids)
+
+        # Fill pitcher slots: 5 SP + 8 RP
+        pick_best("SP", pitching_val, 5)
+        pick_best("RP", pitching_val, 8)
+
+        pitcher_count = len(promoted_ids) - pos_count
+
+        # If we don't have enough RPs, convert extra SPs
+        if pitcher_count < 13:
+            remaining_sp = [p for p in all_players
+                            if p["position"] == "SP" and p["id"] not in promoted_ids]
+            remaining_sp.sort(key=pitching_val, reverse=True)
+            needed = 13 - pitcher_count
+            for sp in remaining_sp[:needed]:
+                promoted_ids.add(sp["id"])
+
+        # If we still don't have 26, fill with best remaining players
+        while len(promoted_ids) < 26:
+            remaining = [p for p in all_players if p["id"] not in promoted_ids]
+            if not remaining:
+                break
+            remaining.sort(key=lambda p: hitting_val(p) + pitching_val(p), reverse=True)
+            promoted_ids.add(remaining[0]["id"])
+
+        # Update roster statuses
+        if promoted_ids:
+            placeholders = ",".join("?" * len(promoted_ids))
+            conn.execute(
+                f"UPDATE players SET roster_status='active' WHERE id IN ({placeholders})",
+                list(promoted_ids)
+            )
+
+        # Remaining players stay as minors_aaa (already set)
+        active_count = len(promoted_ids)
+        total = len(all_players)
+        print(f"  Team {team_id}: {active_count} active, {total - active_count} minors")
+
 
 def seed_real_database(db_path: str = None):
     """Seed the database with real MLB data from cache."""
@@ -60,7 +170,7 @@ def seed_real_database(db_path: str = None):
         team_ids.append(cursor.lastrowid)
         team_abbrs.append(t["abbr"])
 
-    # Insert real players
+    # Insert real players (all as minors_aaa initially, then assign rosters)
     total_players = 0
     for i, (team_id, abbr) in enumerate(zip(team_ids, team_abbrs)):
         roster = players_data.get(abbr, [])
@@ -73,16 +183,8 @@ def seed_real_database(db_path: str = None):
             contract_years = p.get("contract_years", 1)
             ntc = p.get("ntc", 0)
 
-            # Determine roster status
-            roster_status = p.get("roster_status", "active")
-            if total_players > 0:
-                # Keep first 26 per team as active, rest as minors
-                team_player_count = conn.execute(
-                    "SELECT COUNT(*) as c FROM players WHERE team_id=? AND roster_status='active'",
-                    (team_id,)).fetchone()["c"]
-                is_pitcher = p["position"] in ("SP", "RP")
-                if team_player_count >= 26:
-                    roster_status = "minors_aaa"
+            # Insert all as minors_aaa; we'll assign proper rosters below
+            roster_status = "minors_aaa"
 
             cursor = conn.execute("""
                 INSERT INTO players (team_id, first_name, last_name, age, birth_country,
@@ -186,6 +288,10 @@ def seed_real_database(db_path: str = None):
             total_players += 1
 
         print(f"  {abbr}: {len(roster)} real players loaded")
+
+    # Assign proper roster slots per team (13 position players + 13 pitchers = 26 active)
+    print("Assigning realistic roster compositions...")
+    _assign_realistic_rosters(conn, team_ids)
 
     # Insert GM characters
     random.shuffle(GM_FIRST)

@@ -87,6 +87,22 @@ def migrate_add_broadcast_stadium_columns(db_path: str = None):
     conn.close()
 
 
+def migrate_add_player_development_columns(db_path: str = None):
+    """Add is_bust and is_late_bloomer columns for non-linear development."""
+    conn = get_connection(db_path)
+    cursor = conn.cursor()
+    cursor.execute("PRAGMA table_info(players)")
+    columns = {row[1] for row in cursor.fetchall()}
+
+    if "is_bust" not in columns:
+        conn.execute("ALTER TABLE players ADD COLUMN is_bust INTEGER NOT NULL DEFAULT 0")
+    if "is_late_bloomer" not in columns:
+        conn.execute("ALTER TABLE players ADD COLUMN is_late_bloomer INTEGER NOT NULL DEFAULT 0")
+
+    conn.commit()
+    conn.close()
+
+
 def query(sql: str, params: tuple = (), db_path: str = None) -> list[dict]:
     conn = get_connection(db_path)
     rows = conn.execute(sql, params).fetchall()

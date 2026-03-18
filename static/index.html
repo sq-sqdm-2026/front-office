@@ -568,6 +568,15 @@
         </div>
 
         <div style="margin-bottom: 16px; padding: 16px; border: 1px solid var(--border); border-radius: var(--radius-md);">
+          <div style="font-weight: 600; font-size: 14px; margin-bottom: 12px;">Save / Load Game</div>
+          <div style="display: flex; gap: 8px; margin-bottom: 12px;">
+            <input type="text" id="save-name-input" placeholder="Save name..." style="flex:1; padding:6px 10px; border:1px solid var(--border); border-radius:var(--radius-sm); background:var(--bg-hover); color:var(--text-primary); font-size:13px;">
+            <button class="btn btn-sm btn-primary" onclick="saveGame()">Save</button>
+          </div>
+          <div id="saves-list" style="font-size: 12px; color: var(--text-secondary);">Loading saves...</div>
+        </div>
+
+        <div style="margin-bottom: 16px; padding: 16px; border: 1px solid var(--border); border-radius: var(--radius-md);">
           <div style="font-weight: 600; font-size: 14px; margin-bottom: 12px;">Stat Columns</div>
           <div style="display: flex; gap: 8px;">
             <button class="btn btn-sm" onclick="openColumnPickerModal('batting')">Batting Columns</button>

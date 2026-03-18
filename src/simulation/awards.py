@@ -97,18 +97,26 @@ def _calculate_mvp(league: str, season: int, db_path=None) -> list:
     if not batters:
         return []
 
-    # Calculate MVP score for each batter
+    # Calculate MVP score using WAR-proxy (wOBA-based)
     candidates = []
     for b in batters:
-        # WAR proxy: (hits + bb + hbp) * 0.5 + hr * 1.5 + rbi * 0.3 + sb * 0.3 + runs * 0.3 - so * 0.1
-        mvp_score = (
-            (b["hits"] + b["bb"] + b["hbp"]) * 0.5 +
-            b["hr"] * 1.5 +
-            b["rbi"] * 0.3 +
-            b["sb"] * 0.3 +
-            b["runs"] * 0.3 -
-            b["so"] * 0.1
-        )
+        ab = max(1, b["ab"])
+        pa = ab + b["bb"] + b["hbp"] + b.get("sf", 0)
+        singles = b["hits"] - b["doubles"] - b["triples"] - b["hr"]
+
+        # wOBA-style weighted on-base: weights from FanGraphs
+        woba = (b["bb"] * 0.69 + b["hbp"] * 0.72 + singles * 0.88 +
+                b["doubles"] * 1.27 + b["triples"] * 1.62 + b["hr"] * 2.10) / max(1, pa)
+
+        # WAR proxy = wOBA-based runs above average + baserunning + position
+        batting_runs = (woba - 0.320) * pa * 1.2  # runs above average
+        baserunning = b["sb"] * 0.2 - b.get("cs", 0) * 0.4
+        # Position adjustment (C/SS/CF get bonus, 1B/DH get penalty)
+        pos = b.get("position", "")
+        pos_adj = {"C": 10, "SS": 7, "CF": 3, "2B": 3, "3B": 2,
+                   "RF": -2, "LF": -5, "1B": -10, "DH": -15}.get(pos, 0)
+
+        mvp_score = batting_runs + baserunning + pos_adj
 
         # Get team wins for this player's team
         team_wins = query("""
@@ -185,16 +193,16 @@ def _calculate_cy_young(league: str, season: int, db_path=None) -> list:
         if p["games_started"] == 0 and ip < 50:
             continue  # Reliever minimum: 50 IP
 
-        # Cy Young formula: wins * 5 + so * 0.5 - er * 2 + saves * 3 + (ip_outs/3) * 0.5 - bb * 0.3 - hr_allowed * 1.5
-        cy_score = (
-            p["wins"] * 5 +
-            p["so"] * 0.5 -
-            p["er"] * 2 +
-            p["saves"] * 3 +
-            (p["ip_outs"] / 3.0) * 0.5 -
-            p["bb"] * 0.3 -
-            p["hr_allowed"] * 1.5
-        )
+        # Cy Young: FIP-based WAR proxy
+        # FIP = (13*HR + 3*BB - 2*SO) / IP + constant(~3.10)
+        fip = ((13 * p["hr_allowed"] + 3 * p["bb"] - 2 * p["so"]) / max(1, ip)) + 3.10
+        # WAR proxy from FIP: lower FIP = more WAR
+        fip_war = max(0, (4.50 - fip) * ip / 9.0)
+        # Wins bonus (voters still care about wins)
+        win_bonus = p["wins"] * 0.8
+        # Save bonus for closers
+        save_bonus = p["saves"] * 0.5
+        cy_score = fip_war * 10 + win_bonus + save_bonus
 
         candidates.append({
             "player_id": p["player_id"],

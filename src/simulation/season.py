@@ -65,6 +65,55 @@ def get_standings(season: int = None, db_path: str = None) -> dict:
         """, (season, t["id"]), db_path=db_path)[0]["ra"]
 
         pct = wins / max(1, wins + losses)
+
+        # --- L10: last 10 games record ---
+        last_10_games = query("""
+            SELECT
+                CASE
+                    WHEN (home_team_id=? AND home_score > away_score)
+                      OR (away_team_id=? AND away_score > home_score)
+                    THEN 'W' ELSE 'L'
+                END as result
+            FROM schedule
+            WHERE season=? AND is_played=1 AND (home_team_id=? OR away_team_id=?)
+            ORDER BY game_date DESC
+            LIMIT 10
+        """, (t["id"], t["id"], season, t["id"], t["id"]), db_path=db_path)
+
+        l10_wins = sum(1 for g in last_10_games if g["result"] == "W")
+        l10_losses = len(last_10_games) - l10_wins
+
+        # --- Streak: current W/L streak ---
+        recent_games = query("""
+            SELECT
+                CASE
+                    WHEN (home_team_id=? AND home_score > away_score)
+                      OR (away_team_id=? AND away_score > home_score)
+                    THEN 'W' ELSE 'L'
+                END as result
+            FROM schedule
+            WHERE season=? AND is_played=1 AND (home_team_id=? OR away_team_id=?)
+            ORDER BY game_date DESC
+        """, (t["id"], t["id"], season, t["id"], t["id"]), db_path=db_path)
+
+        streak = ""
+        if recent_games:
+            streak_type = recent_games[0]["result"]
+            streak_count = 0
+            for g in recent_games:
+                if g["result"] == streak_type:
+                    streak_count += 1
+                else:
+                    break
+            streak = f"{streak_type}{streak_count}"
+
+        # --- Games remaining ---
+        games_remaining = query("""
+            SELECT COUNT(*) as cnt FROM schedule
+            WHERE season=? AND is_played=0 AND is_postseason=0
+            AND (home_team_id=? OR away_team_id=?)
+        """, (season, t["id"], t["id"]), db_path=db_path)[0]["cnt"]
+
         standings[div_key].append({
             "team_id": t["id"],
             "city": t["city"],
@@ -76,17 +125,190 @@ def get_standings(season: int = None, db_path: str = None) -> dict:
             "runs_scored": rs_home + rs_away,
             "runs_allowed": ra_home + ra_away,
             "diff": (rs_home + rs_away) - (ra_home + ra_away),
+            "l10_wins": l10_wins,
+            "l10_losses": l10_losses,
+            "streak": streak,
+            "games_remaining": games_remaining,
         })
 
-    # Sort each division by win pct, calculate GB
+    # Sort each division by win pct, then run differential as tiebreaker
     for div_key in standings:
-        standings[div_key].sort(key=lambda x: (-x["pct"], -x["wins"]))
+        standings[div_key].sort(key=lambda x: (-x["pct"], -x["wins"], -x["diff"]))
         if standings[div_key]:
             leader = standings[div_key][0]
             for t in standings[div_key]:
                 t["gb"] = ((leader["wins"] - t["wins"]) + (t["losses"] - leader["losses"])) / 2
 
+        # --- Magic number & clinched ---
+        if len(standings[div_key]) >= 2:
+            leader = standings[div_key][0]
+            second = standings[div_key][1]
+            # Magic number = 2nd place games remaining + 1 - (leader wins - 2nd place wins)
+            magic = second["games_remaining"] + 1 - (leader["wins"] - second["wins"])
+            leader["magic_number"] = max(0, magic)
+            leader["clinched"] = magic <= 0
+            # Other teams: no magic number (they are chasing)
+            for t in standings[div_key][1:]:
+                t["magic_number"] = None
+                t["clinched"] = False
+        else:
+            for t in standings[div_key]:
+                t["magic_number"] = None
+                t["clinched"] = False
+
     return standings
+
+
+def _fill_position_lineup(batters_data, opposing_pitcher_throws=None):
+    """Build a position-constrained lineup from available batters.
+
+    Returns (starters, bench) where starters is a list of 9 players with
+    one player per defensive position, and bench is the rest.
+    """
+    # Defensive positions to fill (one each)
+    FIELD_POSITIONS = ["C", "1B", "2B", "SS", "3B", "LF", "CF", "RF"]
+
+    # Fallback mappings: if no player at a position, try these alternatives
+    POSITION_FALLBACKS = {
+        "C": [],
+        "1B": ["3B", "LF", "RF", "DH"],
+        "2B": ["SS", "3B"],
+        "SS": ["2B", "3B"],
+        "3B": ["SS", "2B", "1B"],
+        "LF": ["CF", "RF"],
+        "CF": ["LF", "RF"],
+        "RF": ["LF", "CF"],
+    }
+
+    def _platoon_bonus(b):
+        bonus = 0
+        if opposing_pitcher_throws:
+            bats = b["bats"]
+            if bats == "S":
+                bonus += 3
+            elif (opposing_pitcher_throws == "L" and bats == "R") or \
+                 (opposing_pitcher_throws == "R" and bats == "L"):
+                bonus += 5
+            elif (opposing_pitcher_throws == "L" and bats == "L") or \
+                 (opposing_pitcher_throws == "R" and bats == "R"):
+                bonus -= 3
+            if b.get("platoon_split_json"):
+                try:
+                    splits = json.loads(b["platoon_split_json"])
+                    key = "vs_lhp" if opposing_pitcher_throws == "L" else "vs_rhp"
+                    if key in splits:
+                        bonus += splits[key].get("contact", 0) * 0.3 + splits[key].get("power", 0) * 0.2
+                except:
+                    pass
+        return bonus
+
+    def _fielding_score(b):
+        return (b["fielding_rating"] or 0) + _platoon_bonus(b)
+
+    def _hitting_score(b):
+        return (b["contact_rating"] or 0) + (b["power_rating"] or 0) + _platoon_bonus(b)
+
+    def _cf_score(b):
+        return (b["speed_rating"] or 0) + (b["fielding_rating"] or 0) + _platoon_bonus(b)
+
+    used_ids = set()
+    starters = {}  # position -> player
+
+    # Score function per position
+    pos_scoring = {
+        "C": _fielding_score,
+        "1B": _hitting_score,
+        "2B": _fielding_score,
+        "SS": _fielding_score,
+        "3B": _fielding_score,
+        "LF": _hitting_score,
+        "CF": _cf_score,
+        "RF": _hitting_score,
+    }
+
+    # Fill each defensive position with best player at that position
+    for pos in FIELD_POSITIONS:
+        score_fn = pos_scoring[pos]
+        candidates = [b for b in batters_data if b["position"] == pos and b["id"] not in used_ids]
+        if not candidates:
+            # Try fallbacks
+            for fallback_pos in POSITION_FALLBACKS.get(pos, []):
+                candidates = [b for b in batters_data if b["position"] == fallback_pos and b["id"] not in used_ids]
+                if candidates:
+                    break
+        if candidates:
+            candidates.sort(key=score_fn, reverse=True)
+            best = candidates[0]
+            starters[pos] = best
+            used_ids.add(best["id"])
+
+    # DH: best remaining hitter not in the field
+    remaining = [b for b in batters_data if b["id"] not in used_ids]
+    remaining.sort(key=_hitting_score, reverse=True)
+    if remaining:
+        starters["DH"] = remaining[0]
+        used_ids.add(remaining[0]["id"])
+
+    # If we have fewer than 9 starters (position gaps), fill with best remaining
+    while len(starters) < 9 and remaining:
+        remaining = [b for b in batters_data if b["id"] not in used_ids]
+        if not remaining:
+            break
+        remaining.sort(key=_hitting_score, reverse=True)
+        # Assign to a made-up utility slot
+        starters[f"UTIL{len(starters)}"] = remaining[0]
+        used_ids.add(remaining[0]["id"])
+
+    # Build batting order intelligently
+    starter_list = list(starters.items())  # (position, player) pairs
+
+    def _obp_score(b):
+        return (b["speed_rating"] or 0) * 0.5 + (b["contact_rating"] or 0) * 1.0 + _platoon_bonus(b)
+
+    def _contact_score(b):
+        return (b["contact_rating"] or 0) + _platoon_bonus(b)
+
+    def _balanced_score(b):
+        return (b["contact_rating"] or 0) * 0.6 + (b["power_rating"] or 0) * 0.6 + _platoon_bonus(b)
+
+    def _power_score(b):
+        return (b["power_rating"] or 0) + _platoon_bonus(b)
+
+    def _overall_score(b):
+        return (b["contact_rating"] or 0) + (b["power_rating"] or 0) + (b["speed_rating"] or 0) * 0.3 + _platoon_bonus(b)
+
+    # Sort candidates for each batting order slot
+    available = list(starter_list)
+    ordered = []
+
+    def _pick_best(scoring_fn):
+        nonlocal available
+        if not available:
+            return None
+        available.sort(key=lambda x: scoring_fn(x[1]), reverse=True)
+        pick = available.pop(0)
+        return pick
+
+    # 1st: leadoff - highest OBP (speed + contact)
+    ordered.append(_pick_best(_obp_score))
+    # 2nd: best contact
+    ordered.append(_pick_best(_contact_score))
+    # 3rd: best balanced
+    ordered.append(_pick_best(_balanced_score))
+    # 4th: cleanup - highest power
+    ordered.append(_pick_best(_power_score))
+    # 5th: second highest power
+    ordered.append(_pick_best(_power_score))
+    # 6th-9th: remaining by overall descending
+    while available:
+        ordered.append(_pick_best(_overall_score))
+
+    # Filter out None entries
+    ordered = [x for x in ordered if x is not None]
+
+    bench = [b for b in batters_data if b["id"] not in used_ids]
+
+    return ordered, bench
 
 
 def _load_team_lineup(team_id: int, db_path: str = None, opposing_pitcher_throws: str = None) -> tuple:
@@ -112,43 +334,35 @@ def _load_team_lineup(team_id: int, db_path: str = None, opposing_pitcher_throws
         ORDER BY p.position ASC, p.stuff_rating + p.control_rating DESC
     """, (team_id,), db_path=db_path)
 
-    # Auto-platoon: sort batters to favor opposite-hand hitters vs opposing pitcher
-    def _platoon_value(b):
-        base = b["speed_rating"] * 0.3 + b["contact_rating"] * 0.7
-        if opposing_pitcher_throws:
-            bats = b["bats"]
-            # Switch hitters get a small bonus vs anyone
-            if bats == "S":
-                base += 3
-            # Opposite hand gets platoon advantage
-            elif (opposing_pitcher_throws == "L" and bats == "R") or \
-                 (opposing_pitcher_throws == "R" and bats == "L"):
-                base += 5
-            # Same hand gets slight penalty
-            elif (opposing_pitcher_throws == "L" and bats == "L") or \
-                 (opposing_pitcher_throws == "R" and bats == "R"):
-                base -= 3
-            # Factor in platoon split data if available
-            if b.get("platoon_split_json"):
-                try:
-                    splits = json.loads(b["platoon_split_json"])
-                    key = "vs_lhp" if opposing_pitcher_throws == "L" else "vs_rhp"
-                    if key in splits:
-                        base += splits[key].get("contact", 0) * 0.3 + splits[key].get("power", 0) * 0.2
-                except:
-                    pass
-        return base
+    # Build position-constrained lineup
+    ordered_starters, bench = _fill_position_lineup(
+        batters_data, opposing_pitcher_throws
+    )
 
-    sorted_batters = sorted(batters_data, key=_platoon_value, reverse=True)
-
-    # Build batting order
+    # Build batting order from position-constrained starters, then bench
     lineup = []
-    for i, b in enumerate(sorted_batters[:9]):
+    for i, (pos, b) in enumerate(ordered_starters):
+        lineup.append(BatterStats(
+            player_id=b["id"],
+            name=f"{b['first_name']} {b['last_name']}",
+            position=pos if not pos.startswith("UTIL") else b["position"],
+            batting_order=i + 1,
+            bats=b["bats"],
+            contact=b["contact_rating"],
+            power=b["power_rating"],
+            speed=b["speed_rating"],
+            clutch=b["clutch"],
+            fielding=b["fielding_rating"],
+            eye=b.get("eye_rating", 50),
+            morale=b["morale"],
+        ))
+    # Add bench players after starters
+    for i, b in enumerate(bench):
         lineup.append(BatterStats(
             player_id=b["id"],
             name=f"{b['first_name']} {b['last_name']}",
             position=b["position"],
-            batting_order=i + 1,
+            batting_order=len(ordered_starters) + i + 1,
             bats=b["bats"],
             contact=b["contact_rating"],
             power=b["power_rating"],
@@ -175,6 +389,51 @@ def _load_team_lineup(team_id: int, db_path: str = None, opposing_pitcher_throws
     current_date = state[0]["current_date"] if state else "2026-02-15"
     from datetime import datetime
     current = datetime.fromisoformat(current_date).date()
+
+    # Query recent pitching lines from last 3 days for fatigue carryover
+    recent_pitching = {}
+    try:
+        three_days_ago = (current - timedelta(days=3)).isoformat()
+        recent_lines = query("""
+            SELECT pl.player_id, s.game_date, pl.pitches, pl.ip_outs, pl.is_starter
+            FROM pitching_lines pl
+            JOIN schedule s ON s.id = pl.schedule_id
+            WHERE s.game_date >= ? AND s.game_date < ?
+              AND pl.team_id = ?
+            ORDER BY s.game_date DESC
+        """, (three_days_ago, current.isoformat(), team_id), db_path=db_path)
+
+        for line in recent_lines:
+            pid = line["player_id"]
+            if pid not in recent_pitching:
+                recent_pitching[pid] = []
+            game_dt = datetime.fromisoformat(line["game_date"]).date()
+            days_ago = (current - game_dt).days
+            recent_pitching[pid].append({
+                "days_ago": days_ago,
+                "pitches": line["pitches"],
+                "ip_outs": line["ip_outs"],
+                "is_starter": line["is_starter"],
+            })
+    except Exception:
+        recent_pitching = {}
+
+    def _calc_fatigue_modifiers(player_id):
+        """Calculate fatigue stuff/control modifiers from recent appearances."""
+        if player_id not in recent_pitching:
+            return 1.0, 1.0, False
+        appearances = recent_pitching[player_id]
+        days_pitched = set(app["days_ago"] for app in appearances)
+        pitched_yesterday = 1 in days_pitched
+        pitched_2_ago = 2 in days_pitched
+        games_in_last_3 = len(days_pitched)
+        if games_in_last_3 >= 2:
+            return 0.80, 0.85, pitched_yesterday
+        if pitched_yesterday:
+            return 0.85, 0.90, True
+        if pitched_2_ago:
+            return 0.95, 0.97, False
+        return 1.0, 1.0, False
 
     # Build pitching staff, filtering relievers by rest status
     pitchers = []
@@ -219,6 +478,10 @@ def _load_team_lineup(team_id: int, db_path: str = None, opposing_pitcher_throws
                 pass
         if not pitch_types:
             pitch_types = [("4SFB", max(50, p["stuff_rating"])), ("SL", max(40, p["control_rating"])), ("CB", max(35, p["control_rating"] - 5))]
+
+        # Apply fatigue carryover modifiers (temporary, not saved to DB)
+        s_stuff_mod, s_ctrl_mod, s_pitched_yesterday = _calc_fatigue_modifiers(p["id"])
+
         pitchers.append(PitcherStats(
             player_id=p["id"],
             name=f"{p['first_name']} {p['last_name']}",
@@ -229,7 +492,19 @@ def _load_team_lineup(team_id: int, db_path: str = None, opposing_pitcher_throws
             stamina=p["stamina_rating"],
             clutch=p["clutch"],
             pitch_types=pitch_types,
+            fatigue_stuff_modifier=s_stuff_mod,
+            fatigue_control_modifier=s_ctrl_mod,
+            pitched_yesterday=s_pitched_yesterday,
         ))
+
+    # Check if starter pitched within last 4 days (starters should NOT be available)
+    if starter_player and starter_player["id"] in recent_pitching:
+        starter_appearances = recent_pitching[starter_player["id"]]
+        recent_start_days = [a["days_ago"] for a in starter_appearances if a["is_starter"]]
+        if any(d <= 4 for d in recent_start_days):
+            # This starter pitched too recently — skip and find next available
+            # The _rotate_starter function should handle this, but as a safety net:
+            pass  # Already handled by _rotate_starter's 4-day rest check
 
     # Add relievers, excluding those who need rest
     available_relievers = []
@@ -254,6 +529,50 @@ def _load_team_lineup(team_id: int, db_path: str = None, opposing_pitcher_throws
         remaining_slots = 6 - len(selected_relievers)
         selected_relievers.extend(fatigued_relievers[:remaining_slots])
 
+    # Assign bullpen roles based on ratings
+    def _assign_reliever_roles(relievers_list):
+        """Assign closer/setup/loogy/middle/long roles based on ratings."""
+        if not relievers_list:
+            return {}
+        # Score each reliever by stuff + clutch for role assignment
+        scored = [(p, p["stuff_rating"] + p["clutch"]) for p in relievers_list]
+        scored.sort(key=lambda x: x[1], reverse=True)
+
+        roles = {}
+        loogy_assigned = False
+
+        for i, (p, score) in enumerate(scored):
+            pid = p["id"]
+            if i == 0:
+                roles[pid] = "closer"
+            elif i == 1:
+                roles[pid] = "setup"
+            elif (not loogy_assigned and p["throws"] == "L"
+                  and p["stuff_rating"] >= 50):
+                roles[pid] = "loogy"
+                loogy_assigned = True
+            else:
+                # Lowest stamina = middle, highest stamina = long
+                roles[pid] = None  # placeholder, assigned below
+
+        # Assign middle/long to remaining unassigned
+        unassigned = [(p, s) for p, s in scored if roles.get(p["id"]) is None]
+        if unassigned:
+            unassigned.sort(key=lambda x: x[0]["stamina_rating"])
+            for j, (p, s) in enumerate(unassigned):
+                if j < len(unassigned) // 2:
+                    roles[p["id"]] = "middle"
+                else:
+                    roles[p["id"]] = "long"
+            # Edge case: single unassigned gets "middle"
+            for p, s in unassigned:
+                if roles.get(p["id"]) is None:
+                    roles[p["id"]] = "middle"
+
+        return roles
+
+    reliever_roles = _assign_reliever_roles(selected_relievers)
+
     for p in selected_relievers:
         # Load pitch repertoire from database instead of hardcoding
         pitch_types = []
@@ -265,16 +584,23 @@ def _load_team_lineup(team_id: int, db_path: str = None, opposing_pitcher_throws
                 pass
         if not pitch_types:
             pitch_types = [("4SFB", max(50, p["stuff_rating"])), ("SL", max(40, p["control_rating"]))]
+
+        # Apply fatigue carryover modifiers (temporary, not saved to DB)
+        r_stuff_mod, r_ctrl_mod, r_pitched_yesterday = _calc_fatigue_modifiers(p["id"])
+
         pitchers.append(PitcherStats(
             player_id=p["id"],
             name=f"{p['first_name']} {p['last_name']}",
             throws=p["throws"],
-            role="reliever",
+            role=reliever_roles.get(p["id"], "middle"),
             stuff=p["stuff_rating"],
             control=p["control_rating"],
             stamina=p["stamina_rating"],
             clutch=p["clutch"],
             pitch_types=pitch_types,
+            fatigue_stuff_modifier=r_stuff_mod,
+            fatigue_control_modifier=r_ctrl_mod,
+            pitched_yesterday=r_pitched_yesterday,
         ))
 
     return lineup, pitchers
@@ -295,28 +621,46 @@ def _get_park_factors(team_id: int, db_path: str = None) -> ParkFactors:
 
 
 def _rotate_starter(team_id: int, db_path: str = None) -> int:
-    """Get the next starter in the rotation, enforcing 4+ days rest.
-    If no starter has 4+ days rest, use the best-rested reliever as a spot starter.
-    Emergency fallback: use most-rested pitcher if all are fatigued."""
-    # Load team's pitcher fatigue tracking
-    team = query("SELECT team_strategy_json FROM teams WHERE id=?",
-                 (team_id,), db_path=db_path)
+    """Get the next starter in a 5-man rotation, enforcing rest days.
+
+    Rotation order comes from teams.rotation_json (a JSON list of player IDs).
+    If rotation_json is not set, the order is determined by stuff+control rating.
+
+    Each starter pitches every 5th day.  If the next man up is injured or
+    fatigued (fewer than 4 days rest), skip to the next man in rotation order.
+    If *no* starter is available, use the best-rested reliever as a spot start.
+    Emergency fallback: most-rested starter even without full rest.
+    """
+    from datetime import datetime, timedelta as td
+
+    # ------------------------------------------------------------------
+    # 1. Build the rotation order
+    # ------------------------------------------------------------------
+    team_row = query("SELECT rotation_json, team_strategy_json FROM teams WHERE id=?",
+                     (team_id,), db_path=db_path)
+    rotation_order = None
     fatigue_data = {}
-    if team and team[0].get("team_strategy_json"):
-        try:
-            strategy = json.loads(team[0]["team_strategy_json"])
-            fatigue_data = strategy.get("pitcher_fatigue", {})
-        except:
-            fatigue_data = {}
+    if team_row:
+        # Parse rotation_json
+        if team_row[0].get("rotation_json"):
+            try:
+                rotation_order = json.loads(team_row[0]["rotation_json"])
+                if not isinstance(rotation_order, list):
+                    rotation_order = None
+            except (json.JSONDecodeError, TypeError):
+                rotation_order = None
+        # Parse fatigue data
+        if team_row[0].get("team_strategy_json"):
+            try:
+                strategy = json.loads(team_row[0]["team_strategy_json"])
+                fatigue_data = strategy.get("pitcher_fatigue", {})
+            except (json.JSONDecodeError, TypeError):
+                fatigue_data = {}
 
-    # Get current date
-    state = query("SELECT current_date FROM game_state WHERE id=1", db_path=db_path)
-    current_date = state[0]["current_date"] if state else "2026-02-15"
-
-    # Find starters by recency
-    from datetime import datetime, timedelta
+    # Get all active starters with their last-start date
     starters = query("""
         SELECT p.id, p.first_name, p.last_name,
+            p.stuff_rating, p.control_rating,
             COALESCE(
                 (SELECT MAX(s.game_date) FROM pitching_lines pl
                  JOIN schedule s ON s.id = pl.schedule_id
@@ -325,28 +669,73 @@ def _rotate_starter(team_id: int, db_path: str = None) -> int:
             ) as last_start
         FROM players p
         WHERE p.team_id=? AND p.position='SP' AND p.roster_status='active'
-        ORDER BY last_start ASC
+        ORDER BY p.stuff_rating + p.control_rating DESC
     """, (team_id,), db_path=db_path)
 
-    # Filter starters: those with 4+ days rest
+    if not starters:
+        return None
+
+    starter_map = {s["id"]: s for s in starters}
+
+    # If rotation_json is set, filter to only active starters and preserve order
+    if rotation_order:
+        ordered_ids = [pid for pid in rotation_order if pid in starter_map]
+        # Append any active starters not in the stored rotation (new call-ups, etc.)
+        for s in starters:
+            if s["id"] not in ordered_ids:
+                ordered_ids.append(s["id"])
+    else:
+        # Default order: by stuff + control descending
+        ordered_ids = [s["id"] for s in starters]
+
+    # Cap at 5-man rotation
+    rotation_ids = ordered_ids[:5]
+
+    # ------------------------------------------------------------------
+    # 2. Determine current date
+    # ------------------------------------------------------------------
+    state = query("SELECT current_date FROM game_state WHERE id=1", db_path=db_path)
+    current_date = state[0]["current_date"] if state else "2026-02-15"
     current = datetime.fromisoformat(current_date).date()
+
+    # ------------------------------------------------------------------
+    # 3. Find who is "next up" in the rotation
+    # ------------------------------------------------------------------
+    # The next starter is determined by who has the most days since their
+    # last start, in rotation order.  Among starters with >= 4 days rest,
+    # we pick the first one in rotation order whose last start is earliest.
+
+    def _days_since_last_start(pid):
+        s = starter_map.get(pid)
+        if not s:
+            return 999
+        last = datetime.fromisoformat(s["last_start"]).date()
+        return (current - last).days
+
+    # Build list of rested starters in rotation order
     fully_rested = []
-    for starter in starters:
-        starter_id = starter["id"]
-        if str(starter_id) in fatigue_data:
-            fatigue = fatigue_data[str(starter_id)]
+    for pid in rotation_ids:
+        days_rest = _days_since_last_start(pid)
+        # Also check fatigue tracking
+        if str(pid) in fatigue_data:
+            fatigue = fatigue_data[str(pid)]
             last_game = datetime.fromisoformat(fatigue["last_game_date"]).date()
-            rest_needed = fatigue.get("rest_days_needed", 4)
-            days_rested = (current - last_game).days
-            if days_rested < 4:  # Strict 4+ days for starters
-                continue
-        fully_rested.append(starter)
+            days_rest = min(days_rest, (current - last_game).days)
+        if days_rest >= 4:
+            fully_rested.append((pid, days_rest))
 
-    # If a fully-rested starter is available, use them
     if fully_rested:
-        return fully_rested[0]["id"]
+        # Pick the starter with the most rest (longest since last start),
+        # breaking ties by rotation order (already in order).
+        fully_rested.sort(key=lambda x: -x[1])
+        chosen_id = fully_rested[0][0]
+        # Persist updated rotation so the *next* call skips past this starter
+        _persist_rotation(team_id, rotation_ids, db_path)
+        return chosen_id
 
-    # Otherwise, find the best-rested reliever as spot starter (bullpen day)
+    # ------------------------------------------------------------------
+    # 4. No fully-rested starter — try best-rested reliever (bullpen day)
+    # ------------------------------------------------------------------
     relievers = query("""
         SELECT p.id, p.first_name, p.last_name,
             COALESCE(
@@ -357,40 +746,44 @@ def _rotate_starter(team_id: int, db_path: str = None) -> int:
             ) as last_game
         FROM players p
         WHERE p.team_id=? AND p.position='RP' AND p.roster_status='active'
-        ORDER BY last_game DESC
     """, (team_id,), db_path=db_path)
 
     if relievers:
-        # Find best-rested reliever
         best_rested = None
         most_days = -999
         for reliever in relievers:
-            reliever_id = reliever["id"]
-            last_game_date = reliever["last_game"]
-            days_since = (current - datetime.fromisoformat(last_game_date).date()).days
+            days_since = (current - datetime.fromisoformat(reliever["last_game"]).date()).days
             if days_since > most_days:
                 most_days = days_since
                 best_rested = reliever
         if best_rested:
             return best_rested["id"]
 
-    # Ultimate fallback: return the most-rested starter even if they haven't had full rest
+    # ------------------------------------------------------------------
+    # 5. Emergency fallback: most-rested starter regardless of rest
+    # ------------------------------------------------------------------
     best_rest_starter = None
     best_rest_days = -999
-    for starter in starters:
-        starter_id = starter["id"]
-        if str(starter_id) in fatigue_data:
-            fatigue = fatigue_data[str(starter_id)]
+    for pid in rotation_ids:
+        days_rest = _days_since_last_start(pid)
+        if str(pid) in fatigue_data:
+            fatigue = fatigue_data[str(pid)]
             last_game = datetime.fromisoformat(fatigue["last_game_date"]).date()
-            days_rested = (current - last_game).days
-            if days_rested > best_rest_days:
-                best_rest_days = days_rested
-                best_rest_starter = starter
-        else:
-            best_rest_starter = starter
-            break
+            days_rest = min(days_rest, (current - last_game).days)
+        if days_rest > best_rest_days:
+            best_rest_days = days_rest
+            best_rest_starter = pid
 
-    return best_rest_starter["id"] if best_rest_starter else (starters[0]["id"] if starters else None)
+    return best_rest_starter if best_rest_starter else starters[0]["id"]
+
+
+def _persist_rotation(team_id: int, rotation_ids: list, db_path: str = None):
+    """Save the current rotation order back to teams.rotation_json."""
+    conn = get_connection(db_path)
+    conn.execute("UPDATE teams SET rotation_json=? WHERE id=?",
+                 (json.dumps(rotation_ids), team_id))
+    conn.commit()
+    conn.close()
 
 
 def _load_team_strategy(team_id: int, db_path: str = None) -> dict:
@@ -426,6 +819,16 @@ def _determine_phase(game_date: date, season: int) -> str:
 def is_past_trade_deadline(game_date: date) -> bool:
     """Check if the current date is past the July 31 trade deadline."""
     return game_date.month > 7 or (game_date.month == 7 and game_date.day > 31)
+
+
+def is_all_star_break(game_date: date) -> bool:
+    """Check if the date falls during the All-Star break (July 14-16)."""
+    return game_date.month == 7 and 14 <= game_date.day <= 16
+
+
+def is_all_star_game_day(game_date: date) -> bool:
+    """Check if this is the All-Star Game day (July 15)."""
+    return game_date.month == 7 and game_date.day == 15
 
 
 def _generate_key_plays(game_result: dict, home_team_id: int, away_team_id: int) -> list:
@@ -576,6 +979,128 @@ def _update_pitcher_rest(game_date: str, db_path: str = None):
     conn.close()
 
 
+def sim_spring_training_day(game_date: str, db_path: str = None) -> list:
+    """Simulate spring training exhibition games. Stats don't count for regular season.
+    Each team plays ~30 spring training games (roughly 1 game/day from Feb 22 - Mar 25).
+    Games use full simulation but results aren't saved to batting_stats/pitching_stats.
+    """
+    import random as _st_random
+
+    parsed_date = date.fromisoformat(game_date)
+
+    # Spring training games: ~70% chance each team plays on any given day
+    teams = query("SELECT id FROM teams", db_path=db_path)
+    team_ids = [t["id"] for t in teams]
+    _st_random.shuffle(team_ids)
+
+    # Pair up teams for exhibition games
+    playing_teams = [tid for tid in team_ids if _st_random.random() < 0.70]
+    if len(playing_teams) % 2 == 1:
+        playing_teams.pop()  # Even it out
+
+    results = []
+    conn = get_connection(db_path)
+
+    for i in range(0, len(playing_teams), 2):
+        home_id = playing_teams[i]
+        away_id = playing_teams[i + 1]
+
+        home_lineup, home_pitchers = _load_team_lineup(home_id, db_path)
+        away_lineup, away_pitchers = _load_team_lineup(away_id, db_path)
+
+        if not home_lineup or not away_lineup or not home_pitchers or not away_pitchers:
+            continue
+
+        park = _get_park_factors(home_id, db_path)
+        home_strategy = _load_team_strategy(home_id, db_path)
+        away_strategy = _load_team_strategy(away_id, db_path)
+
+        try:
+            result = simulate_game(
+                home_lineup, away_lineup,
+                home_pitchers, away_pitchers,
+                park,
+                home_strategy=home_strategy,
+                away_strategy=away_strategy
+            )
+
+            home_info = query("SELECT city, name, abbreviation FROM teams WHERE id=?",
+                            (home_id,), db_path=db_path)
+            away_info = query("SELECT city, name, abbreviation FROM teams WHERE id=?",
+                            (away_id,), db_path=db_path)
+
+            results.append({
+                "date": game_date,
+                "type": "spring_training",
+                "home_team_id": home_id,
+                "away_team_id": away_id,
+                "home_team": f"{home_info[0]['city']} {home_info[0]['name']}" if home_info else str(home_id),
+                "away_team": f"{away_info[0]['city']} {away_info[0]['name']}" if away_info else str(away_id),
+                "home_abbreviation": home_info[0]["abbreviation"] if home_info else "",
+                "away_abbreviation": away_info[0]["abbreviation"] if away_info else "",
+                "home_score": result["home_score"],
+                "away_score": result["away_score"],
+                "innings": result.get("innings_played", 9),
+            })
+        except Exception:
+            continue
+
+    conn.close()
+    return results
+
+
+def auto_trim_roster_for_opening_day(db_path: str = None):
+    """Auto-trim all teams to 26-man active rosters for Opening Day.
+    Options excess players to minors, prioritizing keeping higher-rated players.
+    Only runs for AI teams (not user's team — user gets a notification instead).
+    """
+    state = query("SELECT user_team_id FROM game_state WHERE id=1", db_path=db_path)
+    user_team_id = state[0]["user_team_id"] if state else None
+
+    teams = query("SELECT id, city, name FROM teams", db_path=db_path)
+    trimmed = []
+
+    for team in teams:
+        team_id = team["id"]
+        if team_id == user_team_id:
+            continue  # User manages their own roster
+
+        active = query("""
+            SELECT p.id, p.first_name, p.last_name, p.position, p.overall,
+                   p.option_years_remaining
+            FROM players p
+            WHERE p.team_id=? AND p.roster_status='active'
+            ORDER BY p.overall ASC
+        """, (team_id,), db_path=db_path)
+
+        excess = len(active) - 26
+        if excess <= 0:
+            continue
+
+        # Option the lowest-rated players with option years remaining
+        optioned = []
+        for player in active:
+            if excess <= 0:
+                break
+            if player.get("option_years_remaining", 0) and player["option_years_remaining"] > 0:
+                execute("""
+                    UPDATE players SET roster_status='minors_aaa',
+                    option_years_remaining = option_years_remaining - 1
+                    WHERE id=?
+                """, (player["id"],), db_path=db_path)
+                optioned.append(f"{player['first_name']} {player['last_name']}")
+                excess -= 1
+
+        if optioned:
+            trimmed.append({
+                "team": f"{team['city']} {team['name']}",
+                "team_id": team_id,
+                "optioned": optioned
+            })
+
+    return trimmed
+
+
 def sim_day(game_date: str = None, db_path: str = None) -> list:
     """Simulate all games for a given date. Returns list of results."""
     if game_date is None:
@@ -585,6 +1110,10 @@ def sim_day(game_date: str = None, db_path: str = None) -> list:
     parsed_date = date.fromisoformat(game_date)
     phase = _determine_phase(parsed_date, parsed_date.year)
     if phase == "spring_training":
+        return []
+
+    # All-Star break: no regular season games July 14-16
+    if is_all_star_break(parsed_date):
         return []
 
     # Check for September 1 (expansion to 28-man roster)
@@ -723,10 +1252,34 @@ def sim_day(game_date: str = None, db_path: str = None) -> list:
                       b.hr, b.rbi, b.bb, b.so, b.sb, b.cs, b.hbp, b.sf))
 
         # Save pitching lines
-        for pitchers, team_id in [(result["home_pitchers"], home_id), (result["away_pitchers"], away_id)]:
+        for pitchers, team_id, opp_score in [
+            (result["home_pitchers"], home_id, result["away_score"]),
+            (result["away_pitchers"], away_id, result["home_score"])
+        ]:
+            # Determine CG/SHO/QS for the starter
+            starter = next((p for p in pitchers if p.is_starter), None)
+            relievers_used = sum(1 for p in pitchers if not p.is_starter and p.ip_outs > 0)
+            total_game_outs = sum(p.ip_outs for p in pitchers)
+
             for p in pitchers:
                 if p.ip_outs == 0 and p.pitches == 0:
                     continue
+
+                # Calculate CG, SHO, QS for starters
+                is_cg = 0
+                is_sho = 0
+                is_qs = 0
+                if p.is_starter:
+                    # Complete game: starter recorded all outs (no relievers used)
+                    if relievers_used == 0 and p.ip_outs >= 27:
+                        is_cg = 1
+                        # Shutout: complete game with 0 runs allowed
+                        if p.runs_allowed == 0:
+                            is_sho = 1
+                    # Quality start: 6+ IP (18+ outs) and 3 or fewer ER
+                    if p.ip_outs >= 18 and p.er <= 3:
+                        is_qs = 1
+
                 conn.execute("""
                     INSERT INTO pitching_lines (schedule_id, player_id, team_id,
                         pitch_order, ip_outs, hits_allowed, runs_allowed, er,
@@ -739,15 +1292,17 @@ def sim_day(game_date: str = None, db_path: str = None) -> list:
 
                 conn.execute("""
                     INSERT INTO pitching_stats (player_id, team_id, season, level, games,
-                        games_started, wins, losses, saves, ip_outs,
-                        hits_allowed, runs_allowed, er, bb, so, hr_allowed, pitches)
-                    VALUES (?, ?, ?, 'MLB', 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        games_started, wins, losses, saves, holds, ip_outs,
+                        hits_allowed, runs_allowed, er, bb, so, hr_allowed, pitches,
+                        complete_games, shutouts, quality_starts)
+                    VALUES (?, ?, ?, 'MLB', 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(player_id, team_id, season, level) DO UPDATE SET
                         games = games + 1,
                         games_started = games_started + excluded.games_started,
                         wins = wins + excluded.wins,
                         losses = losses + excluded.losses,
                         saves = saves + excluded.saves,
+                        holds = holds + excluded.holds,
                         ip_outs = ip_outs + excluded.ip_outs,
                         hits_allowed = hits_allowed + excluded.hits_allowed,
                         runs_allowed = runs_allowed + excluded.runs_allowed,
@@ -755,14 +1310,19 @@ def sim_day(game_date: str = None, db_path: str = None) -> list:
                         bb = bb + excluded.bb,
                         so = so + excluded.so,
                         hr_allowed = hr_allowed + excluded.hr_allowed,
-                        pitches = pitches + excluded.pitches
+                        pitches = pitches + excluded.pitches,
+                        complete_games = complete_games + excluded.complete_games,
+                        shutouts = shutouts + excluded.shutouts,
+                        quality_starts = quality_starts + excluded.quality_starts
                 """, (p.player_id, team_id, game["season"],
                       1 if p.is_starter else 0,
                       1 if p.decision == "W" else 0,
                       1 if p.decision == "L" else 0,
                       1 if p.decision == "S" else 0,
+                      1 if p.decision == "H" else 0,
                       p.ip_outs, p.hits_allowed, p.runs_allowed, p.er,
-                      p.bb_allowed, p.so_pitched, p.hr_allowed, p.pitches))
+                      p.bb_allowed, p.so_pitched, p.hr_allowed, p.pitches,
+                      is_cg, is_sho, is_qs))
 
         results.append({
             "schedule_id": game["id"],
@@ -793,16 +1353,12 @@ def sim_day(game_date: str = None, db_path: str = None) -> list:
 
 
 def _estimate_attendance(team_id: int, db_path: str = None) -> int:
-    """Estimate game attendance based on team popularity and performance."""
-    team = query("SELECT * FROM teams WHERE id=?", (team_id,), db_path=db_path)
-    if not team:
-        return 30000
-    t = team[0]
-    base = t["stadium_capacity"] * 0.5
-    loyalty_bonus = t["fan_loyalty"] / 100 * t["stadium_capacity"] * 0.4
-    import random
-    variance = random.uniform(0.85, 1.15)
-    return int(min(t["stadium_capacity"], (base + loyalty_bonus) * variance))
+    """Estimate game attendance using dynamic attendance model."""
+    from ..financial.economics import calculate_dynamic_attendance
+    game_state = query("SELECT season FROM game_state WHERE id=1", db_path=db_path)
+    season = game_state[0]["season"] if game_state else 2026
+    result = calculate_dynamic_attendance(team_id, season, db_path)
+    return result["attendance"]
 
 
 def advance_date(days: int = 1, db_path: str = None) -> dict:
@@ -814,6 +1370,7 @@ def advance_date(days: int = 1, db_path: str = None) -> dict:
     current = date.fromisoformat(state[0]["current_date"])
     season = state[0]["season"]
     all_results = []
+    spring_training_results = []
     waiver_outcomes = []
     ai_trade_events = []
     offseason_events = []
@@ -829,6 +1386,15 @@ def advance_date(days: int = 1, db_path: str = None) -> dict:
         execute("UPDATE game_state SET phase=? WHERE id=1",
                 (phase,), db_path=db_path)
 
+        # Detect transition from spring training to regular season
+        if last_phase == "spring_training" and phase == "regular_season":
+            trim_results = auto_trim_roster_for_opening_day(db_path)
+            if trim_results:
+                offseason_events.append({
+                    "type": "opening_day_roster_trim",
+                    "teams_trimmed": trim_results
+                })
+
         # Detect transition from regular season to postseason
         if last_phase == "regular_season" and phase == "postseason":
             # Calculate season awards at the end of regular season
@@ -843,6 +1409,10 @@ def advance_date(days: int = 1, db_path: str = None) -> dict:
             from .offseason import process_offseason_day
             off_result = process_offseason_day(game_date, season, db_path)
             offseason_events.append(off_result)
+        elif phase == "spring_training":
+            # Spring training: exhibition games (stats don't count)
+            st_results = sim_spring_training_day(game_date, db_path)
+            spring_training_results.extend(st_results)
         elif phase == "postseason":
             # Handle playoff advancement
             from .playoffs import advance_playoff_round, get_playoff_bracket, generate_playoff_bracket
@@ -857,6 +1427,21 @@ def advance_date(days: int = 1, db_path: str = None) -> dict:
             playoff_round_result = advance_playoff_round(season, db_path)
             playoff_results.append(playoff_round_result)
         else:
+            # Process injuries and IL management before simulating games
+            from .injuries import check_injuries_for_day
+            from ..transactions.roster import auto_manage_injured_list
+            check_injuries_for_day(game_date, db_path)
+            auto_manage_injured_list(game_date, db_path)
+
+            # All-Star Game on July 15
+            if is_all_star_game_day(game_date_obj):
+                from .awards import simulate_all_star_game
+                try:
+                    asg_result = simulate_all_star_game(season, db_path)
+                    offseason_events.append({"type": "all_star_game", **asg_result})
+                except Exception as e:
+                    offseason_events.append({"type": "all_star_error", "error": str(e)})
+
             day_results = sim_day(game_date, db_path)
             all_results.extend(day_results)
 
@@ -871,7 +1456,8 @@ def advance_date(days: int = 1, db_path: str = None) -> dict:
                 if ai_trades:
                     ai_trade_events.extend(ai_trades)
 
-                # Check for trading block offers
+                # Check for trading block offers (uses improved system from ai_trades)
+                from ..transactions.ai_trades import process_trading_block_offers
                 trading_offers = process_trading_block_offers(game_date, db_path)
                 if trading_offers:
                     ai_trade_events.extend([{"type": "trading_block_offer", "offer": o} for o in trading_offers])
@@ -891,6 +1477,8 @@ def advance_date(days: int = 1, db_path: str = None) -> dict:
         "results": all_results,
     }
 
+    if spring_training_results:
+        result["spring_training"] = spring_training_results
     if waiver_outcomes:
         result["waiver_outcomes"] = waiver_outcomes
     if ai_trade_events:
@@ -903,82 +1491,6 @@ def advance_date(days: int = 1, db_path: str = None) -> dict:
     return result
 
 
-def process_trading_block_offers(game_date: str, db_path: str = None) -> list:
-    """
-    Process AI team trade offers for players on the user's trading block.
 
-    During the regular season, AI teams periodically evaluate players on the user's
-    trading block and may make trade offers. Each trading block player has a 10%
-    chance per day that an AI team makes an offer.
-
-    Returns list of trade offers made.
-    """
-    import random
-
-    state = query("SELECT user_team_id FROM game_state WHERE id=1", db_path=db_path)
-    user_team_id = state[0]["user_team_id"] if state else None
-
-    if not user_team_id:
-        return []
-
-    # Get user's team with trading block
-    team = query("SELECT trading_block_json FROM teams WHERE id=?",
-                (user_team_id,), db_path=db_path)
-
-    if not team or not team[0].get("trading_block_json"):
-        return []
-
-    try:
-        trading_block = json.loads(team[0]["trading_block_json"])
-    except (json.JSONDecodeError, TypeError):
-        return []
-
-    if not isinstance(trading_block, list) or len(trading_block) == 0:
-        return []
-
-    offers = []
-
-    # For each player on the trading block, 10% chance per day an AI team makes an offer
-    for player_id in trading_block:
-        if random.random() < 0.10:
-            # AI team wants to make an offer
-            player = query("SELECT first_name, last_name, position FROM players WHERE id=?",
-                          (player_id,), db_path=db_path)
-
-            if not player:
-                continue
-
-            # Pick a random AI team (not the user's team)
-            ai_teams = query("""
-                SELECT id, city, name FROM teams WHERE id != ? ORDER BY RANDOM() LIMIT 1
-            """, (user_team_id,), db_path=db_path)
-
-            if not ai_teams:
-                continue
-
-            proposing_team = ai_teams[0]
-            player_info = player[0]
-            player_name = f"{player_info['first_name']} {player_info['last_name']}"
-            proposing_team_name = f"{proposing_team['city']} {proposing_team['name']}"
-
-            # Create a simple offer (some prospects/picks)
-            offer_details = {
-                "proposing_team_id": proposing_team["id"],
-                "proposing_team_name": proposing_team_name,
-                "player_id": player_id,
-                "player_name": player_name,
-                "assets": [
-                    {"type": "prospects", "count": random.randint(1, 3)},
-                    {"type": "draft_picks", "count": random.randint(0, 2)},
-                ]
-            }
-
-            # Send notification to user
-            from ..transactions.messages import send_message
-            subject = f"Trade Interest: {player_name}"
-            body = f"The {proposing_team_name} has expressed trade interest in {player_name}. Check the Transactions tab for details."
-            send_message(user_team_id, "trade_offer", subject, body, game_date, db_path=db_path)
-
-            offers.append(offer_details)
-
-    return offers
+# process_trading_block_offers has been moved to src/transactions/ai_trades.py
+# for better organization with all trade logic in one module.

@@ -1,6 +1,8 @@
 """
 Front Office - Injury System
 Random injuries weighted by durability, position, and fatigue.
+Includes permanent stat loss for major injuries, reinjury risk windows,
+and age-adjusted recovery times.
 """
 import random
 from ..database.db import get_connection, query
@@ -150,6 +152,185 @@ POSITION_INJURIES = [
     "flu", "dehydration",
 ]
 
+# ============================================================
+# PERMANENT STAT LOSS DEFINITIONS
+# Maps injury_key -> list of (rating_column, min_loss, max_loss)
+# Only major injuries cause permanent stat loss.
+# ============================================================
+PERMANENT_STAT_LOSS = {
+    "ucl_tear": [
+        ("stuff_rating", 3, 6),
+        ("stamina_rating", 2, 2),
+    ],
+    "ucl_sprain": [
+        ("stuff_rating", 1, 3),
+    ],
+    "rotator_cuff_tear": [
+        ("stuff_rating", 4, 8),
+    ],
+    "torn_acl": [
+        ("speed_rating", 5, 10),
+        ("fielding_rating", 2, 2),
+    ],
+    "achilles_tear": [
+        ("speed_rating", 6, 12),
+    ],
+    "lumbar_disc": [
+        ("power_rating", 2, 5),
+    ],
+    "lower_back_strain": [
+        # Only permanent if it was severe (handled by il_tier check below)
+    ],
+    "back_spasms": [],  # no permanent loss
+    "concussion": [
+        ("contact_rating", 1, 3),
+    ],
+}
+
+# Major injuries that carry extended reinjury risk (3x for 60 days)
+MAJOR_INJURIES = {
+    "ucl_tear", "ucl_sprain", "rotator_cuff_tear", "torn_acl",
+    "achilles_tear", "labrum_tear", "lumbar_disc", "hamstring_tear",
+    "hip_impingement", "collarbone_fracture",
+}
+
+
+def _get_age_recovery_modifier(age: int) -> float:
+    """
+    Get age-based recovery time modifier.
+    Under 25: 10% faster (0.9x)
+    25-30: normal (1.0x)
+    31-34: 20% slower (1.2x)
+    35+: 40% slower (1.4x)
+    """
+    if age < 25:
+        return 0.9
+    elif age <= 30:
+        return 1.0
+    elif age <= 34:
+        return 1.2
+    else:
+        return 1.4
+
+
+def _get_injury_key_from_name(injury_name: str) -> str:
+    """Reverse-lookup injury key from display name."""
+    for key, info in INJURY_TYPES.items():
+        if info[0] == injury_name:
+            return key
+    return None
+
+
+def _apply_permanent_stat_loss(conn, player_id: int, injury_key: str):
+    """
+    Apply permanent rating reductions after a major injury heals.
+    Ratings are clamped to minimum of 20.
+    """
+    if injury_key not in PERMANENT_STAT_LOSS:
+        return
+
+    reductions = PERMANENT_STAT_LOSS[injury_key]
+    if not reductions:
+        return
+
+    for rating_col, min_loss, max_loss in reductions:
+        loss = random.randint(min_loss, max_loss)
+        conn.execute(f"""
+            UPDATE players SET {rating_col} = MAX(20, {rating_col} - ?)
+            WHERE id=?
+        """, (loss, player_id))
+
+
+def _set_reinjury_window(conn, player_id: int, injury_key: str, game_date: str):
+    """
+    Set reinjury risk window on a player after returning from injury.
+    - All injuries: 2x risk for 30 days
+    - Major injuries: 3x risk for 60 days
+    Stores return_date and injury_risk_multiplier/injury_risk_until on the player
+    via a JSON field in the team strategy (since we can't alter schema easily).
+    We use a dedicated approach: store on the player record via injury-related fields.
+    """
+    from datetime import date, timedelta
+
+    return_date = date.fromisoformat(game_date)
+
+    if injury_key in MAJOR_INJURIES:
+        risk_multiplier = 3.0
+        risk_days = 60
+    else:
+        risk_multiplier = 2.0
+        risk_days = 30
+
+    risk_until = (return_date + timedelta(days=risk_days)).isoformat()
+
+    # Store reinjury window data as JSON in a player field
+    # We'll use the existing injury_type field temporarily by setting a special marker
+    # Better approach: use a small JSON snippet stored alongside team strategy
+    # Best approach: store on the player's team strategy JSON under "reinjury_windows"
+    player = conn.execute("SELECT team_id FROM players WHERE id=?", (player_id,)).fetchone()
+    if not player or not player["team_id"]:
+        return
+
+    team_id = player["team_id"]
+    team_row = conn.execute("SELECT team_strategy_json FROM teams WHERE id=?", (team_id,)).fetchone()
+    if not team_row:
+        return
+
+    import json as _json
+    strategy_json = team_row["team_strategy_json"] or "{}"
+    try:
+        strategy = _json.loads(strategy_json)
+    except (ValueError, TypeError):
+        strategy = {}
+
+    if "reinjury_windows" not in strategy:
+        strategy["reinjury_windows"] = {}
+
+    strategy["reinjury_windows"][str(player_id)] = {
+        "return_date": game_date,
+        "risk_multiplier": risk_multiplier,
+        "risk_until": risk_until,
+        "injury_key": injury_key,
+    }
+
+    conn.execute("UPDATE teams SET team_strategy_json=? WHERE id=?",
+                (_json.dumps(strategy), team_id))
+
+
+def _get_reinjury_multiplier(player_id: int, team_id: int, game_date: str, conn) -> float:
+    """
+    Check if a player is in a reinjury risk window.
+    Returns the risk multiplier (1.0 if no elevated risk).
+    """
+    import json as _json
+    from datetime import date
+
+    team_row = conn.execute("SELECT team_strategy_json FROM teams WHERE id=?", (team_id,)).fetchone()
+    if not team_row or not team_row["team_strategy_json"]:
+        return 1.0
+
+    try:
+        strategy = _json.loads(team_row["team_strategy_json"])
+    except (ValueError, TypeError):
+        return 1.0
+
+    windows = strategy.get("reinjury_windows", {})
+    window = windows.get(str(player_id))
+    if not window:
+        return 1.0
+
+    current = date.fromisoformat(game_date)
+    risk_until = date.fromisoformat(window["risk_until"])
+
+    if current <= risk_until:
+        return window["risk_multiplier"]
+
+    # Window expired, clean it up
+    del windows[str(player_id)]
+    conn.execute("UPDATE teams SET team_strategy_json=? WHERE id=?",
+                (_json.dumps(strategy), team_id))
+    return 1.0
+
 
 def check_injuries_for_day(game_date: str, db_path: str = None) -> list:
     """Check for new injuries and update healing for existing ones."""
@@ -164,7 +345,8 @@ def check_injuries_for_day(game_date: str, db_path: str = None) -> list:
 
     # Heal existing injuries
     healing = conn.execute("""
-        SELECT id, first_name, last_name, team_id, injury_days_remaining
+        SELECT id, first_name, last_name, team_id, injury_days_remaining,
+               injury_type, il_tier, age
         FROM players WHERE is_injured=1 AND injury_days_remaining > 0
     """).fetchall()
 
@@ -180,22 +362,129 @@ def check_injuries_for_day(game_date: str, db_path: str = None) -> list:
                 heal_rate = 2  # lucky extra healing day
         new_days = p["injury_days_remaining"] - heal_rate
         if new_days <= 0:
-            conn.execute("""
-                UPDATE players SET is_injured=0, injury_type=NULL,
-                    injury_days_remaining=0, il_tier=NULL, roster_status='active'
-                WHERE id=?
-            """, (p["id"],))
+            # Injury has healed -- check for permanent stat loss
+            injury_key = _get_injury_key_from_name(p["injury_type"]) if p["injury_type"] else None
+            if injury_key:
+                _apply_permanent_stat_loss(conn, p["id"], injury_key)
+                _set_reinjury_window(conn, p["id"], injury_key, game_date)
 
-            # Send notification if player is on user's team
+            # Check if player needs rehab (60-day IL)
+            needs_rehab = (p["il_tier"] == "60-day")
+            if needs_rehab:
+                # Rehab assignment: 5-10 days depending on severity
+                rehab_days = random.randint(5, 10)
+                conn.execute("""
+                    UPDATE players SET is_injured=0, injury_type='Rehab assignment',
+                        injury_days_remaining=?, roster_status='rehab'
+                    WHERE id=?
+                """, (rehab_days, p["id"]))
+
+                # Send notification if player is on user's team
+                state = conn.execute("SELECT user_team_id FROM game_state WHERE id=1").fetchone()
+                user_team_id = state["user_team_id"] if state else None
+                if p["team_id"] == user_team_id:
+                    from ..transactions.messages import send_message
+                    player_name = f"{p['first_name']} {p['last_name']}"
+                    send_message(user_team_id, "injury",
+                                f"{player_name} Beginning Rehab",
+                                f"{player_name} has begun a rehab assignment ({rehab_days} days) "
+                                f"before returning to the active roster.",
+                                game_date, db_path=db_path)
+
+                events.append({
+                    "type": "rehab_start",
+                    "player_id": p["id"],
+                    "name": f"{p['first_name']} {p['last_name']}",
+                    "team_id": p["team_id"],
+                    "rehab_days": rehab_days,
+                })
+            else:
+                # Standard return: activate immediately if roster space
+                active_count = conn.execute("""
+                    SELECT COUNT(*) as c FROM players
+                    WHERE team_id=? AND roster_status='active'
+                """, (p["team_id"],)).fetchone()["c"]
+
+                # Check roster limit (26 normally, 28 in September)
+                from datetime import date as date_cls
+                date_obj = date_cls.fromisoformat(game_date)
+                roster_limit = 28 if date_obj.month == 9 else 26
+
+                if active_count < roster_limit:
+                    conn.execute("""
+                        UPDATE players SET is_injured=0, injury_type=NULL,
+                            injury_days_remaining=0, il_tier=NULL, roster_status='active'
+                        WHERE id=?
+                    """, (p["id"],))
+                else:
+                    # No roster space -- stay on IL until manually activated
+                    conn.execute("""
+                        UPDATE players SET is_injured=0, injury_type=NULL,
+                            injury_days_remaining=0
+                        WHERE id=?
+                    """, (p["id"],))
+                    # Keep roster_status='injured_dl' and il_tier so the UI shows them
+
+                # Send notification if player is on user's team
+                state = conn.execute("SELECT user_team_id FROM game_state WHERE id=1").fetchone()
+                user_team_id = state["user_team_id"] if state else None
+                if p["team_id"] == user_team_id:
+                    from ..transactions.messages import send_injury_activation_message
+                    player_name = f"{p['first_name']} {p['last_name']}"
+                    send_injury_activation_message(user_team_id, player_name, db_path=db_path)
+
+                events.append({
+                    "type": "injury_return",
+                    "player_id": p["id"],
+                    "name": f"{p['first_name']} {p['last_name']}",
+                    "team_id": p["team_id"],
+                })
+        else:
+            conn.execute("UPDATE players SET injury_days_remaining=? WHERE id=?",
+                        (new_days, p["id"]))
+
+    # Process rehab assignments (players on rehab counting down)
+    rehab_players = conn.execute("""
+        SELECT id, first_name, last_name, team_id, injury_days_remaining
+        FROM players WHERE roster_status='rehab' AND injury_days_remaining > 0
+    """).fetchall()
+
+    for p in rehab_players:
+        new_days = p["injury_days_remaining"] - 1
+        if new_days <= 0:
+            # Rehab complete -- check roster space
+            active_count = conn.execute("""
+                SELECT COUNT(*) as c FROM players
+                WHERE team_id=? AND roster_status='active'
+            """, (p["team_id"],)).fetchone()["c"]
+
+            from datetime import date as date_cls
+            date_obj = date_cls.fromisoformat(game_date)
+            roster_limit = 28 if date_obj.month == 9 else 26
+
+            if active_count < roster_limit:
+                conn.execute("""
+                    UPDATE players SET injury_type=NULL, injury_days_remaining=0,
+                        il_tier=NULL, roster_status='active'
+                    WHERE id=?
+                """, (p["id"],))
+            else:
+                # Stay on IL until manually activated
+                conn.execute("""
+                    UPDATE players SET injury_type=NULL, injury_days_remaining=0,
+                        roster_status='injured_dl'
+                    WHERE id=?
+                """, (p["id"],))
+
             state = conn.execute("SELECT user_team_id FROM game_state WHERE id=1").fetchone()
             user_team_id = state["user_team_id"] if state else None
             if p["team_id"] == user_team_id:
-                from .messages import send_injury_activation_message
+                from ..transactions.messages import send_injury_activation_message
                 player_name = f"{p['first_name']} {p['last_name']}"
                 send_injury_activation_message(user_team_id, player_name, db_path=db_path)
 
             events.append({
-                "type": "injury_return",
+                "type": "rehab_complete",
                 "player_id": p["id"],
                 "name": f"{p['first_name']} {p['last_name']}",
                 "team_id": p["team_id"],
@@ -261,7 +550,10 @@ def check_injuries_for_day(game_date: str, db_path: str = None) -> list:
         medical_mod = 1.0 - (team_medical - 10_000_000) / 100_000_000  # scales around $10M baseline
         medical_mod = max(0.80, min(1.20, medical_mod))
 
-        chance = base_chance * durability_mod * age_mod * fatigue_mod * medical_mod
+        # Reinjury risk modifier: elevated risk after returning from injury
+        reinjury_mod = _get_reinjury_multiplier(p["id"], p["team_id"], game_date, conn)
+
+        chance = base_chance * durability_mod * age_mod * fatigue_mod * medical_mod * reinjury_mod
 
         if random.random() < chance:
             # Pick injury type based on position
@@ -273,6 +565,10 @@ def check_injuries_for_day(game_date: str, db_path: str = None) -> list:
             days = random.randint(injury[1], injury[2])
             il_tier = injury[4] if len(injury) > 4 else "10-day"
 
+            # Age-adjusted recovery time
+            age_recovery_mod = _get_age_recovery_modifier(p["age"])
+            days = max(1, int(days * age_recovery_mod))
+
             conn.execute("""
                 UPDATE players SET is_injured=1, injury_type=?,
                     injury_days_remaining=?, il_tier=?, roster_status='injured_dl'
@@ -283,7 +579,7 @@ def check_injuries_for_day(game_date: str, db_path: str = None) -> list:
             state = conn.execute("SELECT user_team_id FROM game_state WHERE id=1").fetchone()
             user_team_id = state["user_team_id"] if state else None
             if p["team_id"] == user_team_id:
-                from .messages import send_injury_message
+                from ..transactions.messages import send_injury_message
                 player_name = f"{p['first_name']} {p['last_name']}"
                 send_injury_message(user_team_id, player_name, il_tier, db_path=db_path)
 

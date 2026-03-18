@@ -1,7 +1,8 @@
 """
 Front Office - Roster Management
 40-man roster, call-ups, options, DFA, waivers, service time.
-Includes September callups and position eligibility tracking.
+Includes September callups, position eligibility tracking, Rule 5 draft,
+IL auto-management, and rehab assignments.
 """
 import json
 from ..database.db import get_connection, query, execute
@@ -38,10 +39,10 @@ def call_up_player(player_id: int, db_path: str = None) -> dict:
         limit_str = "28 (September expansion)" if is_september else "26"
         return {"error": f"Active roster is full ({limit_str} players). Option or DFA someone first."}
 
-    # Check 40-man roster limit (count: active + injured players only)
+    # Check 40-man roster limit (all players flagged on_forty_man)
     forty_man_count = conn.execute("""
         SELECT COUNT(*) as c FROM players
-        WHERE team_id=? AND roster_status IN ('active', 'injured_dl')
+        WHERE team_id=? AND on_forty_man=1
     """, (player["team_id"],)).fetchone()["c"]
 
     if forty_man_count >= 40:
@@ -145,10 +146,10 @@ def add_to_forty_man(player_id: int, db_path: str = None) -> dict:
         conn.close()
         return {"error": "Player is already on the 40-man roster"}
 
-    # Count actual 40-man roster spots (active + injured only)
+    # Count actual 40-man roster spots (all players flagged on_forty_man)
     forty_man_count = conn.execute("""
         SELECT COUNT(*) as c FROM players
-        WHERE team_id=? AND roster_status IN ('active', 'injured_dl')
+        WHERE team_id=? AND on_forty_man=1
     """, (player["team_id"],)).fetchone()["c"]
 
     if forty_man_count >= 40:
@@ -236,15 +237,14 @@ def get_roster_summary(team_id: int, db_path: str = None) -> dict:
     injured = query("""
         SELECT p.*, c.annual_salary, c.years_remaining
         FROM players p LEFT JOIN contracts c ON c.player_id = p.id
-        WHERE p.team_id=? AND p.is_injured=1
+        WHERE p.team_id=? AND (p.is_injured=1 OR p.roster_status IN ('injured_dl', 'rehab'))
     """, (team_id,), db_path=db_path)
 
-    # 40-man roster includes: active, injured players (10/15/60-day)
-    # Does NOT include: minor leaguers (minors_aaa, minors_aa, minors_low)
-    # Does NOT include: DFA/waivers, free agents, retired players
+    # 40-man roster includes all players flagged on_forty_man
+    # (active, IL, and minor leaguers added to 40-man)
     forty_man = query("""
         SELECT COUNT(*) as c FROM players
-        WHERE team_id=? AND roster_status IN ('active', 'injured_dl')
+        WHERE team_id=? AND on_forty_man=1
     """, (team_id,), db_path=db_path)
     forty_man_count = forty_man[0]["c"] if forty_man else 0
 
@@ -366,3 +366,304 @@ def september_callup_auto(team_id: int, db_path: str = None) -> dict:
         "called_up_count": len(called_up),
         "called_up": called_up,
     }
+
+
+# ============================================================
+# RULE 5 DRAFT
+# ============================================================
+
+def process_rule_5_draft(season: int, db_path: str = None) -> list:
+    """
+    Process the Rule 5 Draft.
+
+    Eligibility:
+    - Players NOT on the 40-man roster
+    - In the minors
+    - Signed/drafted 5+ years ago if signed at age 18 or younger (high school)
+    - Signed/drafted 4+ years ago if signed at age 19+ (college)
+
+    Rules:
+    - Each team can select one Rule 5 eligible player from another team for $100,000
+    - The selecting team MUST keep the player on 25-man active roster all next season
+    - If they can't, must offer back to original team for $50,000
+    - Draft order: inverse of regular season standings (worst record first)
+
+    AI logic: select a player if overall rating >= 45 AND 40-man roster has space.
+    """
+    conn = get_connection(db_path)
+
+    # Get current game state
+    state = conn.execute("SELECT current_date, user_team_id FROM game_state WHERE id=1").fetchone()
+    current_date = state["current_date"] if state else "2026-01-01"
+    user_team_id = state["user_team_id"] if state else None
+
+    # Get eligible players:
+    # High school players (signed at 18 or younger): need 5+ years in system
+    # College players (signed at 19+): need 4+ years in system
+    # We approximate by age: if current age - 18 >= 5 (joined at 18, 5 years)
+    # or age - 19 >= 4 (joined at 19+, 4 years)
+    # This simplification matches the existing approach
+    eligible = query("""
+        SELECT p.*, t.id as current_team_id, t.city as team_city, t.name as team_name
+        FROM players p
+        JOIN teams t ON t.id = p.team_id
+        WHERE p.on_forty_man = 0
+        AND p.roster_status LIKE 'minors%%'
+        AND (
+            (p.age - 18 >= 5) OR (p.age - 19 >= 4)
+        )
+        ORDER BY (p.contact_rating + p.power_rating + p.speed_rating +
+                  p.fielding_rating + p.stuff_rating + p.control_rating) DESC
+    """, db_path=db_path)
+
+    if not eligible:
+        conn.close()
+        return []
+
+    # Get teams in draft order (inverse of regular season standings = worst first)
+    teams = query("""
+        SELECT t.id, t.city, t.name FROM teams t
+    """, db_path=db_path)
+
+    # Calculate W-L for each team to determine draft order
+    team_records = []
+    for t in teams:
+        wins = query("""
+            SELECT COUNT(*) as w FROM schedule
+            WHERE season=? AND is_played=1 AND is_postseason=0 AND (
+                (home_team_id=? AND home_score > away_score) OR
+                (away_team_id=? AND away_score > home_score)
+            )
+        """, (season, t["id"], t["id"]), db_path=db_path)[0]["w"]
+
+        team_records.append({
+            "id": t["id"],
+            "city": t["city"],
+            "name": t["name"],
+            "wins": wins,
+        })
+
+    # Sort by wins ascending (worst record picks first)
+    team_records.sort(key=lambda x: x["wins"])
+
+    picks = []
+    selected_player_ids = set()
+
+    for team in team_records:
+        if not eligible:
+            break
+
+        team_id = team["id"]
+
+        # Skip user's team (they handle Rule 5 manually via UI)
+        if team_id == user_team_id:
+            continue
+
+        # Check 40-man roster space
+        forty_man_count = conn.execute("""
+            SELECT COUNT(*) as c FROM players
+            WHERE team_id=? AND on_forty_man=1
+        """, (team_id,)).fetchone()["c"]
+
+        if forty_man_count >= 40:
+            continue  # No 40-man room
+
+        # AI decision: select best available player with overall rating >= 45
+        best_fit = None
+        best_idx = None
+
+        for i, player in enumerate(eligible):
+            if player["id"] in selected_player_ids:
+                continue
+            if player["current_team_id"] == team_id:
+                continue  # Can't select from own organization
+
+            # Calculate overall rating
+            if player["position"] in ("SP", "RP"):
+                overall = (player["stuff_rating"] + player["control_rating"] +
+                          player["stamina_rating"]) / 3
+            else:
+                overall = (player["contact_rating"] + player["power_rating"] +
+                          player["speed_rating"] + player["fielding_rating"]) / 4
+
+            if overall >= 45:
+                best_fit = player
+                best_idx = i
+                break
+
+        if not best_fit:
+            continue  # No suitable player found
+
+        player_id = best_fit["id"]
+        from_team_id = best_fit["current_team_id"]
+
+        # Transfer to new team: must go on active roster and 40-man
+        conn.execute("""
+            UPDATE players SET team_id=?, on_forty_man=1, roster_status='active'
+            WHERE id=?
+        """, (team_id, player_id))
+
+        # Create minimum salary contract ($100,000 selection fee, league minimum salary)
+        from datetime import date
+        conn.execute("""
+            INSERT INTO contracts (player_id, team_id, total_years, years_remaining,
+                annual_salary, signed_date)
+            VALUES (?, ?, 1, 1, 750000, ?)
+        """, (player_id, team_id, current_date))
+
+        # Track in transactions
+        conn.execute("""
+            INSERT INTO transactions (transaction_date, transaction_type,
+                details_json, team1_id, team2_id, player_ids)
+            VALUES (?, 'rule_5_draft', ?, ?, ?, ?)
+        """, (current_date,
+              json.dumps({
+                  "from_team_id": from_team_id,
+                  "to_team_id": team_id,
+                  "selection_fee": 100000,
+                  "must_remain_active_roster": True,
+                  "return_fee": 50000,
+              }),
+              from_team_id, team_id, str(player_id)))
+
+        picks.append({
+            "team_id": team_id,
+            "team_name": f"{team['city']} {team['name']}",
+            "player_id": player_id,
+            "player_name": f"{best_fit['first_name']} {best_fit['last_name']}",
+            "position": best_fit["position"],
+            "from_team": f"{best_fit['team_city']} {best_fit['team_name']}",
+        })
+
+        selected_player_ids.add(player_id)
+        eligible.pop(best_idx)
+
+    conn.commit()
+    conn.close()
+
+    return picks
+
+
+# ============================================================
+# IL AUTO-MANAGEMENT
+# ============================================================
+
+def auto_manage_injured_list(game_date: str, db_path: str = None) -> list:
+    """
+    Automatically manage the injured list:
+    - When a player is injured, ensure they are on roster_status='injured_dl'
+    - When an injury heals (injury_days_remaining reaches 0), move back to active
+      IF roster space exists, otherwise keep on IL until manually activated
+
+    This is called from the daily sim loop (advance_date or check_injuries_for_day).
+    Note: Most IL management is now handled directly in check_injuries_for_day(),
+    but this function catches any edge cases where the status is out of sync.
+    """
+    conn = get_connection(db_path)
+    events = []
+
+    # Fix any players who are injured but not on IL status
+    mismatched = conn.execute("""
+        SELECT id, first_name, last_name, team_id, injury_type, il_tier
+        FROM players
+        WHERE is_injured=1 AND injury_days_remaining > 0
+        AND roster_status NOT IN ('injured_dl', 'rehab')
+    """).fetchall()
+
+    for p in mismatched:
+        conn.execute("""
+            UPDATE players SET roster_status='injured_dl' WHERE id=?
+        """, (p["id"],))
+        events.append({
+            "type": "auto_il_placement",
+            "player_id": p["id"],
+            "name": f"{p['first_name']} {p['last_name']}",
+            "team_id": p["team_id"],
+        })
+
+    # Find healed players still stuck on IL (injury cleared but status not updated)
+    healed_on_il = conn.execute("""
+        SELECT id, first_name, last_name, team_id
+        FROM players
+        WHERE is_injured=0 AND injury_days_remaining=0
+        AND roster_status='injured_dl' AND injury_type IS NULL
+    """).fetchall()
+
+    from datetime import date as date_cls
+    date_obj = date_cls.fromisoformat(game_date)
+    roster_limit = 28 if date_obj.month == 9 else 26
+
+    for p in healed_on_il:
+        active_count = conn.execute("""
+            SELECT COUNT(*) as c FROM players
+            WHERE team_id=? AND roster_status='active'
+        """, (p["team_id"],)).fetchone()["c"]
+
+        if active_count < roster_limit:
+            conn.execute("""
+                UPDATE players SET roster_status='active', il_tier=NULL WHERE id=?
+            """, (p["id"],))
+            events.append({
+                "type": "auto_il_activation",
+                "player_id": p["id"],
+                "name": f"{p['first_name']} {p['last_name']}",
+                "team_id": p["team_id"],
+            })
+
+    conn.commit()
+    conn.close()
+    return events
+
+
+def activate_from_il(player_id: int, db_path: str = None) -> dict:
+    """
+    Manually activate a player from the injured list.
+    Used when auto-activation couldn't happen due to roster constraints
+    (the user must option/DFA someone first, then activate).
+    """
+    conn = get_connection(db_path)
+    player = conn.execute("SELECT * FROM players WHERE id=?", (player_id,)).fetchone()
+    if not player:
+        conn.close()
+        return {"error": "Player not found"}
+
+    if player["is_injured"] and player["injury_days_remaining"] > 0:
+        conn.close()
+        return {"error": "Player is still injured and cannot be activated yet."}
+
+    if player["roster_status"] == "rehab" and player.get("injury_days_remaining", 0) > 0:
+        conn.close()
+        return {"error": "Player is still on a rehab assignment."}
+
+    # Check roster space
+    state = conn.execute("SELECT current_date FROM game_state WHERE id=1").fetchone()
+    game_date = state["current_date"] if state else "2026-01-01"
+
+    from datetime import date
+    date_obj = date.fromisoformat(game_date)
+    roster_limit = 28 if date_obj.month == 9 else 26
+
+    active_count = conn.execute("""
+        SELECT COUNT(*) as c FROM players
+        WHERE team_id=? AND roster_status='active'
+    """, (player["team_id"],)).fetchone()["c"]
+
+    if active_count >= roster_limit:
+        conn.close()
+        return {"error": f"Active roster is full ({roster_limit} players). Option or DFA someone first."}
+
+    conn.execute("""
+        UPDATE players SET roster_status='active', is_injured=0,
+            injury_type=NULL, injury_days_remaining=0, il_tier=NULL
+        WHERE id=?
+    """, (player_id,))
+
+    conn.execute("""
+        INSERT INTO transactions (transaction_date, transaction_type, details_json,
+            team1_id, player_ids)
+        VALUES (?, 'il_activation', '{}', ?, ?)
+    """, (game_date, player["team_id"], str(player_id)))
+
+    conn.commit()
+    conn.close()
+    return {"success": True, "player_id": player_id}

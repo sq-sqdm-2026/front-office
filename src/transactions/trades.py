@@ -32,7 +32,7 @@ async def propose_trade(proposing_team_id: int, receiving_team_id: int,
         deadline = date(season, 7, 31)
         if gs["phase"] == "regular_season" and current_date > deadline:
             return {
-                "error": "Trade deadline has passed. Only waiver trades available after July 31."
+                "error": "Trade deadline has passed. No trades until the offseason."
             }
 
     # Validate players belong to correct teams
@@ -46,20 +46,19 @@ async def propose_trade(proposing_team_id: int, receiving_team_id: int,
         if not p or p[0]["team_id"] != receiving_team_id:
             return {"error": f"Player {pid} is not on the receiving team"}
 
-    # Check no-trade clauses
+    # Check no-trade clauses and 10-and-5 rights (unified check)
+    from ..transactions.contracts import check_no_trade_clause
     for pid in players_requested:
-        contract = query("SELECT no_trade_clause FROM contracts WHERE player_id=?",
-                        (pid,), db_path=db_path)
-        if contract and contract[0]["no_trade_clause"] == 1:
-            return {"error": f"Player {pid} has a full no-trade clause",
-                    "ntc_block": True}
-
-    # Check 10-and-5 rights
-    from ..transactions.contracts import check_10_and_5_rights
-    for pid in players_requested:
-        if check_10_and_5_rights(pid, db_path):
-            return {"error": f"Player {pid} has 10-and-5 rights and cannot be traded without consent",
-                    "rights_block": True}
+        ntc_result = check_no_trade_clause(
+            pid, destination_team_id=proposing_team_id,
+            is_ai_trade=False, db_path=db_path
+        )
+        if ntc_result["blocked"]:
+            return {
+                "error": f"Player {pid}: {ntc_result['reason']}",
+                "ntc_block": True,
+                "ntc_type": ntc_result["ntc_type"],
+            }
 
     # Check cash availability
     if cash_included > 0:

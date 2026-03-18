@@ -136,6 +136,8 @@ CREATE TABLE IF NOT EXISTS players (
     -- Development
     peak_age INTEGER NOT NULL DEFAULT 27,
     development_rate REAL NOT NULL DEFAULT 1.0,  -- multiplier for improvement speed
+    is_bust INTEGER NOT NULL DEFAULT 0,  -- 1 if player busted during development
+    is_late_bloomer INTEGER NOT NULL DEFAULT 0,  -- 1 if late bloomer triggered
     -- Platoon splits: JSON format {"vs_lhp": {"contact": +5, "power": +8}, "vs_rhp": {"contact": -3, "power": -5}}
     platoon_split_json TEXT DEFAULT NULL,
     -- Pitch repertoire for pitchers: JSON format [{"type": "4SFB", "rating": 65, "usage": 0.35}, ...]

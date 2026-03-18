@@ -222,6 +222,186 @@ def generate_playoff_bracket(season: int, db_path: str = None) -> dict:
     return bracket
 
 
+def _get_home_team_for_game(game_number: int, higher_seed_id: int,
+                            lower_seed_id: int, round_name: str) -> tuple:
+    """
+    Determine which team is home for a given game number in a playoff series.
+    Standard MLB home field advantage format:
+    - Best-of-3 (Wild Card): Higher seed home for games 1,2; away game 3
+    - Best-of-5 (Division Series): Higher seed home for games 1,2,5; away 3,4
+    - Best-of-7 (CS, WS): Higher seed home for games 1,2,5,7; away 3,4,6
+
+    Returns (home_team_id, away_team_id).
+    """
+    if round_name == "wild_card":
+        # Best of 3: higher seed home for 1,2; away for 3
+        higher_home_games = {1, 2}
+    elif round_name == "division_series":
+        # Best of 5: higher seed home for 1,2,5; away for 3,4
+        higher_home_games = {1, 2, 5}
+    else:
+        # Best of 7: higher seed home for 1,2,5,7; away for 3,4,6
+        higher_home_games = {1, 2, 5, 7}
+
+    if game_number in higher_home_games:
+        return higher_seed_id, lower_seed_id
+    else:
+        return lower_seed_id, higher_seed_id
+
+
+def _save_playoff_game_stats(conn, game_result: dict, home_id: int, away_id: int,
+                             season: int, series_id: str, game_number: int,
+                             db_path: str = None):
+    """
+    Save batting_lines, pitching_lines, and game_results for a playoff game.
+    Creates a schedule entry for the playoff game, then saves stats identical
+    to how sim_day() does it for regular season games.
+    """
+    from .season import _generate_key_plays, _estimate_attendance
+
+    # Get current game date from game_state
+    state = query("SELECT current_date FROM game_state WHERE id=1", db_path=db_path)
+    game_date = state[0]["current_date"] if state else "2026-10-01"
+
+    # Map round to series_type
+    round_to_type = {
+        "wild_card": "WC",
+        "division_series": "DS",
+        "championship_series": "CS",
+        "world_series": "WS",
+    }
+    # Extract round from series_id pattern
+    series_type = None
+    for round_key, st in round_to_type.items():
+        if series_id.endswith("wc1") or series_id.endswith("wc2"):
+            series_type = "WC"
+            break
+        elif series_id.endswith("ds1") or series_id.endswith("ds2"):
+            series_type = "DS"
+            break
+        elif series_id.endswith("cs"):
+            series_type = "CS"
+            break
+        elif series_id == "ws":
+            series_type = "WS"
+            break
+
+    # Insert a schedule entry for this playoff game
+    conn.execute("""
+        INSERT INTO schedule (season, game_date, home_team_id, away_team_id,
+            is_played, home_score, away_score, is_postseason, series_type,
+            series_game_number)
+        VALUES (?, ?, ?, ?, 1, ?, ?, 1, ?, ?)
+    """, (season, game_date, home_id, away_id,
+          game_result["home_score"], game_result["away_score"],
+          series_type, game_number))
+
+    schedule_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+    # Generate key plays
+    key_plays = _generate_key_plays(game_result, home_id, away_id)
+
+    # Save game_results
+    conn.execute("""
+        INSERT INTO game_results (schedule_id, innings_json, play_by_play_json,
+            winning_pitcher_id, losing_pitcher_id, save_pitcher_id, attendance)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, (
+        schedule_id,
+        json.dumps([game_result["innings_away"], game_result["innings_home"]]),
+        json.dumps(key_plays),
+        next((p.player_id for p in game_result["home_pitchers"] + game_result["away_pitchers"] if p.decision == "W"), None),
+        next((p.player_id for p in game_result["home_pitchers"] + game_result["away_pitchers"] if p.decision == "L"), None),
+        next((p.player_id for p in game_result["home_pitchers"] + game_result["away_pitchers"] if p.decision == "S"), None),
+        _estimate_attendance(home_id, db_path),
+    ))
+
+    # Save batting lines
+    for lineup, team_id in [(game_result["home_lineup"], home_id),
+                            (game_result["away_lineup"], away_id)]:
+        for b in lineup:
+            conn.execute("""
+                INSERT INTO batting_lines (schedule_id, player_id, team_id,
+                    batting_order, position_played, ab, runs, hits, doubles,
+                    triples, hr, rbi, bb, so, sb, cs, hbp, sf)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (schedule_id, b.player_id, team_id, b.batting_order,
+                  b.position, b.ab, b.runs, b.hits, b.doubles, b.triples,
+                  b.hr, b.rbi, b.bb, b.so, b.sb, b.cs, b.hbp, b.sf))
+
+            # Accumulate into postseason batting_stats (level='MLB_POST')
+            conn.execute("""
+                INSERT INTO batting_stats (player_id, team_id, season, level, games,
+                    pa, ab, runs, hits, doubles, triples, hr, rbi, bb, so, sb, cs, hbp, sf,
+                    is_postseason)
+                VALUES (?, ?, ?, 'MLB_POST', 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                ON CONFLICT(player_id, team_id, season, level) DO UPDATE SET
+                    games = games + 1,
+                    pa = pa + excluded.pa,
+                    ab = ab + excluded.ab,
+                    runs = runs + excluded.runs,
+                    hits = hits + excluded.hits,
+                    doubles = doubles + excluded.doubles,
+                    triples = triples + excluded.triples,
+                    hr = hr + excluded.hr,
+                    rbi = rbi + excluded.rbi,
+                    bb = bb + excluded.bb,
+                    so = so + excluded.so,
+                    sb = sb + excluded.sb,
+                    cs = cs + excluded.cs,
+                    hbp = hbp + excluded.hbp,
+                    sf = sf + excluded.sf
+            """, (b.player_id, team_id, season,
+                  b.ab + b.bb + b.hbp + b.sf,
+                  b.ab, b.runs, b.hits, b.doubles, b.triples,
+                  b.hr, b.rbi, b.bb, b.so, b.sb, b.cs, b.hbp, b.sf))
+
+    # Save pitching lines
+    for pitchers, team_id in [(game_result["home_pitchers"], home_id),
+                              (game_result["away_pitchers"], away_id)]:
+        for p in pitchers:
+            if p.ip_outs == 0 and p.pitches == 0:
+                continue
+            conn.execute("""
+                INSERT INTO pitching_lines (schedule_id, player_id, team_id,
+                    pitch_order, ip_outs, hits_allowed, runs_allowed, er,
+                    bb, so, hr_allowed, pitches, is_starter, decision)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (schedule_id, p.player_id, team_id, p.pitch_order,
+                  p.ip_outs, p.hits_allowed, p.runs_allowed, p.er,
+                  p.bb_allowed, p.so_pitched, p.hr_allowed, p.pitches,
+                  1 if p.is_starter else 0, p.decision))
+
+            # Accumulate into postseason pitching_stats (level='MLB_POST')
+            conn.execute("""
+                INSERT INTO pitching_stats (player_id, team_id, season, level, games,
+                    games_started, wins, losses, saves, ip_outs,
+                    hits_allowed, runs_allowed, er, bb, so, hr_allowed, pitches,
+                    is_postseason)
+                VALUES (?, ?, ?, 'MLB_POST', 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                ON CONFLICT(player_id, team_id, season, level) DO UPDATE SET
+                    games = games + 1,
+                    games_started = games_started + excluded.games_started,
+                    wins = wins + excluded.wins,
+                    losses = losses + excluded.losses,
+                    saves = saves + excluded.saves,
+                    ip_outs = ip_outs + excluded.ip_outs,
+                    hits_allowed = hits_allowed + excluded.hits_allowed,
+                    runs_allowed = runs_allowed + excluded.runs_allowed,
+                    er = er + excluded.er,
+                    bb = bb + excluded.bb,
+                    so = so + excluded.so,
+                    hr_allowed = hr_allowed + excluded.hr_allowed,
+                    pitches = pitches + excluded.pitches
+            """, (p.player_id, team_id, season,
+                  1 if p.is_starter else 0,
+                  1 if p.decision == "W" else 0,
+                  1 if p.decision == "L" else 0,
+                  1 if p.decision == "S" else 0,
+                  p.ip_outs, p.hits_allowed, p.runs_allowed, p.er,
+                  p.bb_allowed, p.so_pitched, p.hr_allowed, p.pitches))
+
+
 def advance_playoff_round(season: int, db_path: str = None) -> dict:
     """
     Simulate the next playoff game(s) and advance the bracket.
@@ -256,44 +436,67 @@ def advance_playoff_round(season: int, db_path: str = None) -> dict:
         # Determine series length and win condition
         if series["round"] == "wild_card":
             wins_needed = 2  # Best of 3
-        else:  # DS, CS, WS
+        elif series["round"] == "division_series":
+            wins_needed = 3  # Best of 5
+        else:  # CS, WS
             wins_needed = 4  # Best of 7
 
         # If series is already won, skip
         if higher_wins >= wins_needed or lower_wins >= wins_needed:
             continue
 
+        # Current game number in the series (1-indexed)
+        game_number = higher_wins + lower_wins + 1
+
+        # Determine home/away based on MLB home field advantage format
+        home_id, away_id = _get_home_team_for_game(
+            game_number, higher_id, lower_id, series["round"]
+        )
+
         # Simulate the next game
         try:
-            home_lineup, home_pitchers = _load_team_lineup(higher_id, db_path)
-            away_lineup, away_pitchers = _load_team_lineup(lower_id, db_path)
-            park = _get_park_factors(higher_id, db_path)
-            home_strategy = _load_team_strategy(higher_id, db_path)
-            away_strategy = _load_team_strategy(lower_id, db_path)
-            home_chemistry = calculate_team_chemistry(higher_id, db_path)
-            away_chemistry = calculate_team_chemistry(lower_id, db_path)
+            home_lineup, home_pitchers = _load_team_lineup(home_id, db_path)
+            away_lineup, away_pitchers = _load_team_lineup(away_id, db_path)
+            park = _get_park_factors(home_id, db_path)
+            home_strategy = _load_team_strategy(home_id, db_path)
+            away_strategy = _load_team_strategy(away_id, db_path)
+            home_chemistry = calculate_team_chemistry(home_id, db_path)
+            away_chemistry = calculate_team_chemistry(away_id, db_path)
 
             game_result = simulate_game(
                 home_lineup, away_lineup,
                 home_pitchers, away_pitchers,
-                park, higher_id, lower_id,
+                park, home_id, away_id,
                 home_strategy, away_strategy,
                 home_chemistry=home_chemistry,
                 away_chemistry=away_chemistry
             )
 
+            # Save playoff game stats to the database (batting/pitching lines, game_results)
+            _save_playoff_game_stats(
+                conn, game_result, home_id, away_id,
+                season, series_id, game_number, db_path
+            )
+
             # Determine winner of this game
             if game_result["home_score"] > game_result["away_score"]:
-                higher_wins += 1
-                game_winner_id = higher_id
+                if home_id == higher_id:
+                    higher_wins += 1
+                else:
+                    lower_wins += 1
+                game_winner_id = home_id
             else:
-                lower_wins += 1
-                game_winner_id = lower_id
+                if away_id == higher_id:
+                    higher_wins += 1
+                else:
+                    lower_wins += 1
+                game_winner_id = away_id
 
             results.append({
                 "series_id": series_id,
-                "home_team_id": higher_id,
-                "away_team_id": lower_id,
+                "game_number": game_number,
+                "home_team_id": home_id,
+                "away_team_id": away_id,
                 "home_score": game_result["home_score"],
                 "away_score": game_result["away_score"],
                 "series_score": f"{higher_wins}-{lower_wins}",

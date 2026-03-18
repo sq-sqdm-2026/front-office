@@ -48,8 +48,8 @@ def process_waivers(game_date: str, db_path: str = None) -> list:
         claimed = False
         claiming_team_id = None
 
-        # Only evaluate if player is above threshold
-        if overall > 45:
+        # Only evaluate if player is above threshold (overall >= 50)
+        if overall >= 50:
             # Shuffle teams for random priority order
             team_ids = [t["id"] for t in teams
                         if t["id"] != claim["original_team_id"] and t["id"] != user_team_id]
@@ -109,22 +109,60 @@ def process_waivers(game_date: str, db_path: str = None) -> list:
                 "original_team_id": claim["original_team_id"],
             })
         else:
-            # Player clears waivers - becomes free agent
-            conn.execute("""
-                UPDATE players SET roster_status='free_agent', team_id=NULL,
-                    on_forty_man=0
-                WHERE id=?
-            """, (claim["player_id"],))
+            # Player clears waivers — original team can send to minors or release.
+            # AI teams: send to minors if they have minor-league depth room,
+            # otherwise release outright.
             conn.execute("""
                 UPDATE waiver_claims SET status='cleared' WHERE id=?
             """, (claim["id"],))
 
-            outcomes.append({
-                "player_id": claim["player_id"],
-                "name": f"{claim['first_name']} {claim['last_name']}",
-                "status": "cleared",
-                "original_team_id": claim["original_team_id"],
-            })
+            # Check if original team still exists and wants to keep the player
+            orig_team = claim["original_team_id"]
+            user_state_row = conn.execute(
+                "SELECT user_team_id FROM game_state WHERE id=1"
+            ).fetchone()
+            user_tid = user_state_row["user_team_id"] if user_state_row else None
+
+            if orig_team and orig_team != user_tid:
+                # AI team: send to minors if overall >= 40, else release
+                if overall >= 40:
+                    conn.execute("""
+                        UPDATE players SET roster_status='minors_aaa',
+                            on_forty_man=0
+                        WHERE id=?
+                    """, (claim["player_id"],))
+                    outcomes.append({
+                        "player_id": claim["player_id"],
+                        "name": f"{claim['first_name']} {claim['last_name']}",
+                        "status": "outrighted_to_minors",
+                        "original_team_id": orig_team,
+                    })
+                else:
+                    # Release — becomes free agent
+                    conn.execute("""
+                        UPDATE players SET roster_status='free_agent',
+                            team_id=NULL, on_forty_man=0
+                        WHERE id=?
+                    """, (claim["player_id"],))
+                    outcomes.append({
+                        "player_id": claim["player_id"],
+                        "name": f"{claim['first_name']} {claim['last_name']}",
+                        "status": "released",
+                        "original_team_id": orig_team,
+                    })
+            else:
+                # User's team or unknown — mark as cleared, let user decide
+                conn.execute("""
+                    UPDATE players SET roster_status='cleared_waivers',
+                        on_forty_man=0
+                    WHERE id=?
+                """, (claim["player_id"],))
+                outcomes.append({
+                    "player_id": claim["player_id"],
+                    "name": f"{claim['first_name']} {claim['last_name']}",
+                    "status": "cleared",
+                    "original_team_id": orig_team,
+                })
 
     conn.commit()
     conn.close()
