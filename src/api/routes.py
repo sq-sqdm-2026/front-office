@@ -4549,6 +4549,80 @@ async def migrate_database():
         conn.execute("CREATE INDEX IF NOT EXISTS idx_character_careers_role ON character_careers(current_role)")
         changes.append("character_careers table")
 
+        # --- beat_writers, articles, fan_sentiment tables ---
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS beat_writers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                team_id INTEGER,
+                name TEXT NOT NULL,
+                outlet TEXT NOT NULL,
+                personality TEXT NOT NULL DEFAULT 'analyst',
+                writing_style TEXT NOT NULL DEFAULT 'narrative',
+                credibility INTEGER NOT NULL DEFAULT 70,
+                access_level INTEGER NOT NULL DEFAULT 50,
+                bias REAL NOT NULL DEFAULT 0.0,
+                follower_count INTEGER NOT NULL DEFAULT 50000,
+                is_active INTEGER NOT NULL DEFAULT 1,
+                FOREIGN KEY (team_id) REFERENCES teams(id)
+            )
+        """)
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS articles (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                writer_id INTEGER,
+                game_date TEXT NOT NULL,
+                headline TEXT NOT NULL,
+                body TEXT NOT NULL,
+                article_type TEXT NOT NULL DEFAULT 'news',
+                sentiment TEXT NOT NULL DEFAULT 'neutral',
+                team_id INTEGER,
+                player_id INTEGER,
+                is_read INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY (writer_id) REFERENCES beat_writers(id),
+                FOREIGN KEY (team_id) REFERENCES teams(id),
+                FOREIGN KEY (player_id) REFERENCES players(id)
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_articles_date ON articles(game_date)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_articles_team ON articles(team_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_articles_type ON articles(article_type)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_articles_writer ON articles(writer_id)")
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS fan_sentiment (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                team_id INTEGER NOT NULL UNIQUE,
+                sentiment_score INTEGER NOT NULL DEFAULT 50,
+                excitement INTEGER NOT NULL DEFAULT 50,
+                attendance_modifier REAL NOT NULL DEFAULT 1.0,
+                social_media_buzz INTEGER NOT NULL DEFAULT 50,
+                trust_in_gm INTEGER NOT NULL DEFAULT 50,
+                top_concern TEXT,
+                reaction_text TEXT,
+                last_updated TEXT,
+                FOREIGN KEY (team_id) REFERENCES teams(id)
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_fan_sentiment_team ON fan_sentiment(team_id)")
+
+        # Add new columns to fan_sentiment if table already existed
+        fs_cols = get_columns("fan_sentiment")
+        for col, col_def in [
+            ("trust_in_gm", "INTEGER NOT NULL DEFAULT 50"),
+            ("top_concern", "TEXT"),
+            ("reaction_text", "TEXT"),
+        ]:
+            if col not in fs_cols:
+                try:
+                    conn.execute(f"ALTER TABLE fan_sentiment ADD COLUMN {col} {col_def}")
+                    changes.append(f"fan_sentiment.{col}")
+                except Exception:
+                    pass
+
+        changes.append("beat_writers/articles/fan_sentiment tables")
+
         conn.commit()
 
         if not changes:
