@@ -1663,6 +1663,21 @@ def advance_date(days: int = 1, db_path: str = None) -> dict:
                     except Exception:
                         pass
 
+                # Record tracking checks on the 1st and 15th of each month
+                if game_date_obj.day in (1, 15):
+                    try:
+                        from .records import check_record_watch, initialize_records
+                        initialize_records(db_path)  # ensure tables/data exist
+                        record_results = check_record_watch(game_date, db_path)
+                        if record_results and isinstance(record_results, dict):
+                            broken = record_results.get("broken_records", [])
+                            if broken:
+                                offseason_events.extend([
+                                    {"type": "record_broken", **b} for b in broken
+                                ])
+                    except Exception:
+                        pass  # Don't let record tracking errors block sim
+
                 # Proactive AI character messages (owner, agents, coaches, etc.)
                 try:
                     from ..ai.proactive_messaging import check_and_send_proactive_messages
