@@ -103,6 +103,28 @@ def migrate_add_player_development_columns(db_path: str = None):
     conn.close()
 
 
+def migrate_add_proactive_message_log(db_path: str = None):
+    """Add proactive_message_log table for AI character messaging cooldowns."""
+    conn = get_connection(db_path)
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS proactive_message_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            character_type TEXT NOT NULL,
+            character_id TEXT NOT NULL,
+            trigger_type TEXT NOT NULL,
+            team_id INTEGER NOT NULL,
+            game_date TEXT NOT NULL,
+            cooldown_until TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            FOREIGN KEY (team_id) REFERENCES teams(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_proactive_msg_cooldown
+            ON proactive_message_log(character_type, character_id, trigger_type, team_id);
+    """)
+    conn.commit()
+    conn.close()
+
+
 def query(sql: str, params: tuple = (), db_path: str = None) -> list[dict]:
     conn = get_connection(db_path)
     rows = conn.execute(sql, params).fetchall()

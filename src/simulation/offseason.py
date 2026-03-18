@@ -18,6 +18,7 @@ from ..financial.economics import save_season_finances, process_end_of_season_fi
 from ..financial.broadcast_stadium import apply_broadcast_deal_decrement, apply_broadcast_loyalty_penalties
 from ..simulation.player_development import process_offseason_development
 from ..simulation.rating_calibration import calibrate_ratings
+from ..ai.career_arcs import process_career_changes
 
 
 def process_offseason_day(game_date: str, season: int, db_path: str = None) -> dict:
@@ -252,6 +253,25 @@ def process_offseason_day(game_date: str, season: int, db_path: str = None) -> d
                 events["events"].append({
                     "type": "rating_calibration",
                     "adjustments": cal_result["adjustments"],
+                })
+
+            # Process NPC career changes (firings, promotions, retirements)
+            career_results = process_career_changes(game_date, db_path)
+            career_event_count = (
+                len(career_results.get("firings", []))
+                + len(career_results.get("promotions", []))
+                + len(career_results.get("retirements", []))
+                + len(career_results.get("new_roles", []))
+            )
+            if career_event_count > 0:
+                events["events"].append({
+                    "type": "career_changes",
+                    "total": career_event_count,
+                    "firings": len(career_results.get("firings", [])),
+                    "promotions": len(career_results.get("promotions", [])),
+                    "retirements": len(career_results.get("retirements", [])),
+                    "new_roles": len(career_results.get("new_roles", [])),
+                    "details": career_results,
                 })
 
         if offseason_day >= 95:
