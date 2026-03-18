@@ -5536,3 +5536,83 @@ async def get_news_feed(limit: int = 30):
     # Sort all items by date descending
     feed.sort(key=lambda x: x.get("date", ""), reverse=True)
     return feed[:limit]
+
+
+# ============================================================
+# NEWS ARTICLES (Beat Writer System)
+# ============================================================
+
+@app.get("/news/articles")
+async def get_news_articles(limit: int = 30, offset: int = 0):
+    """Get recent articles across all teams, paginated."""
+    try:
+        from ..ai.beat_writers import get_all_articles
+        articles = get_all_articles(limit=limit + offset)
+        return articles[offset:offset + limit] if articles else []
+    except Exception as e:
+        raise HTTPException(500, f"Error fetching articles: {e}")
+
+
+@app.get("/news/articles/{team_id}")
+async def get_team_news_articles(team_id: int, limit: int = 20):
+    """Get recent articles for a specific team."""
+    try:
+        from ..ai.beat_writers import get_articles_for_team
+        return get_articles_for_team(team_id, limit=limit)
+    except Exception as e:
+        raise HTTPException(500, f"Error fetching team articles: {e}")
+
+
+@app.post("/news/generate")
+async def trigger_article_generation():
+    """Manually trigger article generation for the current game date."""
+    state = query("SELECT current_date, season FROM game_state WHERE id=1")
+    if not state:
+        raise HTTPException(400, "No game state found")
+
+    game_date = state[0]["current_date"]
+
+    try:
+        from ..ai.beat_writers import generate_all_daily_articles
+        articles = generate_all_daily_articles(game_date)
+        return {
+            "success": True,
+            "game_date": game_date,
+            "articles_generated": len(articles),
+            "articles": articles,
+        }
+    except Exception as e:
+        raise HTTPException(500, f"Error generating articles: {e}")
+
+
+# ============================================================
+# FAN SENTIMENT
+# ============================================================
+
+@app.get("/fan-sentiment/{team_id}")
+async def get_team_fan_sentiment(team_id: int):
+    """Get fan sentiment data for a team, including reactions."""
+    try:
+        from ..ai.fan_sentiment import get_fan_reactions, get_fan_sentiment as _get_sent
+        reactions = get_fan_reactions(team_id)
+        sentiment = _get_sent(team_id)
+        # Merge the two results
+        result = {**sentiment, **reactions}
+        return result
+    except Exception as e:
+        raise HTTPException(500, f"Error fetching fan sentiment: {e}")
+
+
+@app.post("/fan-sentiment/update")
+async def update_fan_sentiments():
+    """Manually trigger fan sentiment recalculation for all teams."""
+    try:
+        from ..ai.fan_sentiment import update_all_fan_sentiments
+        results = update_all_fan_sentiments()
+        return {
+            "success": True,
+            "teams_updated": len(results),
+            "sentiments": results,
+        }
+    except Exception as e:
+        raise HTTPException(500, f"Error updating fan sentiments: {e}")

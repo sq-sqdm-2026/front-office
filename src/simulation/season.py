@@ -1705,6 +1705,21 @@ def advance_date(days: int = 1, db_path: str = None) -> dict:
             except Exception:
                 pass  # Don't let MiLB errors block main sim
 
+            # Daily article generation (beat writers)
+            try:
+                from ..ai.beat_writers import generate_all_daily_articles
+                generate_all_daily_articles(game_date, db_path)
+            except Exception:
+                pass  # Don't let article generation errors block sim
+
+            # Fan sentiment update (weekly on Wednesdays)
+            if game_date_obj.weekday() == 2:  # Wednesdays
+                try:
+                    from ..ai.fan_sentiment import update_all_fan_sentiments
+                    update_all_fan_sentiments(db_path)
+                except Exception:
+                    pass  # Don't let sentiment errors block sim
+
             # Weekly podcast generation (every 7 days during regular season)
             if phase == "regular_season" and game_date_obj.weekday() == 0:  # Mondays
                 try:
