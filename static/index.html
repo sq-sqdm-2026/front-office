@@ -115,7 +115,7 @@
         <button class="nav-item" data-s="podcast" onclick="showScreen('podcast')">
           <span class="nav-icon">&#127908;</span> Podcast
         </button>
-        <button class="nav-item" data-s="messages" onclick="showScreen('messages')">
+        <button class="nav-item" data-s="messages" onclick="toggleChatPanel()">
           <span class="nav-icon">&#128172;</span> Messages
           <span class="nav-badge" id="sidebar-msg-count" style="display:none"></span>
         </button>
@@ -427,29 +427,12 @@
         <div id="podcast-body"></div>
       </div>
 
-      <!-- MESSAGES -->
+      <!-- MESSAGES (placeholder screen, real UI is the right-rail widget) -->
       <div id="s-messages" class="content-screen">
-        <div class="chat-app">
-          <!-- Left panel: contact list -->
-          <div class="chat-contacts" id="chat-contacts">
-            <div class="chat-contacts-header">
-              <span class="section-title">Messages</span>
-            </div>
-            <div class="chat-contact-list" id="chat-contact-list"></div>
-          </div>
-          <!-- Right panel: conversation -->
-          <div class="chat-conversation" id="chat-conversation">
-            <div class="chat-conv-header" id="chat-conv-header">
-              <span class="chat-conv-name">Select a conversation</span>
-            </div>
-            <div class="chat-messages" id="chat-messages">
-              <div class="empty-state">Select a contact to view messages</div>
-            </div>
-            <div class="chat-input-area" id="chat-input-area" style="display:none">
-              <input type="text" class="chat-input" id="chat-input" placeholder="Type a message..." />
-              <button class="chat-send-btn" id="chat-send-btn" onclick="sendChatMessage()">Send</button>
-            </div>
-          </div>
+        <div class="empty-state" style="padding:40px;text-align:center">
+          <div style="font-size:48px;margin-bottom:12px">&#128172;</div>
+          <p>Use the <strong>Messages</strong> panel on the right to view your inbox.</p>
+          <button class="btn btn-primary" onclick="toggleChatPanel()">Open Messages</button>
         </div>
       </div>
 
@@ -609,6 +592,30 @@
     <footer id="status-bar">
       <span id="ticker">Front Office v0.3</span>
     </footer>
+
+    <!-- RIGHT-RAIL CHAT WIDGET -->
+    <aside id="chat-panel" class="chat-panel">
+      <div class="chat-panel-header">
+        <span class="chat-panel-title">Messages</span>
+        <button class="chat-panel-close" onclick="toggleChatPanel()">&times;</button>
+      </div>
+      <div class="chat-panel-tabs" id="chat-contacts">
+        <div class="chat-contacts-header"><span class="section-title" style="display:none">Messages</span></div>
+      </div>
+      <div class="chat-contact-list-wrap" id="chat-contact-list"></div>
+      <div class="chat-panel-conversation" id="chat-conversation">
+        <div class="chat-conv-header" id="chat-conv-header">
+          <span class="chat-conv-name">Select a message</span>
+        </div>
+        <div class="chat-messages" id="chat-messages">
+          <div class="empty-state" style="padding:16px">Select a message to view</div>
+        </div>
+        <div class="chat-input-area" id="chat-input-area" style="display:none">
+          <input type="text" class="chat-input" id="chat-input" placeholder="Type a reply..." onkeydown="if(event.key==='Enter')sendChatMessage()" />
+          <button class="chat-send-btn" onclick="sendChatMessage()">Send</button>
+        </div>
+      </div>
+    </aside>
 
   </div><!-- /main-wrap -->
 
@@ -837,30 +844,34 @@
           </div>
 
           <div class="settings-card">
-            <div class="settings-label">Required Models</div>
-            <div class="settings-helper">Front Office uses local LLMs via Ollama for GM personalities, trade evaluation, scouting reports, and more. Pull these models to enable AI features. Without them, the game uses template-based fallbacks.</div>
-            <div class="settings-option-details" style="margin-top:12px">
-              <div class="settings-option-item">
-                <strong>qwen3:32b</strong> &mdash; Strategic reasoning (GM decisions, trade evaluation, negotiation)
-                <div style="color:var(--text-muted);font-size:11px;margin-top:2px"><code>ollama pull qwen3:32b</code> &bull; ~18GB &bull; Requires 24GB+ RAM</div>
-              </div>
-              <div class="settings-option-item">
-                <strong>qwen3:14b</strong> &mdash; Creative text (scouting reports, messages, articles, podcasts)
-                <div style="color:var(--text-muted);font-size:11px;margin-top:2px"><code>ollama pull qwen3:14b</code> &bull; ~8GB &bull; Requires 16GB+ RAM</div>
-              </div>
-            </div>
+            <div class="settings-label">Connection</div>
+            <div class="settings-helper">The game connects to Ollama (a free, local AI app) for smarter GM personalities, scouting reports, and trade talks. <strong>The game works fine without it</strong> &mdash; it just uses simpler template text instead.</div>
             <div style="margin-top:12px">
-              <div class="settings-label">Ollama URL</div>
-              <div class="settings-helper" style="margin-bottom:4px">Default: http://localhost:11434. Change if Ollama runs on a different host/port.</div>
+              <div class="settings-label">Ollama Address</div>
+              <div class="settings-helper" style="margin-bottom:4px">Usually <code>http://localhost:11434</code>. Only change this if you installed Ollama on a different computer.</div>
               <div style="display:flex;gap:8px;align-items:center">
-                <input type="text" id="ollama-url-input" class="search-box" style="flex:1;margin:0" placeholder="http://localhost:11434" value="">
+                <input type="text" id="ollama-url-input" class="search-box" style="flex:1;margin:0" placeholder="http://localhost:11434" value="http://localhost:11434">
                 <button class="btn btn-sm" onclick="saveOllamaUrl()">Save</button>
               </div>
             </div>
-            <div style="margin-top:12px">
-              <div class="settings-label">Ollama Status</div>
-              <div id="ollama-status" style="margin-top:4px;font-size:12px;color:var(--text-muted)">Checking...</div>
-              <button class="btn btn-sm" style="margin-top:8px" onclick="checkOllamaStatus()">Check Connection</button>
+            <div style="margin-top:12px;display:flex;align-items:center;gap:12px">
+              <div id="ollama-status" style="font-size:12px;color:var(--text-muted)">Checking...</div>
+              <button class="btn btn-sm" onclick="checkOllamaStatus()">Test Connection</button>
+            </div>
+          </div>
+
+          <div class="settings-card">
+            <div class="settings-label">AI Models</div>
+            <div class="settings-helper">If Ollama is connected, these models power different features. Install them by running the commands below in your terminal.</div>
+            <div class="settings-option-details" style="margin-top:12px">
+              <div class="settings-option-item">
+                <strong>qwen3:32b</strong> &mdash; Smarter decisions (GM trades, negotiations)
+                <div style="color:var(--text-muted);font-size:11px;margin-top:2px">Install: <code>ollama pull qwen3:32b</code> &bull; ~18GB download &bull; Needs 24GB+ RAM</div>
+              </div>
+              <div class="settings-option-item">
+                <strong>qwen3:14b</strong> &mdash; Written content (scouting reports, news, messages)
+                <div style="color:var(--text-muted);font-size:11px;margin-top:2px">Install: <code>ollama pull qwen3:14b</code> &bull; ~8GB download &bull; Needs 16GB+ RAM</div>
+              </div>
             </div>
           </div>
 

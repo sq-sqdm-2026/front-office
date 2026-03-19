@@ -51,6 +51,27 @@ function closeMobileSidebar() {
 }
 
 // ============================================================
+// RIGHT-RAIL CHAT PANEL
+// ============================================================
+function toggleChatPanel() {
+  const panel = document.getElementById('chat-panel');
+  if (!panel) return;
+  const isOpen = panel.classList.contains('open');
+  if (isOpen) {
+    panel.classList.remove('open');
+    // Allow the transition to finish, then hide
+    setTimeout(() => { if (!panel.classList.contains('open')) panel.style.display = 'none'; }, 250);
+  } else {
+    panel.style.display = 'flex';
+    // Force reflow so the transition plays
+    panel.offsetHeight;
+    panel.classList.add('open');
+    loadMessages();
+  }
+  closeMobileSidebar();
+}
+
+// ============================================================
 // SPOILER-FREE MODE (hide scores until you watch)
 // ============================================================
 function toggleSpoilerFree() {
@@ -561,6 +582,24 @@ async function loadState() {
 
   const teams = await api('/teams');
   STATE.teams = teams || [];
+
+  // Refresh message badge (non-blocking)
+  refreshMessageBadge();
+}
+
+async function refreshMessageBadge() {
+  if (!STATE.userTeamId) return;
+  const msgs = await api('/messages?unread_only=true');
+  const count = (msgs || []).length;
+  const badge = document.getElementById('msg-count');
+  const sidebarBadge = document.getElementById('sidebar-msg-count');
+  if (count > 0) {
+    if (badge) { badge.textContent = count; badge.style.display = 'block'; }
+    if (sidebarBadge) { sidebarBadge.textContent = count; sidebarBadge.style.display = 'flex'; }
+  } else {
+    if (badge) badge.style.display = 'none';
+    if (sidebarBadge) sidebarBadge.style.display = 'none';
+  }
 }
 
 // ============================================================
@@ -4532,11 +4571,11 @@ async function loadMessages() {
     if (sidebarBadge) sidebarBadge.style.display = 'none';
   }
 
-  // Build priority filter tabs
-  const filterContainer = document.getElementById('chat-contacts');
-  if (!filterContainer) return;
+  // Build priority filter tabs into the panel tabs area
+  const tabsContainer = document.getElementById('chat-contacts');
+  const listContainer = document.getElementById('chat-contact-list');
+  if (!tabsContainer || !listContainer) return;
 
-  // Build filter tabs HTML
   const prio = priorities || { urgent: {total:0,unread:0}, important: {total:0,unread:0}, normal: {total:0,unread:0}, low: {total:0,unread:0} };
   const totalAll = (prio.urgent?.unread||0) + (prio.important?.unread||0) + (prio.normal?.unread||0) + (prio.low?.unread||0);
 
@@ -4547,28 +4586,26 @@ async function loadMessages() {
     { key: 'normal', label: 'Normal', unread: prio.normal?.unread || 0 },
   ];
 
-  let headerHtml = `<div class="chat-contacts-header"><span class="section-title">Messages</span></div>`;
-  headerHtml += `<div class="priority-filter-tabs">`;
+  let tabsHtml = `<div class="priority-filter-tabs">`;
   tabs.forEach(t => {
     const active = _msgPriorityFilter === t.key ? 'active' : '';
     const badgeHtml = t.unread > 0 ? `<span class="tab-badge">${t.unread}</span>` : '';
-    headerHtml += `<button class="priority-tab ${active}" onclick="setMsgPriorityFilter(${t.key === null ? 'null' : "'" + t.key + "'"})">
+    tabsHtml += `<button class="priority-tab ${active}" onclick="setMsgPriorityFilter(${t.key === null ? 'null' : "'" + t.key + "'"})">
       ${t.label}${badgeHtml}
     </button>`;
   });
-  headerHtml += `</div>`;
+  tabsHtml += `</div>`;
+  tabsContainer.innerHTML = tabsHtml;
 
-  // Build contact list (each message as a contact item)
-  const contactList = document.getElementById('chat-contact-list');
+  // Build message list
   if (!allMsgs.length) {
-    filterContainer.innerHTML = headerHtml + `<div class="chat-contact-list" id="chat-contact-list">
-      <div class="empty-state">Inbox empty. Messages from GMs, your owner, agents, and scouts will appear here.</div>
-    </div>`;
-    // Clear conversation panel
+    listContainer.innerHTML = `<div class="empty-state" style="padding:24px;text-align:center">
+      <div style="font-size:32px;margin-bottom:8px">&#128236;</div>
+      Inbox empty. Messages from GMs, your owner, agents, and scouts will appear here.</div>`;
     const convHeader = document.getElementById('chat-conv-header');
     const chatMsgs = document.getElementById('chat-messages');
-    if (convHeader) convHeader.innerHTML = '<span class="chat-conv-name">Select a conversation</span>';
-    if (chatMsgs) chatMsgs.innerHTML = '<div class="empty-state">Select a message to view</div>';
+    if (convHeader) convHeader.innerHTML = '<span class="chat-conv-name">No messages yet</span>';
+    if (chatMsgs) chatMsgs.innerHTML = '<div class="empty-state" style="padding:16px">Messages will show up as you play</div>';
     return;
   }
 
@@ -4578,7 +4615,7 @@ async function loadMessages() {
     const isUnread = !m.is_read;
     const isActive = _msgSelectedId === m.id;
     const dotClass = (priority === 'urgent' || priority === 'important') ? `<span class="priority-dot ${priority}"></span>` : '';
-    const preview = (m.body || '').substring(0, 60) + ((m.body || '').length > 60 ? '...' : '');
+    const preview = (m.body || '').substring(0, 50) + ((m.body || '').length > 50 ? '...' : '');
     const category = m.category || 'general';
     const categoryLabel = category.replace(/_/g, ' ');
 
@@ -4604,7 +4641,7 @@ async function loadMessages() {
       </div>`;
   });
 
-  filterContainer.innerHTML = headerHtml + `<div class="chat-contact-list" id="chat-contact-list">${contactsHtml}</div>`;
+  listContainer.innerHTML = contactsHtml;
 
   // If a message is selected, show it in the conversation panel
   if (_msgSelectedId) {
@@ -4994,9 +5031,12 @@ async function saveTeamEdit(teamId) {
 // SETTINGS & COLUMN PICKER
 // ============================================================
 async function loadOllamaUrl() {
-  const data = await api('/ollama/url');
   const input = document.getElementById('ollama-url-input');
-  if (data && input) input.value = data.url || 'http://localhost:11434';
+  if (!input) return;
+  // Set default immediately so it's never empty
+  if (!input.value) input.value = 'http://localhost:11434';
+  const data = await api('/ollama/url');
+  if (data && data.url) input.value = data.url;
 }
 
 async function saveOllamaUrl() {
