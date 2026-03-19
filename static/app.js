@@ -4993,6 +4993,24 @@ async function saveTeamEdit(teamId) {
 // ============================================================
 // SETTINGS & COLUMN PICKER
 // ============================================================
+async function loadOllamaUrl() {
+  const data = await api('/ollama/url');
+  const input = document.getElementById('ollama-url-input');
+  if (data && input) input.value = data.url || 'http://localhost:11434';
+}
+
+async function saveOllamaUrl() {
+  const input = document.getElementById('ollama-url-input');
+  if (!input || !input.value.trim()) return;
+  const r = await post('/ollama/url', { url: input.value.trim() });
+  if (r && r.success) {
+    showToast('Ollama URL updated', 'success');
+    checkOllamaStatus();
+  } else {
+    showToast('Failed to update Ollama URL', 'error');
+  }
+}
+
 async function checkOllamaStatus() {
   const el = document.getElementById('ollama-status');
   if (!el) return;
@@ -5022,6 +5040,7 @@ function openSettingsModal() {
   document.getElementById('settings-modal').style.display = 'block';
   updateCommissionerToggleUI();
   loadSavesList();
+  loadOllamaUrl();
   checkOllamaStatus();
   // Update rating scale dropdown
   const scaleSelect = document.getElementById('rating-scale-select');

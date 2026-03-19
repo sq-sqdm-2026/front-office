@@ -850,6 +850,14 @@
               </div>
             </div>
             <div style="margin-top:12px">
+              <div class="settings-label">Ollama URL</div>
+              <div class="settings-helper" style="margin-bottom:4px">Default: http://localhost:11434. Change if Ollama runs on a different host/port.</div>
+              <div style="display:flex;gap:8px;align-items:center">
+                <input type="text" id="ollama-url-input" class="search-box" style="flex:1;margin:0" placeholder="http://localhost:11434" value="">
+                <button class="btn btn-sm" onclick="saveOllamaUrl()">Save</button>
+              </div>
+            </div>
+            <div style="margin-top:12px">
               <div class="settings-label">Ollama Status</div>
               <div id="ollama-status" style="margin-top:4px;font-size:12px;color:var(--text-muted)">Checking...</div>
               <button class="btn btn-sm" style="margin-top:8px" onclick="checkOllamaStatus()">Check Connection</button>

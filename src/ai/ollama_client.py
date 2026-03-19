@@ -7,8 +7,9 @@ qwen3:14b for flavor text/scouting reports/messages (creative, speed)
 import httpx
 import json
 import asyncio
+import os
 
-OLLAMA_BASE = "http://localhost:11434"
+OLLAMA_BASE = os.environ.get("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
 
 # Model routing
 MODELS = {

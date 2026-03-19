@@ -1875,6 +1875,24 @@ async def ollama_status():
 # ============================================================
 # BOX SCORE
 # ============================================================
+class OllamaUrlUpdate(BaseModel):
+    url: str
+
+@app.get("/ollama/url")
+async def get_ollama_url():
+    """Get the current Ollama URL."""
+    from ..ai.ollama_client import OLLAMA_BASE
+    return {"url": OLLAMA_BASE}
+
+@app.post("/ollama/url")
+async def set_ollama_url(req: OllamaUrlUpdate):
+    """Set the Ollama URL."""
+    import src.ai.ollama_client as ollama_mod
+    new_url = req.url.rstrip("/")
+    ollama_mod.OLLAMA_BASE = new_url
+    return {"success": True, "url": new_url}
+
+
 @app.get("/game/{schedule_id}/boxscore")
 async def get_boxscore(schedule_id: int):
     """Full box score with linescore, batting lines, pitching lines."""
