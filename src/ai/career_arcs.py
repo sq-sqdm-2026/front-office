@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 Front Office - Character Career Arcs
 Dynamic career progression for NPC characters: scouts become GMs,
