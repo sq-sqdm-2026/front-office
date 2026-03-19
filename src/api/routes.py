@@ -54,6 +54,20 @@ from ..narrative.starting_scenario import get_available_scenarios, select_starti
 app = FastAPI(title="Front Office", version="0.1.0",
               description="Baseball Universe Simulation powered by Local LLMs")
 
+# --- Ensure game_state row exists ---
+try:
+    _conn_gs = get_connection()
+    _gs_check = _conn_gs.execute("SELECT id FROM game_state WHERE id=1").fetchone()
+    if not _gs_check:
+        _conn_gs.execute("""
+            INSERT INTO game_state (id, current_date, season, phase, difficulty)
+            VALUES (1, '2026-02-15', 2026, 'spring_training', 'manager')
+        """)
+        _conn_gs.commit()
+    _conn_gs.close()
+except Exception:
+    pass
+
 # --- Schema migration: add current_hour column if missing ---
 try:
     _conn = get_connection()
@@ -369,7 +383,8 @@ async def get_game_state():
     state = query("SELECT * FROM game_state WHERE id=1")
     if not state:
         return {"current_date": "2026-02-15", "season": 2026, "phase": "spring_training",
-                "user_team_id": None, "difficulty": "manager", "scouting_mode": "traditional"}
+                "user_team_id": None, "difficulty": "manager", "scouting_mode": "traditional",
+                "current_hour": 8}
     return state[0]
 
 

@@ -9,6 +9,7 @@ const STATE = {
   teamCity: '',
   teamName: '',
   currentDate: '',
+  currentHour: 8,
   season: 2026,
   phase: 'spring_training',
   calMonth: null,
@@ -32,6 +33,22 @@ const STATE = {
     minPA: 0
   }
 };
+
+// ============================================================
+// MOBILE SIDEBAR
+// ============================================================
+function toggleMobileSidebar() {
+  const sidebar = document.getElementById('sidebar');
+  const overlay = document.getElementById('mobile-sidebar-overlay');
+  sidebar.classList.toggle('mobile-open');
+  overlay.classList.toggle('active');
+}
+function closeMobileSidebar() {
+  const sidebar = document.getElementById('sidebar');
+  const overlay = document.getElementById('mobile-sidebar-overlay');
+  sidebar.classList.remove('mobile-open');
+  overlay.classList.remove('active');
+}
 
 // ============================================================
 // SPOILER-FREE MODE (hide scores until you watch)
@@ -305,7 +322,10 @@ function updateGameClock() {
     phase === 'regular_season' ? 'REG' :
     phase === 'postseason' ? 'POST' :
     phase === 'offseason' ? 'OFF' : '';
-  el.textContent = `${months[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()} [${phaseLabel}]`;
+  const hour = STATE.currentHour || 8;
+  const ampm = hour >= 12 ? 'PM' : 'AM';
+  const displayHour = hour > 12 ? hour - 12 : hour === 0 ? 12 : hour;
+  el.textContent = `${months[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()} ${displayHour}:00${ampm} [${phaseLabel}]`;
 }
 
 async function api(path, opts) {
@@ -492,6 +512,7 @@ async function loadState() {
   const s = await api('/game-state');
   if (!s) return;
   STATE.currentDate = s.current_date;
+  STATE.currentHour = s.current_hour || 8;
   STATE.season = s.season;
   STATE.phase = s.phase;
   if (s.user_team_id && !STATE.userTeamId) STATE.userTeamId = s.user_team_id;
@@ -507,7 +528,8 @@ async function loadState() {
       STATE.teamName = t.team.name;
     }
     document.getElementById('hdr-team').textContent = `${STATE.teamCity} ${STATE.teamName}`;
-    document.getElementById('hdr-date').textContent = fmtDate(STATE.currentDate);
+    const hdrDate = document.getElementById('hdr-date');
+    if (hdrDate) hdrDate.textContent = fmtDate(STATE.currentDate);
     document.getElementById('hdr-phase').textContent = STATE.phase.replace('_', ' ');
     updateGameClock();
 
@@ -606,6 +628,7 @@ const PAGE_TITLES = {
 };
 
 function showScreen(name) {
+  closeMobileSidebar();
   document.querySelectorAll('.content-screen').forEach(s => s.classList.remove('active'));
   // Update both old nav-btn and new sidebar nav-item
   document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
@@ -637,9 +660,15 @@ async function simDays(n) {
   const dayBtn = document.getElementById('sim-day-btn');
   const weekBtn = document.getElementById('sim-week-btn');
   oldBtns.forEach(b => { b.disabled = true; b.textContent = '...'; });
-  if (dayBtn) { dayBtn.disabled = true; dayBtn.textContent = 'Simulating...'; }
+  if (dayBtn) { dayBtn.disabled = true; dayBtn.textContent = 'Simming...'; }
   if (weekBtn) { weekBtn.disabled = true; }
-  const r = await post('/sim/advance', { days: n });
+  let r;
+  try {
+    r = await post('/sim/advance', { days: n });
+  } catch(err) {
+    console.error('Sim advance error:', err);
+    showToast('Sim error: ' + err.message, 'error');
+  }
   await loadState();
   const ticker = document.getElementById('ticker');
   if (r) {
@@ -703,9 +732,9 @@ async function simDays(n) {
   STATE.calYear = d.getFullYear();
   const active = document.querySelector('.content-screen.active');
   if (active) showScreen(active.id.replace('s-', ''));
-  oldBtns.forEach((b, i) => { b.disabled = false; b.textContent = i === 0 ? '\u25B6 Day' : '\u25B6\u25B6 Week'; });
-  if (dayBtn) { dayBtn.disabled = false; dayBtn.textContent = '\u25B6 Sim Day'; }
-  if (weekBtn) { weekBtn.disabled = false; weekBtn.textContent = '\u25B6\u25B6 Week'; }
+  oldBtns.forEach((b, i) => { b.disabled = false; b.textContent = i === 0 ? '+1d' : '+7d'; });
+  if (dayBtn) { dayBtn.disabled = false; dayBtn.textContent = '+1d'; }
+  if (weekBtn) { weekBtn.disabled = false; weekBtn.textContent = '+7d'; }
 }
 
 // ============================================================

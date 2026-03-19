@@ -697,6 +697,22 @@ a:hover { text-decoration: underline; }
   flex-shrink: 0;
 }
 
+.mobile-menu-btn {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: 20px;
+  width: 36px;
+  height: 36px;
+  cursor: pointer;
+  padding: 0;
+}
+.mobile-menu-btn:hover { background: var(--bg-hover); }
+
 .top-bar-left {
   display: flex;
   align-items: center;
@@ -1823,9 +1839,53 @@ input[type="range"]::-webkit-slider-thumb {
 }
 
 @media (max-width: 768px) {
-  #sidebar { display: none; }
-  #content { padding: 12px; }
+  #sidebar {
+    display: none;
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    z-index: 1000;
+    width: 260px;
+    box-shadow: 4px 0 20px rgba(0,0,0,0.3);
+  }
+  #sidebar.mobile-open {
+    display: flex;
+  }
+  .mobile-sidebar-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.5);
+    z-index: 999;
+  }
+  .mobile-sidebar-overlay.active { display: block; }
+  .mobile-menu-btn { display: flex; }
+  #content { padding: 10px; }
   .leaders-grid { grid-template-columns: 1fr; }
+  .dashboard-grid { grid-template-columns: 1fr; }
+  .responsive-2col { grid-template-columns: 1fr !important; }
+  .fin-grid { grid-template-columns: 1fr; }
+  .trade-layout { grid-template-columns: 1fr; }
+  .top-bar-center { gap: 8px; }
+  .game-clock { font-size: 12px; min-width: auto; padding: 2px 6px; }
+  .header-record, .header-phase { font-size: 11px; }
+  .page-title { font-size: 14px !important; }
+  #top-bar { padding: 0 10px; }
+  .chat-app { flex-direction: column; height: auto; min-height: calc(100vh - 120px); }
+  .chat-contacts { width: 100%; min-width: 0; border-right: none; border-bottom: 1px solid var(--border); max-height: 40vh; }
+  .chat-conversation { min-height: 300px; }
+  .cal-grid { grid-template-columns: repeat(7, 1fr); font-size: 11px; }
+  .section-bar { flex-wrap: wrap; gap: 8px; }
+  .filter-bar { flex-wrap: wrap; }
+}
+
+@media (max-width: 480px) {
+  #content { padding: 6px; }
+  .game-clock { font-size: 11px; }
+  .top-bar-center { flex-wrap: wrap; justify-content: center; }
+  .card { padding: 10px; }
+  .section-bar { padding: 8px; }
 }
 
 /* =============================================================

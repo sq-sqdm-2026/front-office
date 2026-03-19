@@ -176,22 +176,27 @@ def get_messages_for_team(team_id: int, unread_only: bool = False,
                          priority: str = None, limit: int = 50,
                          db_path: str = None) -> list:
     """Get messages for a team, optionally filtered by priority."""
+    # Check if priority column exists
+    from .db import get_connection
+    conn = get_connection(db_path)
+    cols = [row[1] for row in conn.execute("PRAGMA table_info(messages)").fetchall()]
+    conn.close()
+    has_priority = "priority" in cols
+
     conditions = []
     params = [team_id]
 
     if unread_only:
         conditions.append("AND is_read=0")
-    if priority:
+    if priority and has_priority:
         conditions.append("AND priority=?")
         params.append(priority)
 
     params.append(limit)
     condition_str = " ".join(conditions)
 
-    return query(f"""
-        SELECT * FROM messages
-        WHERE recipient_id=? AND recipient_type='user' {condition_str}
-        ORDER BY
+    if has_priority:
+        order_clause = """ORDER BY
             CASE priority
                 WHEN 'urgent' THEN 0
                 WHEN 'important' THEN 1
@@ -199,7 +204,14 @@ def get_messages_for_team(team_id: int, unread_only: bool = False,
                 WHEN 'low' THEN 3
                 ELSE 4
             END,
-            game_date DESC, id DESC
+            game_date DESC, id DESC"""
+    else:
+        order_clause = "ORDER BY game_date DESC, id DESC"
+
+    return query(f"""
+        SELECT * FROM messages
+        WHERE recipient_id=? AND recipient_type='user' {condition_str}
+        {order_clause}
         LIMIT ?
     """, tuple(params), db_path=db_path)
 
@@ -231,6 +243,28 @@ def get_message_priorities(team_id: int, db_path: str = None) -> dict:
     Returns:
         Dict with priority counts, e.g. {'urgent': 2, 'important': 5, 'normal': 10, 'low': 3}
     """
+    # Check if priority column exists
+    from .db import get_connection
+    conn = get_connection(db_path)
+    cols = [row[1] for row in conn.execute("PRAGMA table_info(messages)").fetchall()]
+    conn.close()
+
+    if "priority" not in cols:
+        # No priority column - count all as normal
+        total_rows = query("""
+            SELECT COUNT(*) as total,
+                   SUM(CASE WHEN is_read=0 THEN 1 ELSE 0 END) as unread
+            FROM messages WHERE recipient_id=? AND recipient_type='user'
+        """, (team_id,), db_path=db_path)
+        total = total_rows[0]["total"] if total_rows else 0
+        unread = total_rows[0]["unread"] if total_rows else 0
+        return {
+            "urgent": {"total": 0, "unread": 0},
+            "important": {"total": 0, "unread": 0},
+            "normal": {"total": total, "unread": unread},
+            "low": {"total": 0, "unread": 0},
+        }
+
     rows = query("""
         SELECT COALESCE(priority, 'normal') as priority,
                COUNT(*) as total,

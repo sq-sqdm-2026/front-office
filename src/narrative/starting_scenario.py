@@ -247,14 +247,18 @@ def select_starting_team(team_id: int, db_path: str = None) -> dict:
             execute(
                 """INSERT INTO messages
                    (game_date, sender_type, sender_name, recipient_type,
-                    recipient_id, subject, body, is_read, requires_response)
-                   VALUES ('2026-02-14', ?, ?, 'user', ?, ?, ?, 0, 0)""",
+                    recipient_id, subject, body, is_read, requires_response,
+                    priority, category)
+                   VALUES ('2026-02-14', ?, ?, 'user', ?, ?, ?, 0, 0,
+                    ?, ?)""",
                 (
                     msg["sender_type"],
                     msg["sender_name"],
                     team_id,
                     msg["subject"],
                     msg["body"],
+                    msg.get("priority", "important"),
+                    msg.get("category", "general"),
                 ),
                 db_path=db_path,
             )

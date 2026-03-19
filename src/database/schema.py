@@ -509,6 +509,8 @@ CREATE TABLE IF NOT EXISTS messages (
     is_read INTEGER NOT NULL DEFAULT 0,
     requires_response INTEGER NOT NULL DEFAULT 0,
     response_options_json TEXT DEFAULT NULL,  -- JSON array of possible responses
+    priority TEXT NOT NULL DEFAULT 'normal',  -- urgent, important, normal, low
+    category TEXT NOT NULL DEFAULT 'general',  -- trade_offer, injury, transaction, etc.
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
