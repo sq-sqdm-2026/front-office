@@ -3812,11 +3812,20 @@ async function loadFinances() {
       <div class="fin-line"><span>Franchise Value</span><span>${fmt$(team?.franchise_value)}</span></div>
       <div class="fin-line"><span>Avg Attendance</span><span>${(fin.attendance_avg || 0).toLocaleString()}</span></div>
       <div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border)">
-        <div style="font-size:9px;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:4px">Luxury Tax Thresholds</div>
-        <div class="fin-line" style="font-size:11px"><span>1st Threshold (20%)</span><span>$237M</span></div>
-        <div class="fin-line" style="font-size:11px"><span>2nd Threshold (32%)</span><span>$257M</span></div>
-        <div class="fin-line" style="font-size:11px"><span>3rd Threshold (50%+)</span><span>$277M</span></div>
-        <div class="fin-line" style="font-size:11px;font-weight:700"><span>Your Payroll</span><span class="${fin.payroll > 237000000 ? 'negative' : ''}">${fmt$(fin.payroll)}</span></div>
+        <div style="font-size:9px;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:4px">Payroll</div>
+        <div class="fin-line" style="font-size:13px;font-weight:700">
+          <span>Your Payroll</span>
+          <span class="${(team?.payroll_pct || 0) > 100 ? 'negative' : ''}">${fmt$(fin.payroll)}</span>
+        </div>
+        <div class="fin-line" style="font-size:11px"><span>Owner's Budget</span><span>${fmt$(team?.payroll_budget)}</span></div>
+        <div class="fin-line" style="font-size:11px"><span>Budget Usage</span>
+          <span class="${(team?.payroll_pct || 0) > 120 ? 'negative' : (team?.payroll_pct || 0) > 100 ? 'warn' : 'positive'}">${team?.payroll_pct || 0}%</span>
+        </div>
+        <div style="margin-top:6px;height:6px;background:var(--bg-2);border-radius:3px;overflow:hidden">
+          <div style="height:100%;width:${Math.min(100, team?.payroll_pct || 0)}%;background:${(team?.payroll_pct || 0) > 100 ? 'var(--red)' : 'var(--green)'};border-radius:3px"></div>
+        </div>
+        <div style="margin-top:8px;font-size:9px;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px">Luxury Tax</div>
+        <div class="fin-line" style="font-size:11px"><span>CBT Threshold</span><span>$237M</span></div>
       </div>
     </div>
     <div class="card"><h3>Budget Allocations</h3>
@@ -3884,7 +3893,12 @@ async function loadFinances() {
         </div>
       ` : '<div style="color:var(--text-dim)">Loading stadium data...</div>'}
     </div>
+    <div class="card" id="coaching-card"><h3>Coaching Staff</h3>
+      <div id="coaching-body"><div class="loading"><span class="spinner"></span></div></div>
+    </div>
   </div>`;
+  // Load coaching staff async
+  loadCoachingStaff();
 }
 
 function updateBudgetDisplay(e) {
@@ -3924,6 +3938,99 @@ async function updateBudget(type, value) {
   } catch (err) {
     showToast('Error updating', 'error');
   }
+}
+
+// ============================================================
+// COACHING STAFF MANAGEMENT
+// ============================================================
+async function loadCoachingStaff() {
+  if (!STATE.userTeamId) return;
+  const el = document.getElementById('coaching-body');
+  if (!el) return;
+
+  const [staff, available] = await Promise.all([
+    api('/coaching-staff/' + STATE.userTeamId),
+    api('/coaching-staff/available')
+  ]);
+
+  const roles = ['manager', 'hitting_coach', 'pitching_coach'];
+  const roleLabels = { manager: 'Manager', hitting_coach: 'Hitting Coach', pitching_coach: 'Pitching Coach' };
+  const currentStaff = staff?.staff || [];
+
+  let html = '';
+  for (const role of roles) {
+    const coach = currentStaff.find(c => c.role === role);
+    if (coach) {
+      html += `<div style="padding:8px 0;border-bottom:1px solid var(--border-light);display:flex;justify-content:space-between;align-items:center">
+        <div>
+          <div style="font-weight:600;font-size:12px">${coach.name}</div>
+          <div style="font-size:10px;color:var(--text-dim)">${roleLabels[role]} | ${fmt$(coach.annual_salary)}/yr | ${coach.years_remaining}yr</div>
+          <div style="font-size:10px;color:var(--text-dim)">${coach.personality || ''}</div>
+        </div>
+        <button class="btn btn-sm" style="font-size:9px;padding:2px 6px;color:var(--red)" onclick="fireCoach(${coach.id})">Fire</button>
+      </div>`;
+    } else {
+      const candidates = (available || []).filter(c => c.role === role).slice(0, 3);
+      html += `<div style="padding:8px 0;border-bottom:1px solid var(--border-light)">
+        <div style="font-weight:600;font-size:12px;color:var(--text-dim)">${roleLabels[role]} — VACANT</div>
+        ${candidates.length ? candidates.map(c => `
+          <div style="padding:4px 0;display:flex;justify-content:space-between;align-items:center;font-size:11px">
+            <span>${c.name} (skill:${c.skill_rating || '?'}) ${fmt$(c.annual_salary)}/yr</span>
+            <button class="btn btn-sm" style="font-size:9px;padding:2px 6px" onclick="hireCoach(${c.id})">Hire</button>
+          </div>
+        `).join('') : '<div style="font-size:10px;color:var(--text-dim)">No candidates available</div>'}
+      </div>`;
+    }
+  }
+
+  // Show impact bonuses
+  const impact = staff?.impact || {};
+  html += `<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border);font-size:10px">
+    <div style="display:flex;gap:12px;flex-wrap:wrap">
+      <span>Hitting +${impact.hitting_bonus || 0}</span>
+      <span>Pitching +${impact.pitching_bonus || 0}</span>
+      <span>Development +${impact.development_bonus || 0}</span>
+      <span>Strategy +${impact.strategy_bonus || 0}</span>
+    </div>
+  </div>`;
+
+  // Auto-lineup toggle
+  html += `<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border)">
+    <button class="btn btn-sm" onclick="coachSetLineup()" style="margin-right:4px">Auto-Set Lineup</button>
+    <button class="btn btn-sm" onclick="coachSetRotation()">Auto-Set Rotation</button>
+  </div>`;
+
+  el.innerHTML = html;
+}
+
+async function hireCoach(coachId) {
+  const r = await post('/coaching-staff/' + STATE.userTeamId + '/hire/' + coachId, {});
+  if (r?.success) {
+    showToast(r.message || 'Coach hired!', 'success');
+    loadCoachingStaff();
+  } else {
+    showToast(r?.error || 'Failed to hire', 'error');
+  }
+}
+
+async function fireCoach(coachId) {
+  const r = await post('/coaching-staff/' + STATE.userTeamId + '/fire/' + coachId, {});
+  if (r?.success) {
+    showToast(r.message || 'Coach fired', 'success');
+    loadCoachingStaff();
+  } else {
+    showToast(r?.error || 'Failed to fire', 'error');
+  }
+}
+
+async function coachSetLineup() {
+  const r = await post('/roster/' + STATE.userTeamId + '/auto-lineup', {});
+  showToast(r?.message || 'Lineup set by coaching staff', 'success');
+}
+
+async function coachSetRotation() {
+  const r = await post('/roster/' + STATE.userTeamId + '/auto-lineup', { rotation_only: true });
+  showToast(r?.message || 'Rotation set by coaching staff', 'success');
 }
 
 // ============================================================
@@ -4769,9 +4876,14 @@ function renderMessageConversation(msg) {
       ${responseHtml}
     </div>`;
 
-  // Show text input area for free-form responses (not trade offers)
+  // Show text input area for:
+  // - Messages that require response but don't have preset options (owner, coaches)
+  // - All owner/reporter/coach messages (allow free-text reply even if not "required")
+  const showInput = msg.sender_type === 'owner' || msg.sender_type === 'coach' ||
+    msg.sender_type === 'reporter' || msg.sender_type === 'agent' ||
+    (msg.requires_response && !msg.response_options_json);
   if (inputArea) {
-    inputArea.style.display = (msg.requires_response && !msg.response_options_json) ? 'flex' : 'none';
+    inputArea.style.display = showInput ? 'flex' : 'none';
   }
 }
 
@@ -4810,12 +4922,18 @@ async function sendChatMessage() {
   if (!input || !input.value.trim()) return;
   const body = input.value.trim();
   input.value = '';
-  // Send as user message (recipient is the sender of current conversation)
+
+  // Find the currently selected message to reply in context
+  const msgs = await api('/messages?unread_only=false');
+  const selected = (msgs || []).find(m => m.id === _msgSelectedId);
+
   await post('/messages/send', {
-    recipient_type: 'system',
-    recipient_id: 0,
+    recipient_type: selected?.sender_type || 'system',
+    recipient_id: selected?.sender_id || 0,
+    reply_to_id: _msgSelectedId || null,
     body: body
   });
+  showToast('Message sent', 'success');
   loadMessages();
 }
 

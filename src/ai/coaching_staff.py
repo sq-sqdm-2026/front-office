@@ -295,7 +295,7 @@ def generate_coaching_pool():
     )
     for role in fa_roles:
         coach = _make_coach(0, role, is_available=1)
-        coach["team_id"] = 0  # no team
+        coach["team_id"] = None  # no team (free agent coach)
         _insert_coach(coach)
         coaches_created += 1
 
