@@ -38,7 +38,7 @@ def send_message(team_id: int, category: str, subject: str, body: str,
         The message ID
     """
     if game_date is None:
-        state = query("SELECT current_date FROM game_state WHERE id=1", db_path=db_path)
+        state = query("SELECT * FROM game_state WHERE id=1", db_path=db_path)
         game_date = state[0]["current_date"] if state else date.today().isoformat()
 
     if priority is None:

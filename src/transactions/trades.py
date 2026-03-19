@@ -210,7 +210,7 @@ def execute_trade(proposing_team_id: int, receiving_team_id: int,
                     (cash_included, receiving_team_id))
 
     # Log transaction
-    state = conn.execute("SELECT current_date FROM game_state WHERE id=1").fetchone()
+    state = conn.execute("SELECT * FROM game_state WHERE id=1").fetchone()
     game_date = state["current_date"] if state else date.today().isoformat()
 
     details = {

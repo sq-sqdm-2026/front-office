@@ -41,7 +41,7 @@ def _get_user_team_id(db_path: str = None) -> int:
 
 def _get_game_date(db_path: str = None) -> str:
     """Retrieve the current game date from game_state."""
-    gs = query("SELECT current_date FROM game_state WHERE id=1", db_path=db_path)
+    gs = query("SELECT * FROM game_state WHERE id=1", db_path=db_path)
     return gs[0]["current_date"] if gs else "2026-02-15"
 
 

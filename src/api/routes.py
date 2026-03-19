@@ -1850,7 +1850,7 @@ class MessageSend(BaseModel):
 @app.post("/messages/send")
 async def send_user_message(msg: MessageSend):
     """Send a message to a GM or owner."""
-    state = query("SELECT current_date FROM game_state WHERE id=1")
+    state = query("SELECT * FROM game_state WHERE id=1")
     game_date = state[0]["current_date"] if state else "2025-03-27"
 
     execute("""
@@ -2531,7 +2531,7 @@ async def draft_prospect_scouting_report(prospect_id: int, scout_quality: int = 
 @app.get("/injuries/check")
 async def check_injuries():
     """Run injury checks for the current date."""
-    state = query("SELECT current_date FROM game_state WHERE id=1")
+    state = query("SELECT * FROM game_state WHERE id=1")
     game_date = state[0]["current_date"] if state else "2025-03-27"
     events = check_injuries_for_day(game_date)
     return {"date": game_date, "events": events}
@@ -3467,7 +3467,7 @@ async def list_saves():
             import sqlite3
             conn = sqlite3.connect(str(f))
             conn.row_factory = sqlite3.Row
-            row = conn.execute("SELECT current_date, season, phase, user_team_id FROM game_state WHERE id=1").fetchone()
+            row = conn.execute("SELECT * FROM game_state WHERE id=1").fetchone()
             conn.close()
             save_info = {
                 "name": f.stem,
@@ -3713,7 +3713,7 @@ async def commissioner_force_trade(req: ForceTradeRequest):
         execute("UPDATE teams SET cash=cash+? WHERE id=?", (req.cash, req.team2_id))
 
     # Log transaction
-    state = query("SELECT current_date FROM game_state WHERE id=1")
+    state = query("SELECT * FROM game_state WHERE id=1")
     game_date = state[0]['current_date'] if state else str(date.today())
 
     details = {
@@ -3765,7 +3765,7 @@ async def commissioner_force_sign(player_id: int, req: ForceSignRequest):
 
     # Log transaction
     import json as _json
-    state = query("SELECT current_date FROM game_state WHERE id=1")
+    state = query("SELECT * FROM game_state WHERE id=1")
     game_date = state[0]['current_date'] if state else today
 
     details = {
@@ -5412,7 +5412,7 @@ async def recalibrate_ratings():
             adjustments[col]["adjusted"] = False
 
     # Log the recalibration
-    state = conn.execute("SELECT current_date, season FROM game_state WHERE id=1").fetchone()
+    state = conn.execute("SELECT * FROM game_state WHERE id=1").fetchone()
     if state:
         import json
         conn.execute("""
@@ -5453,7 +5453,7 @@ async def character_history(character_id: int):
 async def process_character_careers():
     """Trigger end-of-season career processing for all NPC characters."""
     from ..ai.career_arcs import process_career_changes
-    state = query("SELECT current_date FROM game_state WHERE id=1")
+    state = query("SELECT * FROM game_state WHERE id=1")
     if not state:
         raise HTTPException(status_code=400, detail="No game state found")
     game_date = state[0]["current_date"]
@@ -5741,7 +5741,7 @@ async def get_team_news_articles(team_id: int, limit: int = 20):
 @app.post("/news/generate")
 async def trigger_article_generation():
     """Manually trigger article generation for the current game date."""
-    state = query("SELECT current_date, season FROM game_state WHERE id=1")
+    state = query("SELECT * FROM game_state WHERE id=1")
     if not state:
         raise HTTPException(400, "No game state found")
 
@@ -5859,7 +5859,7 @@ async def api_get_record_watch():
 async def api_check_records():
     """Manually trigger a record check against current stats."""
     try:
-        state = query("SELECT current_date FROM game_state WHERE id=1")
+        state = query("SELECT * FROM game_state WHERE id=1")
         if not state:
             raise HTTPException(404, "No game state found")
         game_date = state[0]["current_date"]

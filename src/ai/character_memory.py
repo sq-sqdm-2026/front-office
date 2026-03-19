@@ -79,7 +79,7 @@ def store_memory(character_id: int, character_type: str, category: str,
     importance = max(1, min(10, importance))
 
     if game_date is None:
-        gs = query("SELECT current_date FROM game_state WHERE id=1", db_path=db_path)
+        gs = query("SELECT * FROM game_state WHERE id=1", db_path=db_path)
         game_date = gs[0]["current_date"] if gs else "2026-01-01"
 
     _ensure_table(db_path)

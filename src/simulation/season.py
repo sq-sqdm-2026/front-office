@@ -403,7 +403,7 @@ def _load_team_lineup(team_id: int, db_path: str = None, opposing_pitcher_throws
             fatigue_data = {}
 
     # Get current date for rest calculation
-    state = query("SELECT current_date FROM game_state WHERE id=1", db_path=db_path)
+    state = query("SELECT * FROM game_state WHERE id=1", db_path=db_path)
     current_date = state[0]["current_date"] if state else "2026-02-15"
     from datetime import datetime
     current = datetime.fromisoformat(current_date).date()
@@ -725,7 +725,7 @@ def _rotate_starter(team_id: int, db_path: str = None) -> int:
     # ------------------------------------------------------------------
     # 2. Determine current date
     # ------------------------------------------------------------------
-    state = query("SELECT current_date FROM game_state WHERE id=1", db_path=db_path)
+    state = query("SELECT * FROM game_state WHERE id=1", db_path=db_path)
     current_date = state[0]["current_date"] if state else "2026-02-15"
     current = datetime.fromisoformat(current_date).date()
 
@@ -1146,7 +1146,7 @@ def auto_trim_roster_for_opening_day(db_path: str = None):
 def sim_day(game_date: str = None, db_path: str = None) -> list:
     """Simulate all games for a given date. Returns list of results."""
     if game_date is None:
-        state = query("SELECT current_date FROM game_state WHERE id=1", db_path=db_path)
+        state = query("SELECT * FROM game_state WHERE id=1", db_path=db_path)
         game_date = state[0]["current_date"]
 
     parsed_date = date.fromisoformat(game_date)

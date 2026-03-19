@@ -509,7 +509,7 @@ def generate_article(team_id: int, event_type: str, context: dict = None):
         return None
 
     # Get current game date
-    state = query("SELECT current_date FROM game_state WHERE id=1")
+    state = query("SELECT * FROM game_state WHERE id=1")
     game_date = state[0]["current_date"] if state else "2026-03-27"
 
     # Insert article

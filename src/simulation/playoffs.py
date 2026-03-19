@@ -260,7 +260,7 @@ def _save_playoff_game_stats(conn, game_result: dict, home_id: int, away_id: int
     from .season import _generate_key_plays, _estimate_attendance
 
     # Get current game date from game_state
-    state = query("SELECT current_date FROM game_state WHERE id=1", db_path=db_path)
+    state = query("SELECT * FROM game_state WHERE id=1", db_path=db_path)
     game_date = state[0]["current_date"] if state else "2026-10-01"
 
     # Map round to series_type

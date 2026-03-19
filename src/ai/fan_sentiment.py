@@ -175,7 +175,7 @@ def update_fan_sentiment(team_id: int, events: list):
     att_mod = calculate_attendance_modifier_value(score)
 
     # Get game date
-    state = query("SELECT current_date FROM game_state WHERE id=1")
+    state = query("SELECT * FROM game_state WHERE id=1")
     game_date = state[0]["current_date"] if state else None
 
     execute(
@@ -458,7 +458,7 @@ def calculate_fan_sentiment(team_id: int, db_path: str = None) -> dict:
     team = team[0]
     market_size = team.get("market_size", 3)
 
-    state = query("SELECT season, phase, current_date FROM game_state WHERE id=1", db_path=db_path)
+    state = query("SELECT * FROM game_state WHERE id=1", db_path=db_path)
     if not state:
         return {"team_id": team_id, "sentiment_score": 50}
     season = state[0]["season"]

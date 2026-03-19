@@ -217,7 +217,7 @@ def evaluate_gm_performance(team_id: int, db_path: str = None) -> dict:
         return {"error": "No job security record"}
     security = security[0]
 
-    state = query("SELECT current_date, season FROM game_state WHERE id=1", db_path=db_path)
+    state = query("SELECT * FROM game_state WHERE id=1", db_path=db_path)
     if not state:
         return {"error": "No game state"}
     season = state[0]["season"]

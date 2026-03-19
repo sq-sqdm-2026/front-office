@@ -341,7 +341,7 @@ def sign_free_agent(player_id: int, team_id: int, salary: int, years: int,
     """, (team_id, player_id))
 
     # Create contract
-    state = conn.execute("SELECT current_date FROM game_state WHERE id=1").fetchone()
+    state = conn.execute("SELECT * FROM game_state WHERE id=1").fetchone()
     game_date = state["current_date"] if state else "2025-01-01"
 
     conn.execute("""

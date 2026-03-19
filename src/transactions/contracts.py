@@ -873,7 +873,7 @@ def check_10_and_5_rights(player_id: int, db_path: str = None) -> bool:
 
         # Use game_state current_date for in-game time rather than real date
         game_state = query(
-            "SELECT current_date FROM game_state WHERE id=1", db_path=db_path
+            "SELECT * FROM game_state WHERE id=1", db_path=db_path
         )
         if game_state and game_state[0]["current_date"]:
             try:

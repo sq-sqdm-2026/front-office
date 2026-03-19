@@ -20,7 +20,7 @@ def call_up_player(player_id: int, db_path: str = None) -> dict:
         return {"error": "Player is not in the minors"}
 
     # Check roster limits (26 regular, 28 in September)
-    current_date = query("SELECT current_date FROM game_state WHERE id=1", db_path=db_path)
+    current_date = query("SELECT * FROM game_state WHERE id=1", db_path=db_path)
     game_date = current_date[0]["current_date"] if current_date else "2026-01-01"
 
     from datetime import date
@@ -55,7 +55,7 @@ def call_up_player(player_id: int, db_path: str = None) -> dict:
 
     conn.execute("UPDATE players SET roster_status='active' WHERE id=?", (player_id,))
 
-    state = conn.execute("SELECT current_date FROM game_state WHERE id=1").fetchone()
+    state = conn.execute("SELECT * FROM game_state WHERE id=1").fetchone()
     call_up_date = state["current_date"] if state else "2025-01-01"
 
     conn.execute("""
@@ -87,7 +87,7 @@ def option_player(player_id: int, level: str = "minors_aaa",
     conn.execute("UPDATE players SET roster_status=?, option_years_remaining=option_years_remaining-1 WHERE id=?",
                 (level, player_id))
 
-    state = conn.execute("SELECT current_date FROM game_state WHERE id=1").fetchone()
+    state = conn.execute("SELECT * FROM game_state WHERE id=1").fetchone()
     option_date = state["current_date"] if state else "2025-01-01"
 
     conn.execute("""
@@ -109,7 +109,7 @@ def dfa_player(player_id: int, db_path: str = None) -> dict:
         conn.close()
         return {"error": "Player not found"}
 
-    state = conn.execute("SELECT current_date FROM game_state WHERE id=1").fetchone()
+    state = conn.execute("SELECT * FROM game_state WHERE id=1").fetchone()
     dfa_date = state["current_date"] if state else "2025-01-01"
 
     conn.execute("UPDATE players SET roster_status='dfa_waivers', on_forty_man=0 WHERE id=?",
@@ -200,7 +200,7 @@ def release_player(player_id: int, db_path: str = None) -> dict:
     conn.execute("DELETE FROM contracts WHERE player_id=?", (player_id,))
 
     # Log the transaction
-    state = conn.execute("SELECT current_date FROM game_state WHERE id=1").fetchone()
+    state = conn.execute("SELECT * FROM game_state WHERE id=1").fetchone()
     release_date = state["current_date"] if state else "2025-01-01"
 
     conn.execute("""
@@ -320,7 +320,7 @@ def september_callup_auto(team_id: int, db_path: str = None) -> dict:
     conn = get_connection(db_path)
 
     # Check if September
-    state = conn.execute("SELECT current_date FROM game_state WHERE id=1").fetchone()
+    state = conn.execute("SELECT * FROM game_state WHERE id=1").fetchone()
     if not state:
         conn.close()
         return {"error": "No game state"}
@@ -393,7 +393,7 @@ def process_rule_5_draft(season: int, db_path: str = None) -> list:
     conn = get_connection(db_path)
 
     # Get current game state
-    state = conn.execute("SELECT current_date, user_team_id FROM game_state WHERE id=1").fetchone()
+    state = conn.execute("SELECT * FROM game_state WHERE id=1").fetchone()
     current_date = state["current_date"] if state else "2026-01-01"
     user_team_id = state["user_team_id"] if state else None
 
@@ -636,7 +636,7 @@ def activate_from_il(player_id: int, db_path: str = None) -> dict:
         return {"error": "Player is still on a rehab assignment."}
 
     # Check roster space
-    state = conn.execute("SELECT current_date FROM game_state WHERE id=1").fetchone()
+    state = conn.execute("SELECT * FROM game_state WHERE id=1").fetchone()
     game_date = state["current_date"] if state else "2026-01-01"
 
     from datetime import date

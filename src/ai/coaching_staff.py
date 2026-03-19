@@ -836,7 +836,7 @@ def hire_coach(team_id: int, coach_id: int, role: str) -> dict:
     )
 
     # Log as a transaction
-    game_date = conn.execute("SELECT current_date FROM game_state WHERE id=1").fetchone()
+    game_date = conn.execute("SELECT * FROM game_state WHERE id=1").fetchone()
     if game_date:
         conn.execute("""
             INSERT INTO transactions (transaction_date, transaction_type, details_json, team1_id)
@@ -889,7 +889,7 @@ def fire_coach(coach_id: int) -> dict:
     )
 
     # Log transaction
-    game_date = conn.execute("SELECT current_date FROM game_state WHERE id=1").fetchone()
+    game_date = conn.execute("SELECT * FROM game_state WHERE id=1").fetchone()
     if game_date:
         conn.execute("""
             INSERT INTO transactions (transaction_date, transaction_type, details_json, team1_id)

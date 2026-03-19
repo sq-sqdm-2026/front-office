@@ -384,7 +384,7 @@ def make_expansion_pick(expansion_team_id: int, player_id: int,
         "SELECT id FROM contracts WHERE player_id=?", (player_id,)
     ).fetchone()
     if not existing_contract:
-        gs = conn.execute("SELECT current_date FROM game_state WHERE id=1").fetchone()
+        gs = conn.execute("SELECT * FROM game_state WHERE id=1").fetchone()
         current_date = gs["current_date"] if gs else "2026-01-01"
         conn.execute("""
             INSERT INTO contracts (player_id, team_id, total_years, years_remaining,
@@ -393,7 +393,7 @@ def make_expansion_pick(expansion_team_id: int, player_id: int,
         """, (player_id, expansion_team_id, current_date))
 
     # Log transaction
-    gs = conn.execute("SELECT current_date FROM game_state WHERE id=1").fetchone()
+    gs = conn.execute("SELECT * FROM game_state WHERE id=1").fetchone()
     current_date = gs["current_date"] if gs else "2026-01-01"
     conn.execute("""
         INSERT INTO transactions (transaction_date, transaction_type, details_json,

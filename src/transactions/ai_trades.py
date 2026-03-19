@@ -420,7 +420,7 @@ def process_ai_trades(game_date: str, db_path: str = None) -> list:
 
     # Get user team to exclude from auto-execution
     state = conn.execute(
-        "SELECT user_team_id, season, current_date FROM game_state WHERE id=1"
+        "SELECT * FROM game_state WHERE id=1"
     ).fetchone()
     user_team_id = state["user_team_id"] if state else None
     season = state["season"] if state else 2026
@@ -813,7 +813,7 @@ def accept_trade_offer(message_id: int, db_path: str = None) -> dict:
                     (proposing_team_id, pid))
 
     # Get game date and team names for the transaction log
-    gs = conn.execute("SELECT current_date FROM game_state WHERE id=1").fetchone()
+    gs = conn.execute("SELECT * FROM game_state WHERE id=1").fetchone()
     game_date = gs["current_date"] if gs else date.today().isoformat()
 
     team1_info = conn.execute("SELECT city, name FROM teams WHERE id=?", (proposing_team_id,)).fetchone()
