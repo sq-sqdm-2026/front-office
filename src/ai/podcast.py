@@ -620,10 +620,12 @@ async def generate_weekly_podcast(game_date: str, season: int, db_path: str = No
         else:
             # Fallback to template-based generation
             title, script = _generate_fallback_script(summary, episode_number, week_number)
+            script = "[AI Offline — template script] " + script
 
     except Exception:
         # Fallback to template-based generation
         title, script = _generate_fallback_script(summary, episode_number, week_number)
+        script = "[AI Offline — template script] " + script
 
     # Determine topics covered
     topics = []

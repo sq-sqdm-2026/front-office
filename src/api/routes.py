@@ -1893,6 +1893,18 @@ async def set_ollama_url(req: OllamaUrlUpdate):
     return {"success": True, "url": new_url}
 
 
+@app.get("/llm/status")
+async def llm_status(since: str = None):
+    """Get LLM call stats and recent failures."""
+    from ..ai.ollama_client import get_llm_stats, get_llm_failures
+    health = await check_health()
+    return {
+        "connected": health.get("status") == "healthy",
+        "stats": get_llm_stats(),
+        "recent_failures": get_llm_failures(since),
+    }
+
+
 @app.get("/game/{schedule_id}/boxscore")
 async def get_boxscore(schedule_id: int):
     """Full box score with linescore, batting lines, pitching lines."""

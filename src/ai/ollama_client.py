@@ -18,12 +18,48 @@ MODELS = {
     "batch": "qwen3:32b",       # offseason processing
 }
 
+# Track LLM failures so the UI can show them
+import logging
+from collections import deque
+from datetime import datetime
+
+logger = logging.getLogger("front_office.llm")
+_llm_failures: deque = deque(maxlen=50)  # Last 50 failures
+_llm_stats = {"calls": 0, "failures": 0, "last_failure": None}
+
+
+def get_llm_failures(since: str = None) -> list:
+    """Return recent LLM failures, optionally since a timestamp."""
+    if since:
+        return [f for f in _llm_failures if f["time"] > since]
+    return list(_llm_failures)
+
+
+def get_llm_stats() -> dict:
+    """Return LLM call statistics."""
+    return dict(_llm_stats)
+
+
+def _record_failure(task_type: str, model: str, error: str):
+    """Record an LLM failure for UI reporting."""
+    failure = {
+        "time": datetime.now().isoformat(),
+        "task_type": task_type,
+        "model": model,
+        "error": str(error),
+    }
+    _llm_failures.append(failure)
+    _llm_stats["failures"] += 1
+    _llm_stats["last_failure"] = failure
+    logger.warning("LLM call failed [%s/%s]: %s", task_type, model, error)
+
 
 async def generate(prompt: str, task_type: str = "creative",
                    system_prompt: str = None, temperature: float = 0.7,
                    max_tokens: int = 1024) -> str:
     """Send a prompt to Ollama and return the response text."""
     model = MODELS.get(task_type, MODELS["creative"])
+    _llm_stats["calls"] += 1
 
     payload = {
         "model": model,
@@ -43,6 +79,7 @@ async def generate(prompt: str, task_type: str = "creative",
             resp.raise_for_status()
             return resp.json().get("response", "")
     except Exception as e:
+        _record_failure(task_type, model, e)
         return f"[LLM unavailable: {e}]"
 
 

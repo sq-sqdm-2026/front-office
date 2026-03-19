@@ -135,12 +135,13 @@ How's your job security?"""
         if result and "error" not in result:
             return result
     except Exception as e:
-        # Ollama unavailable or error - gracefully degrade
         pass
 
-    # Tier 1 fallback: algorithmic evaluation
-    return _algorithmic_trade_eval(gm, offered_details, requested_details,
-                                   cash_included, receiving_team_id, db_path)
+    # Fallback: algorithmic evaluation (LLM was unavailable)
+    fallback = _algorithmic_trade_eval(gm, offered_details, requested_details,
+                                       cash_included, receiving_team_id, db_path)
+    fallback["_used_fallback"] = True
+    return fallback
 
 
 def _algorithmic_trade_eval(gm: dict, offered: list, requested: list,
@@ -538,13 +539,13 @@ Use scouting language like: plus, loose arm action, projectable, barrel control,
         narrative = await generate(prompt, task_type="creative", system_prompt=system)
         if narrative and "[LLM unavailable" not in narrative:
             return narrative
-    except Exception as e:
-        # Ollama error or timeout - fall back gracefully
+    except Exception:
         pass
 
-    # Fallback: algorithmic narrative
-    return _generate_algorithmic_narrative(player, present_grades, future_grades,
-                                           ceiling, floor, is_pitcher, mlb_comp)
+    # Fallback: algorithmic narrative (LLM was unavailable)
+    fallback_text = _generate_algorithmic_narrative(player, present_grades, future_grades,
+                                                     ceiling, floor, is_pitcher, mlb_comp)
+    return "[AI Offline] " + fallback_text
 
 
 def _generate_algorithmic_narrative(player: dict, present_grades: dict, future_grades: dict,

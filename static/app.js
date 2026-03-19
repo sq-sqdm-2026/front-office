@@ -583,8 +583,9 @@ async function loadState() {
   const teams = await api('/teams');
   STATE.teams = teams || [];
 
-  // Refresh message badge (non-blocking)
+  // Refresh message badge and LLM status (non-blocking)
   refreshMessageBadge();
+  checkLlmFailures();
 }
 
 async function refreshMessageBadge() {
@@ -5073,6 +5074,45 @@ async function checkOllamaStatus() {
   } catch (e) {
     el.innerHTML = '<span style="color:var(--red)">&#10007; Ollama not running</span><br>' +
       '<span style="font-size:11px">Start with: <code>ollama serve</code></span>';
+  }
+}
+
+// ============================================================
+// LLM FAILURE MONITOR
+// ============================================================
+let _lastLlmCheck = null;
+
+async function checkLlmFailures() {
+  const params = _lastLlmCheck ? `?since=${encodeURIComponent(_lastLlmCheck)}` : '';
+  const data = await api('/llm/status' + params);
+  if (!data) return;
+  _lastLlmCheck = new Date().toISOString();
+
+  // Update top-bar LLM indicator
+  const indicator = document.getElementById('llm-indicator');
+  if (indicator) {
+    if (!data.connected) {
+      indicator.textContent = 'AI: Offline';
+      indicator.className = 'llm-indicator offline';
+      indicator.title = 'Ollama not connected — using fallback templates';
+    } else if (data.stats.failures > 0) {
+      indicator.textContent = `AI: ${data.stats.failures} errors`;
+      indicator.className = 'llm-indicator errors';
+      indicator.title = `${data.stats.calls} LLM calls, ${data.stats.failures} failed`;
+    } else {
+      indicator.textContent = 'AI: Connected';
+      indicator.className = 'llm-indicator connected';
+      indicator.title = `${data.stats.calls} LLM calls, all successful`;
+    }
+  }
+
+  // Show toast for new failures
+  const failures = data.recent_failures || [];
+  if (failures.length > 0) {
+    const latest = failures[failures.length - 1];
+    const taskLabel = latest.task_type === 'strategic' ? 'Trade/GM decision' :
+                      latest.task_type === 'creative' ? 'Scouting report/article' : latest.task_type;
+    showToast(`AI failed: ${taskLabel} used fallback template. Check Ollama in Settings.`, 'error');
   }
 }
 
