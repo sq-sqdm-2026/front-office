@@ -11,9 +11,10 @@ DB_PATH = Path(__file__).parent.parent.parent / "front_office.db"
 
 def get_connection(db_path: str = None) -> sqlite3.Connection:
     path = db_path or str(DB_PATH)
-    conn = sqlite3.connect(path)
+    conn = sqlite3.connect(path, timeout=30)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=30000")
     conn.execute("PRAGMA foreign_keys=ON")
     return conn
 

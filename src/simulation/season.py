@@ -395,7 +395,7 @@ def _load_team_lineup(team_id: int, db_path: str = None, opposing_pitcher_throws
     team = query("SELECT team_strategy_json FROM teams WHERE id=?",
                  (team_id,), db_path=db_path)
     fatigue_data = {}
-    if team and team[0].get("team_strategy_json"):
+    if team and team[0]["team_strategy_json"]:
         try:
             strategy = json.loads(team[0]["team_strategy_json"])
             fatigue_data = strategy.get("pitcher_fatigue", {})
@@ -810,18 +810,15 @@ def _rotate_starter(team_id: int, db_path: str = None) -> int:
 
 def _persist_rotation(team_id: int, rotation_ids: list, db_path: str = None):
     """Save the current rotation order back to teams.rotation_json."""
-    conn = get_connection(db_path)
-    conn.execute("UPDATE teams SET rotation_json=? WHERE id=?",
-                 (json.dumps(rotation_ids), team_id))
-    conn.commit()
-    conn.close()
+    execute("UPDATE teams SET rotation_json=? WHERE id=?",
+            (json.dumps(rotation_ids), team_id), db_path=db_path)
 
 
 def _load_team_strategy(team_id: int, db_path: str = None) -> dict:
     """Load team strategy settings from the database."""
     team = query("SELECT team_strategy_json FROM teams WHERE id=?",
                  (team_id,), db_path=db_path)
-    if team and team[0].get("team_strategy_json"):
+    if team and team[0]["team_strategy_json"]:
         return get_strategy(team[0]["team_strategy_json"])
     return get_strategy()
 
@@ -1167,13 +1164,13 @@ def sim_day(game_date: str = None, db_path: str = None) -> list:
     """, (game_date,), db_path=db_path)
 
     results = []
-    conn = get_connection(db_path)
 
     for game in games:
         home_id = game["home_team_id"]
         away_id = game["away_team_id"]
 
         # First pass: load pitchers to determine starter handedness
+        # (these may write to DB via _persist_rotation, so done before opening conn)
         home_lineup, home_pitchers = _load_team_lineup(home_id, db_path)
         away_lineup, away_pitchers = _load_team_lineup(away_id, db_path)
 
@@ -1184,6 +1181,9 @@ def sim_day(game_date: str = None, db_path: str = None) -> list:
         home_lineup, _ = _load_team_lineup(home_id, db_path, opposing_pitcher_throws=away_starter_throws)
 
         park = _get_park_factors(home_id, db_path)
+
+        # Open connection AFTER lineup loading (which does its own writes)
+        conn = get_connection(db_path)
 
         # September callups: expand active roster temporarily
         if is_september:
@@ -1454,8 +1454,8 @@ def sim_day(game_date: str = None, db_path: str = None) -> list:
             "innings": len(result["innings_away"]),
         })
 
-    conn.commit()
-    conn.close()
+        conn.commit()
+        conn.close()
 
     # Update pitcher fatigue AFTER pitching_lines are committed to the database
     _update_pitcher_rest(game_date, db_path)

@@ -177,7 +177,7 @@ def get_messages_for_team(team_id: int, unread_only: bool = False,
                          db_path: str = None) -> list:
     """Get messages for a team, optionally filtered by priority."""
     # Check if priority column exists
-    from .db import get_connection
+    from ..database.db import get_connection
     conn = get_connection(db_path)
     cols = [row[1] for row in conn.execute("PRAGMA table_info(messages)").fetchall()]
     conn.close()
@@ -244,7 +244,7 @@ def get_message_priorities(team_id: int, db_path: str = None) -> dict:
         Dict with priority counts, e.g. {'urgent': 2, 'important': 5, 'normal': 10, 'low': 3}
     """
     # Check if priority column exists
-    from .db import get_connection
+    from ..database.db import get_connection
     conn = get_connection(db_path)
     cols = [row[1] for row in conn.execute("PRAGMA table_info(messages)").fetchall()]
     conn.close()

@@ -13,6 +13,15 @@ import json
 import random
 from datetime import date
 from ..database.db import get_connection, query, execute
+
+
+def _row_get(row, key, default=None):
+    """Safe .get() for sqlite3.Row objects."""
+    try:
+        val = row[key]
+        return val if val is not None else default
+    except (IndexError, KeyError):
+        return default
 from ..ai.gm_brain import _get_team_needs
 
 
@@ -26,7 +35,7 @@ def _calculate_player_value(player: dict) -> float:
                       player["speed_rating"] * 0.5 + player["fielding_rating"] * 0.5)
 
     # Age adjustment: younger players are worth more
-    age = player.get("age", 28)
+    age = _row_get(player, "age", 28)
     if age <= 25:
         base_value *= 1.2
     elif age <= 28:
@@ -37,7 +46,7 @@ def _calculate_player_value(player: dict) -> float:
         base_value *= 0.6
 
     # Contract value: cheaper players relative to value are worth more
-    salary = player.get("annual_salary") or 0
+    salary = _row_get(player, "annual_salary", 0)
     if salary > 20_000_000:
         base_value *= 0.85
     elif salary < 2_000_000:
@@ -105,7 +114,7 @@ def _format_player_details(player: dict) -> dict:
         "id": player["id"],
         "name": f"{player['first_name']} {player['last_name']}",
         "position": player["position"],
-        "age": player.get("age", 0),
+        "age": _row_get(player, "age", 0),
     }
     if player["position"] in ("SP", "RP"):
         result["ratings"] = {
@@ -120,10 +129,10 @@ def _format_player_details(player: dict) -> dict:
             "speed": player["speed_rating"],
             "fielding": player["fielding_rating"],
         }
-    salary = player.get("annual_salary") or 0
+    salary = _row_get(player, "annual_salary", 0)
     if salary:
         result["salary"] = salary
-    years = player.get("years_remaining")
+    years = _row_get(player, "years_remaining")
     if years:
         result["years_remaining"] = years
     return result
@@ -444,13 +453,28 @@ def process_ai_trades(game_date: str, db_path: str = None) -> list:
         trade_chance = 0.05  # Normal: 5% daily
 
     # Get all AI teams with records for contender/rebuilder classification
-    teams = conn.execute("""
-        SELECT t.id, t.wins, t.losses FROM teams t
-    """).fetchall()
+    teams = conn.execute("SELECT id FROM teams").fetchall()
     ai_team_ids = [t["id"] for t in teams if t["id"] != user_team_id]
 
-    # Classify teams as contenders/rebuilders (only matters near deadline)
-    team_records = {t["id"]: (t["wins"] or 0, t["losses"] or 0) for t in teams}
+    # Calculate records from schedule (played games)
+    team_records = {}
+    for t in teams:
+        tid = t["id"]
+        wins = conn.execute("""
+            SELECT COUNT(*) FROM schedule
+            WHERE is_played=1 AND (
+                (home_team_id=? AND home_score > away_score)
+                OR (away_team_id=? AND away_score > home_score)
+            )
+        """, (tid, tid)).fetchone()[0]
+        losses = conn.execute("""
+            SELECT COUNT(*) FROM schedule
+            WHERE is_played=1 AND (
+                (home_team_id=? AND home_score < away_score)
+                OR (away_team_id=? AND away_score < home_score)
+            )
+        """, (tid, tid)).fetchone()[0]
+        team_records[tid] = (wins, losses)
 
     for team_id in ai_team_ids:
         if random.random() > trade_chance:
@@ -652,7 +676,7 @@ def process_trading_block_offers(game_date: str, db_path: str = None) -> list:
     team = query("SELECT trading_block_json FROM teams WHERE id=?",
                 (user_team_id,), db_path=db_path)
 
-    if not team or not team[0].get("trading_block_json"):
+    if not team or not _row_get(team[0], "trading_block_json"):
         return []
 
     try:

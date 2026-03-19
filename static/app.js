@@ -4680,16 +4680,62 @@ function renderMessageConversation(msg) {
     </span>
     <span class="msg-date" style="float:right;">${msg.game_date || ''}</span>`;
 
+  let responseHtml = '';
+  if (msg.requires_response && msg.response_options_json) {
+    try {
+      const opts = typeof msg.response_options_json === 'string' ? JSON.parse(msg.response_options_json) : msg.response_options_json;
+      if (opts.options && opts.options.length) {
+        responseHtml = `<div class="msg-response-buttons" style="margin-top:12px; display:flex; gap:8px;">`;
+        opts.options.forEach(opt => {
+          const btnClass = opt === 'Accept' ? 'btn-primary' : 'btn-secondary';
+          responseHtml += `<button class="btn ${btnClass}" onclick="respondToMessage(${msg.id}, '${opt}')">${opt}</button>`;
+        });
+        responseHtml += `</div>`;
+      }
+    } catch(e) {}
+  }
+
   chatMsgs.innerHTML = `
     <div class="msg-item priority-${priority}">
       <span class="msg-from">${msg.sender_name || 'System'}</span>
       <span class="msg-date">${msg.game_date || ''}</span>
       <div class="msg-body" style="margin-top:8px; white-space:pre-wrap;">${msg.body || ''}</div>
+      ${responseHtml}
     </div>`;
 
-  // Show input area for messages that allow responses
+  // Show text input area for free-form responses (not trade offers)
   if (inputArea) {
-    inputArea.style.display = msg.requires_response ? 'flex' : 'none';
+    inputArea.style.display = (msg.requires_response && !msg.response_options_json) ? 'flex' : 'none';
+  }
+}
+
+async function respondToMessage(msgId, response) {
+  const btn = event.target;
+  const allBtns = btn.parentElement.querySelectorAll('button');
+  allBtns.forEach(b => { b.disabled = true; });
+  btn.textContent = '...';
+
+  // Route to correct endpoint based on response
+  let r;
+  if (response === 'Accept') {
+    r = await post(`/trade/accept/${msgId}`, {});
+  } else if (response === 'Decline') {
+    r = await post(`/trade/decline/${msgId}`, {});
+  } else {
+    r = await post(`/messages/${msgId}/respond`, { response });
+  }
+
+  if (r && (r.success || r.trade_id)) {
+    showToast(r.message || `Trade ${response.toLowerCase()}d!`, 'success');
+  } else {
+    showToast(r?.error || r?.detail || 'Response failed', 'error');
+    allBtns.forEach(b => { b.disabled = false; });
+  }
+  await loadMessages();
+  if (_msgSelectedId === msgId) {
+    const msgs = await api('/messages?unread_only=false');
+    const updated = (msgs || []).find(m => m.id === msgId);
+    if (updated) renderMessageConversation(updated);
   }
 }
 

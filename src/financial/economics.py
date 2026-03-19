@@ -88,12 +88,11 @@ def calculate_dynamic_attendance(team_id: int, season: int, db_path: str = None)
     streak_bonus = 0
     recent_games = query("""
         SELECT
-            CASE WHEN (s.home_team_id=? AND gr.home_score > gr.away_score)
-                 OR (s.away_team_id=? AND gr.away_score > gr.home_score)
+            CASE WHEN (s.home_team_id=? AND s.home_score > s.away_score)
+                 OR (s.away_team_id=? AND s.away_score > s.home_score)
                  THEN 1 ELSE 0 END as won
-        FROM game_results gr
-        JOIN schedule s ON s.id = gr.schedule_id
-        WHERE (s.home_team_id=? OR s.away_team_id=?) AND s.season=?
+        FROM schedule s
+        WHERE s.is_played=1 AND (s.home_team_id=? OR s.away_team_id=?) AND s.season=?
         ORDER BY s.game_date DESC LIMIT 10
     """, (team_id, team_id, team_id, team_id, season), db_path=db_path)
 

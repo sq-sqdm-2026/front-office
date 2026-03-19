@@ -630,8 +630,30 @@ def _resolve_pitch(batter: BatterStats, pitcher: PitcherStats, count: list,
     # Zones 11-14: chase zones (11=up, 12=down, 13=inside, 14=outside)
     # Decide: ball or pitch in zone
     if random.random() > in_zone_prob:
-        # Ball - assign a chase zone
+        # Out of zone - assign a chase zone
         zone = random.choice([11, 12, 13, 14])
+
+        # Chase swing chance: batters with low eye chase more, 2-strike counts chase more
+        # MLB average: ~30% chase rate
+        chase_base = 0.28
+        eye_chase_adj = (50 - batter.eye) * 0.004  # low eye = +chase, high eye = -chase
+        count_chase_adj = count[1] * 0.06  # more likely to chase with 2 strikes
+        stuff_chase_adj = (pitcher.stuff - 50) * 0.002  # nastier stuff = more chases
+        chase_prob = max(0.10, min(0.55, chase_base + eye_chase_adj + count_chase_adj + stuff_chase_adj))
+
+        if random.random() < chase_prob:
+            # Batter chases - mostly whiffs on out-of-zone pitches
+            whiff_prob = 0.70 + (int(effective_stuff) - 50) * 0.004  # good stuff = more whiffs
+            whiff_prob = max(0.50, min(0.90, whiff_prob))
+            if random.random() < whiff_prob:
+                return ("swinging_strike", pitch_type, velocity, zone)
+            else:
+                # Weak contact on chase pitch - usually foul
+                if random.random() < 0.60:
+                    return ("foul", pitch_type, velocity, zone)
+                else:
+                    return ("in_play", pitch_type, velocity, zone)  # weak contact
+
         return ("ball", pitch_type, velocity, zone)
 
     # In the strike zone - assign zone 1-9
@@ -689,13 +711,14 @@ def _resolve_batted_ball(batter: BatterStats, pitcher: PitcherStats, park: ParkF
     batter_speed_mod = _rating_to_prob(batter.speed, 1.0)
 
     # Base probabilities — MLB batted ball distribution: ~44% GB, ~35% FB, ~21% LD
-    hr_prob = batter_power_mod * 0.033 * park.hr_factor / pitcher_stuff_mod
-    double_prob = batter_power_mod * 0.045 * park.double_factor * 0.8 * power_mod
-    triple_prob = batter_speed_mod * 0.005 * park.triple_factor * contact_mod
-    single_prob = batter_contact_mod * 0.150 * park.hit_factor / pitcher_stuff_mod
-    go_prob = 0.19   # ground ball outs (~44% of BIP, ~73% become outs)
-    fo_prob = 0.14   # fly ball outs (~35% of BIP, ~85% become outs, minus HR)
-    ld_prob = 0.11   # line drive outs (~21% of BIP, ~26% become outs)
+    # Tuned for ~.300 BABIP, ~4.5 R/game league average
+    hr_prob = batter_power_mod * 0.038 * park.hr_factor / pitcher_stuff_mod
+    double_prob = batter_power_mod * 0.050 * park.double_factor * 0.8 * power_mod
+    triple_prob = batter_speed_mod * 0.006 * park.triple_factor * contact_mod
+    single_prob = batter_contact_mod * 0.175 * park.hit_factor / pitcher_stuff_mod
+    go_prob = 0.17   # ground ball outs
+    fo_prob = 0.13   # fly ball outs
+    ld_prob = 0.09   # line drive outs
 
     # Clutch adjustment: enhanced for high-leverage situations
     if leverage > 1.2:

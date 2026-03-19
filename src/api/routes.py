@@ -1742,11 +1742,16 @@ async def get_finances(team_id: int):
         ORDER BY season DESC LIMIT 5
     """, (team_id,))
 
+    current_payroll = payroll[0]["total"] if payroll else 0
+    payroll_budget = t.get("payroll_budget", 100_000_000)
+
     return {
         "team_id": team_id,
         "cash": t["cash"],
         "franchise_value": t["franchise_value"],
-        "current_payroll": payroll[0]["total"] if payroll else 0,
+        "current_payroll": current_payroll,
+        "payroll_budget": payroll_budget,
+        "payroll_pct": round(current_payroll / payroll_budget * 100, 1) if payroll_budget else 0,
         "farm_budget": t["farm_system_budget"],
         "medical_budget": t["medical_staff_budget"],
         "scouting_budget": t["scouting_staff_budget"],

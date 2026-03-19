@@ -335,13 +335,23 @@ def _get_reinjury_multiplier(player_id: int, team_id: int, game_date: str, conn)
 def check_injuries_for_day(game_date: str, db_path: str = None) -> list:
     """Check for new injuries and update healing for existing ones."""
     conn = get_connection(db_path)
+    try:
+        return _check_injuries_for_day_impl(conn, game_date, db_path)
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def _check_injuries_for_day_impl(conn, game_date: str, db_path: str = None) -> list:
     events = []
 
     # Load medical staff budgets for healing rate bonus
     team_medical_budgets = {}
     teams_for_medical = conn.execute("SELECT id, medical_staff_budget FROM teams").fetchall()
     for t in teams_for_medical:
-        team_medical_budgets[t["id"]] = t.get("medical_staff_budget") or 10_000_000
+        team_medical_budgets[t["id"]] = t["medical_staff_budget"] if t["medical_staff_budget"] else 10_000_000
 
     # Heal existing injuries
     healing = conn.execute("""
@@ -594,5 +604,4 @@ def check_injuries_for_day(game_date: str, db_path: str = None) -> list:
             })
 
     conn.commit()
-    conn.close()
     return events

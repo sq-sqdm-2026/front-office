@@ -2487,7 +2487,7 @@ input[type="range"]::-webkit-slider-thumb {
 }
 .chat-contact-item:hover { background: var(--bg-hover); }
 .chat-contact-item.active { background: var(--accent-soft); }
-.chat-contact-item.unread { font-weight: 600; }
+.chat-contact-item.unread { font-weight: 600; background: var(--accent-soft); border-left: 3px solid var(--accent); }
 .chat-contact-info {
   flex: 1;
   min-width: 0;
