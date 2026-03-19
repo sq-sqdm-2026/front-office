@@ -2550,24 +2550,20 @@ input[type="range"]::-webkit-slider-thumb {
    RIGHT-RAIL CHAT PANEL
    ============================================================ */
 .chat-panel {
-  position: fixed;
-  top: 0;
-  right: 0;
-  bottom: 0;
-  width: 380px;
-  max-width: 100vw;
+  width: 0;
+  min-width: 0;
   background: var(--bg-card);
   border-left: 1px solid var(--border);
-  box-shadow: -4px 0 20px rgba(0,0,0,0.15);
-  z-index: 900;
   display: none;
   flex-direction: column;
-  transform: translateX(100%);
-  transition: transform 0.25s ease;
+  flex-shrink: 0;
+  overflow: hidden;
+  transition: width 0.25s ease, min-width 0.25s ease;
 }
 .chat-panel.open {
   display: flex;
-  transform: translateX(0);
+  width: 340px;
+  min-width: 340px;
 }
 .chat-panel-header {
   display: flex;
@@ -2626,7 +2622,81 @@ input[type="range"]::-webkit-slider-thumb {
 
 @media (max-width: 768px) {
   .chat-panel { width: 100%; }
+  .chat-panel.open { width: 100%; min-width: 100%; }
 }
+
+/* ===== ESPN BOTTOM LINE ===== */
+.espn-ticker {
+  position: fixed;
+  bottom: 0;
+  left: var(--sidebar-width);
+  right: 0;
+  height: 32px;
+  background: linear-gradient(135deg, #0a0a1a 0%, #1a1a2e 100%);
+  border-top: 2px solid #c41230;
+  display: flex;
+  align-items: center;
+  z-index: 800;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: #ccc;
+  overflow: hidden;
+}
+.espn-ticker-label {
+  flex-shrink: 0;
+  background: #c41230;
+  color: #fff;
+  font-weight: 800;
+  font-size: 10px;
+  letter-spacing: 1px;
+  padding: 0 12px;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  text-transform: uppercase;
+}
+.espn-ticker-content {
+  flex: 1;
+  overflow: hidden;
+  position: relative;
+}
+.espn-ticker-scroll {
+  display: flex;
+  gap: 0;
+  animation: espnScroll 45s linear infinite;
+  white-space: nowrap;
+}
+.espn-ticker-scroll:hover { animation-play-state: paused; }
+.espn-ticker-placeholder { padding: 0 20px; color: #666; }
+.espn-ticker-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 18px;
+  border-right: 1px solid #333;
+  flex-shrink: 0;
+}
+.espn-ticker-item .ticker-cat {
+  color: #c41230;
+  font-weight: 700;
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.espn-ticker-item .ticker-team { color: var(--gold); font-weight: 600; }
+.espn-ticker-item .ticker-score { color: #fff; font-weight: 700; }
+.espn-ticker-item .ticker-final { color: #888; font-size: 9px; }
+.espn-ticker-item .ticker-headline { color: #ddd; }
+.espn-ticker-item .ticker-breaking { color: #ff4444; font-weight: 700; }
+.espn-ticker-item .ticker-milestone { color: #4fc3f7; }
+
+@keyframes espnScroll {
+  0% { transform: translateX(0); }
+  100% { transform: translateX(-50%); }
+}
+
+/* Account for ticker height in main content */
+#main-wrap { padding-bottom: 32px; }
 
 /* Depth chart styles */
 .depth-position {

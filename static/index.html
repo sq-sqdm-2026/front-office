@@ -594,31 +594,41 @@
       <span id="ticker">Front Office v0.3</span>
     </footer>
 
-    <!-- RIGHT-RAIL CHAT WIDGET -->
-    <aside id="chat-panel" class="chat-panel">
-      <div class="chat-panel-header">
-        <span class="chat-panel-title">Messages</span>
-        <button class="chat-panel-close" onclick="toggleChatPanel()">&times;</button>
-      </div>
-      <div class="chat-panel-tabs" id="chat-contacts">
-        <div class="chat-contacts-header"><span class="section-title" style="display:none">Messages</span></div>
-      </div>
-      <div class="chat-contact-list-wrap" id="chat-contact-list"></div>
-      <div class="chat-panel-conversation" id="chat-conversation">
-        <div class="chat-conv-header" id="chat-conv-header">
-          <span class="chat-conv-name">Select a message</span>
-        </div>
-        <div class="chat-messages" id="chat-messages">
-          <div class="empty-state" style="padding:16px">Select a message to view</div>
-        </div>
-        <div class="chat-input-area" id="chat-input-area" style="display:none">
-          <input type="text" class="chat-input" id="chat-input" placeholder="Type a reply..." onkeydown="if(event.key==='Enter')sendChatMessage()" />
-          <button class="chat-send-btn" onclick="sendChatMessage()">Send</button>
-        </div>
-      </div>
-    </aside>
-
   </div><!-- /main-wrap -->
+
+  <!-- RIGHT-RAIL MESSAGES (persistent, not overlay) -->
+  <aside id="chat-panel" class="chat-panel">
+    <div class="chat-panel-header">
+      <span class="chat-panel-title">Messages</span>
+      <button class="chat-panel-close" onclick="toggleChatPanel()">&times;</button>
+    </div>
+    <div class="chat-panel-tabs" id="chat-contacts">
+      <div class="chat-contacts-header"><span class="section-title" style="display:none">Messages</span></div>
+    </div>
+    <div class="chat-contact-list-wrap" id="chat-contact-list"></div>
+    <div class="chat-panel-conversation" id="chat-conversation">
+      <div class="chat-conv-header" id="chat-conv-header">
+        <span class="chat-conv-name">Select a message</span>
+      </div>
+      <div class="chat-messages" id="chat-messages">
+        <div class="empty-state" style="padding:16px">Select a message to view</div>
+      </div>
+      <div class="chat-input-area" id="chat-input-area" style="display:none">
+        <input type="text" class="chat-input" id="chat-input" placeholder="Type a reply..." onkeydown="if(event.key==='Enter')sendChatMessage()" />
+        <button class="chat-send-btn" onclick="sendChatMessage()">Send</button>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ESPN BOTTOM LINE (persistent — scores, news, trades, milestones) -->
+  <div id="espn-ticker" class="espn-ticker">
+    <div class="espn-ticker-label" id="espn-ticker-label">SCORES</div>
+    <div class="espn-ticker-content">
+      <div class="espn-ticker-scroll" id="espn-ticker-scroll">
+        <span class="espn-ticker-placeholder">Live updates appear as you play</span>
+      </div>
+    </div>
+  </div>
 
   <!-- 8-BIT GAME VIEWER -->
   <div id="retro-modal" class="modal" style="display:none">

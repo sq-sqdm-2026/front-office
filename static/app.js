@@ -153,31 +153,76 @@ function showPhaseTransition(title, subtitle, duration = 2500) {
   setTimeout(() => { if (overlay.parentNode) overlay.remove(); }, duration);
 }
 
-/** Build the live score ticker at the bottom */
+/** ESPN Bottom Line — scores, breaking news, trades, milestones */
+let _espnTickerItems = [];
+
 function buildScoreTicker(games) {
-  let ticker = document.getElementById('live-score-ticker');
-  if (!ticker) {
-    ticker = document.createElement('div');
-    ticker.id = 'live-score-ticker';
-    ticker.className = 'score-ticker';
-    document.body.appendChild(ticker);
-  }
-  if (!games || !games.length) { ticker.style.display = 'none'; return; }
-  ticker.style.display = 'flex';
-  // Duplicate for seamless scroll
-  const items = games.map(g => {
-    const won = g.home_score > g.away_score;
-    return `<div class="score-ticker-item">
+  // Add game scores to ticker items
+  if (!games || !games.length) return;
+  const scoreItems = games.map(g => {
+    return `<div class="espn-ticker-item">
+      <span class="ticker-cat">Final</span>
       <span class="ticker-team">${g.away_abbr || '???'}</span>
       <span class="ticker-score">${g.away_score ?? '-'}</span>
       <span style="color:#555">@</span>
       <span class="ticker-team">${g.home_abbr || '???'}</span>
       <span class="ticker-score">${g.home_score ?? '-'}</span>
-      <span class="ticker-final">F</span>
     </div>`;
-  }).join('');
-  ticker.innerHTML = `<div class="score-ticker-inner">${items}${items}</div>`;
+  });
+  // Prepend scores (most recent first), keep last 100 items
+  _espnTickerItems = [...scoreItems, ..._espnTickerItems].slice(0, 100);
+  renderEspnTicker();
 }
+
+function addTickerItem(category, html) {
+  const item = `<div class="espn-ticker-item"><span class="ticker-cat">${category}</span>${html}</div>`;
+  _espnTickerItems.unshift(item);
+  if (_espnTickerItems.length > 100) _espnTickerItems = _espnTickerItems.slice(0, 100);
+  renderEspnTicker();
+}
+
+function renderEspnTicker() {
+  const scroll = document.getElementById('espn-ticker-scroll');
+  if (!scroll || !_espnTickerItems.length) return;
+  // Duplicate for seamless loop
+  const content = _espnTickerItems.join('');
+  scroll.innerHTML = content + content;
+  // Reset animation
+  scroll.style.animation = 'none';
+  scroll.offsetHeight;
+  const duration = Math.max(20, _espnTickerItems.length * 4);
+  scroll.style.animation = `espnScroll ${duration}s linear infinite`;
+}
+
+async function refreshEspnTicker() {
+  // Pull latest news, transactions, and articles for the ticker
+  try {
+    const [news, msgs] = await Promise.all([
+      api('/news/feed?limit=10'),
+      api('/messages?unread_only=false')
+    ]);
+    // Add news headlines
+    for (const item of (news || []).slice(0, 5)) {
+      if (item.type === 'article' && item.headline) {
+        addTickerItem('News', `<span class="ticker-headline">${item.headline}</span>`);
+      } else if (item.type === 'transaction') {
+        addTickerItem('Trade', `<span class="ticker-breaking">${(item.description || item.headline || '').slice(0, 80)}</span>`);
+      }
+    }
+    // Add unread messages as breaking news
+    const unread = (msgs || []).filter(m => !m.is_read).slice(0, 3);
+    for (const m of unread) {
+      if (m.sender_type === 'gm' && m.subject) {
+        addTickerItem('Breaking', `<span class="ticker-breaking">${m.subject}</span>`);
+      } else if (m.sender_type === 'reporter') {
+        addTickerItem('Report', `<span class="ticker-headline">${m.subject || m.body?.slice(0, 60)}</span>`);
+      }
+    }
+  } catch (e) {}
+}
+
+// Refresh ticker every 30 seconds
+setInterval(refreshEspnTicker, 30000);
 
 /** Flash the ticker bar with win/loss color */
 function flashTicker(won) {
@@ -583,9 +628,10 @@ async function loadState() {
   const teams = await api('/teams');
   STATE.teams = teams || [];
 
-  // Refresh message badge and LLM status (non-blocking)
+  // Refresh message badge, LLM status, and ESPN ticker (non-blocking)
   refreshMessageBadge();
   checkLlmFailures();
+  refreshEspnTicker();
 }
 
 async function refreshMessageBadge() {
@@ -735,6 +781,26 @@ async function simDays(n) {
         if (won) {
           showToast('Victory! ' + (isHome ? userGame.away_abbr : userGame.home_abbr) + ' defeated', 'success');
         }
+      }
+    }
+
+    // Push offseason events to ESPN ticker
+    if (r.offseason) {
+      for (const evt of r.offseason) {
+        if (evt.type === 'owner_pressure') addTickerItem('Owner', `<span class="ticker-headline">${evt.subject || 'Owner message'}</span>`);
+        else if (evt.type === 'record_broken') addTickerItem('Record', `<span class="ticker-milestone">${evt.description || 'New record set!'}</span>`);
+        else if (evt.type === 'all_star_game') addTickerItem('ASG', `<span class="ticker-headline">AL ${evt.al_score} - NL ${evt.nl_score}</span>`);
+        else if (evt.type === 'proactive_message') addTickerItem('News', `<span class="ticker-headline">${evt.subject || ''}</span>`);
+      }
+    }
+    if (r.ai_trades) {
+      for (const t of r.ai_trades) {
+        addTickerItem('Trade', `<span class="ticker-breaking">${t.description || 'Trade completed'}</span>`);
+      }
+    }
+    if (r.waiver_outcomes) {
+      for (const w of r.waiver_outcomes) {
+        addTickerItem('Waiver', `<span class="ticker-headline">${w.description || 'Waiver claim'}</span>`);
       }
     }
 

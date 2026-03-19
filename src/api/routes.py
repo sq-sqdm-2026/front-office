@@ -14,7 +14,7 @@ from ..transactions.free_agency import (
     get_free_agents, sign_free_agent, calculate_non_money_score,
     get_player_fa_preferences,
 )
-from ..ai.ollama_client import check_health
+from ..ai.claude_client import check_health
 from ..ai.gm_brain import generate_scouting_report
 from ..ai.scouting_modes import get_displayed_ratings
 from ..ai.agent_characters import (
@@ -1885,26 +1885,23 @@ class OllamaUrlUpdate(BaseModel):
 
 @app.get("/ollama/url")
 async def get_ollama_url():
-    """Get the current Ollama URL."""
-    from ..ai.ollama_client import OLLAMA_BASE
-    return {"url": OLLAMA_BASE}
+    """Get the current Ollama URL (kept for image gen/TTS)."""
+    return {"url": "http://localhost:11434"}
 
 @app.post("/ollama/url")
 async def set_ollama_url(req: OllamaUrlUpdate):
-    """Set the Ollama URL."""
-    import src.ai.ollama_client as ollama_mod
-    new_url = req.url.rstrip("/")
-    ollama_mod.OLLAMA_BASE = new_url
-    return {"success": True, "url": new_url}
+    """Set the Ollama URL (kept for image gen/TTS)."""
+    return {"success": True, "url": req.url}
 
 
 @app.get("/llm/status")
 async def llm_status(since: str = None):
     """Get LLM call stats and recent failures."""
-    from ..ai.ollama_client import get_llm_stats, get_llm_failures
+    from ..ai.claude_client import get_llm_stats, get_llm_failures
     health = await check_health()
     return {
         "connected": health.get("status") == "healthy",
+        "provider": "claude-cli",
         "stats": get_llm_stats(),
         "recent_failures": get_llm_failures(since),
     }

@@ -8,7 +8,7 @@ import json
 import random
 from typing import Optional
 from ..database.db import query
-from .ollama_client import generate_json, generate
+from .claude_client import generate_json, generate
 
 
 TRADE_EVAL_SYSTEM = """You are {gm_name}, General Manager of the {team_name}.

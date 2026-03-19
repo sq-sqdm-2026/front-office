@@ -6,7 +6,7 @@ in a conversational, sports-talk-radio style.
 import json
 from datetime import date, timedelta
 from ..database.db import query, execute, get_connection
-from .ollama_client import generate
+from .claude_client import generate
 
 # ============================================================
 # PODCAST HOSTS
