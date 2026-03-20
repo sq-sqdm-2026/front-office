@@ -1463,6 +1463,9 @@ function renderRosterTab(tab) {
 
   if (!players.length) html = '<div class="empty-state">No players in this category</div>';
   el.innerHTML = html;
+  // Wire up sorting AFTER innerHTML is set (tables now exist in DOM)
+  makeSortable('roster-pos-table');
+  makeSortable('roster-pit-table');
 }
 
 // ============================================================
@@ -2105,17 +2108,25 @@ async function showPlayer(pid) {
     ? [['Stuff', p.stuff_rating], ['Control', p.control_rating], ['Stamina', p.stamina_rating]]
     : [['Contact', p.contact_rating], ['Power', p.power_rating], ['Speed', p.speed_rating], ['Fielding', p.fielding_rating], ['Arm', p.arm_rating]];
 
-  const personality = [['Ego', p.ego], ['Lead', p.leadership], ['Work', p.work_ethic], ['Clutch', p.clutch], ['Dura', p.durability]];
+  const personality = [['Ego', p.ego], ['Leadership', p.leadership], ['Work Ethic', p.work_ethic],
+    ['Clutch', p.clutch], ['Durability', p.durability], ['Loyalty', p.loyalty], ['Composure', p.composure]];
 
   const gradesHtml = ratings.map(([l, v]) => `
     <div class="grade-box-lg"><div class="grade-label">${l}</div>
     <div class="grade-value-lg ${gradeClass(v)}">${convertRating(v)}</div>
     <div class="grade-num">${v}</div></div>`).join('');
 
-  const persHtml = personality.map(([l, v]) => `
-    <div class="grade-box"><div class="grade-label">${l}</div>
-    <div class="grade-value ${gradeClass(v)}">${convertRating(v)}</div>
-    <div class="grade-num">${v}</div></div>`).join('');
+  const persHtml = personality.filter(([,v]) => v != null).map(([l, v]) => {
+    const pct = Math.max(0, Math.min(100, v));
+    const color = v >= 70 ? 'var(--green)' : v >= 40 ? 'var(--gold)' : 'var(--red)';
+    return `<div style="display:flex;align-items:center;gap:8px;font-size:11px;margin:3px 0">
+      <span style="width:75px;text-align:right;color:var(--text-dim)">${l}</span>
+      <div style="flex:1;height:6px;background:var(--bg-2);border-radius:3px;overflow:hidden">
+        <div style="height:100%;width:${pct}%;background:${color};border-radius:3px"></div>
+      </div>
+      <span style="width:24px;font-weight:600;font-size:10px;color:${color}">${v}</span>
+    </div>`;
+  }).join('');
 
   // Build mini current-season stat line for the overview tab
   let miniStatHtml = '';
