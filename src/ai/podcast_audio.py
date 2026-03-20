@@ -1,46 +1,43 @@
 """
 Front Office - Podcast Audio Generation
-Converts podcast scripts to MP3 using edge-tts (Microsoft Edge TTS) + ffmpeg.
-Each host gets a unique voice for natural conversation feel.
-Falls back to macOS TTS if edge-tts is not available.
+Converts podcast scripts to MP3 using Orpheus TTS 3B via Ollama + SNAC decoder.
+Each host gets a unique voice for natural, emotive conversation.
+Requires: ollama pull orpheus-3b, pip install snac torch, ffmpeg
 """
 import asyncio
 import os
 import re
 import shutil
+import struct
 import subprocess
 import tempfile
 from pathlib import Path
+
+import httpx
+
 from ..database.db import query, execute
 
 PODCAST_DIR = Path(__file__).parent.parent.parent / "static" / "podcasts"
 PODCAST_DIR.mkdir(parents=True, exist_ok=True)
 
-# Edge TTS voice assignments (Microsoft Neural voices)
-EDGE_VOICE_MAP = {
-    "MIKE": "en-US-GuyNeural",        # Male, warm sports anchor
-    "LISA": "en-US-JennyNeural",       # Female, clear analyst
-    "EARL": "en-US-DavisNeural",       # Male, deeper color commentator
+OLLAMA_BASE = os.environ.get("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
+ORPHEUS_MODEL = os.environ.get("ORPHEUS_MODEL", "orpheus-3b")
+
+# Orpheus voice assignments (natural, emotive voices)
+VOICE_MAP = {
+    "MIKE": "dan",    # Male, warm sports anchor
+    "LISA": "tara",   # Female, clear analyst
+    "EARL": "leo",    # Male, deeper color commentator
 }
+DEFAULT_VOICE = "tara"
 
-# macOS fallback voice assignments
-MAC_VOICE_MAP = {
-    "MIKE": "Daniel",
-    "LISA": "Samantha",
-    "EARL": "Alex",
-}
-
-DEFAULT_EDGE_VOICE = "en-US-JennyNeural"
-DEFAULT_MAC_VOICE = "Samantha"
-
-
-def _has_edge_tts() -> bool:
-    """Check if edge-tts is available."""
-    return shutil.which("edge-tts") is not None
+# Audio token parsing
+AUDIO_TOKEN_RE = re.compile(r"<custom_token_(\d+)>")
+SNAC_BASE_OFFSET = 10  # First 10 custom tokens are control tokens
+SAMPLE_RATE = 24000
 
 
 def _has_ffmpeg() -> bool:
-    """Check if ffmpeg is available."""
     return shutil.which("ffmpeg") is not None
 
 
@@ -63,42 +60,132 @@ def _parse_script(script: str) -> list:
     return segments
 
 
-async def _generate_segment_edge_tts(host: str, text: str, output_path: str) -> bool:
-    """Generate audio for a single segment using edge-tts."""
-    voice = EDGE_VOICE_MAP.get(host, DEFAULT_EDGE_VOICE)
+def _load_snac():
+    """Lazily load SNAC decoder. Returns (snac_model, torch) or raises."""
     try:
-        proc = await asyncio.create_subprocess_exec(
-            "edge-tts", "--voice", voice, "--text", text,
-            "--write-media", output_path,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.PIPE,
+        import torch
+        from snac import SNAC
+    except ImportError:
+        raise RuntimeError(
+            "Orpheus TTS requires PyTorch and SNAC. Install with: "
+            "pip install snac torch"
         )
-        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=60)
-        return os.path.exists(output_path) and os.path.getsize(output_path) > 0
-    except (asyncio.TimeoutError, Exception) as e:
-        print(f"Edge TTS error for {host}: {e}")
-        return False
+    model = SNAC.from_pretrained("hubertsiuzdak/snac_24khz")
+    model.eval()
+    return model, torch
 
 
-def _generate_segment_mac_tts(host: str, text: str, output_path: str) -> bool:
-    """Generate audio for a single segment using macOS say command."""
-    voice = MAC_VOICE_MAP.get(host, DEFAULT_MAC_VOICE)
-    say_path = "/usr/bin/say"
-    if not os.path.exists(say_path):
-        return False
+def _decode_audio_tokens(token_text: str, snac_model, torch):
+    """Parse Orpheus custom_token output and decode to audio via SNAC."""
+    token_ids = [int(m) for m in AUDIO_TOKEN_RE.findall(token_text)]
+    if not token_ids:
+        return None
+
+    # Convert to audio token indices (skip control tokens)
+    audio_ids = [t - SNAC_BASE_OFFSET for t in token_ids]
+
+    # Trim to multiple of 7 (one SNAC frame = 7 tokens)
+    n = len(audio_ids) // 7 * 7
+    if n == 0:
+        return None
+    audio_ids = audio_ids[:n]
+
+    # Redistribute across 3 SNAC codebook layers
+    codes_0, codes_1, codes_2 = [], [], []
+    for i in range(0, n, 7):
+        codes_0.append(audio_ids[i])
+        codes_1.append(audio_ids[i + 1] - 4096)
+        codes_1.append(audio_ids[i + 4] - 4096)
+        codes_2.append(audio_ids[i + 2] - 8192)
+        codes_2.append(audio_ids[i + 3] - 8192)
+        codes_2.append(audio_ids[i + 5] - 8192)
+        codes_2.append(audio_ids[i + 6] - 8192)
+
+    with torch.inference_mode():
+        codes = [
+            torch.tensor(codes_0).unsqueeze(0),
+            torch.tensor(codes_1).unsqueeze(0),
+            torch.tensor(codes_2).unsqueeze(0),
+        ]
+        audio = snac_model.decode(codes)
+
+    # Convert to numpy array
+    audio_np = audio.squeeze().cpu().numpy()
+    return audio_np
+
+
+def _save_wav(audio_np, path: str):
+    """Save numpy audio array as 16-bit WAV file."""
+    import numpy as np
+    # Normalize to int16 range
+    audio_np = np.clip(audio_np, -1.0, 1.0)
+    audio_int16 = (audio_np * 32767).astype(np.int16)
+    raw_bytes = audio_int16.tobytes()
+
+    # Write WAV header + data
+    num_samples = len(audio_int16)
+    data_size = num_samples * 2  # 16-bit = 2 bytes per sample
+    with open(path, "wb") as f:
+        # RIFF header
+        f.write(b"RIFF")
+        f.write(struct.pack("<I", 36 + data_size))
+        f.write(b"WAVE")
+        # fmt chunk
+        f.write(b"fmt ")
+        f.write(struct.pack("<I", 16))       # chunk size
+        f.write(struct.pack("<H", 1))        # PCM
+        f.write(struct.pack("<H", 1))        # mono
+        f.write(struct.pack("<I", SAMPLE_RATE))
+        f.write(struct.pack("<I", SAMPLE_RATE * 2))  # byte rate
+        f.write(struct.pack("<H", 2))        # block align
+        f.write(struct.pack("<H", 16))       # bits per sample
+        # data chunk
+        f.write(b"data")
+        f.write(struct.pack("<I", data_size))
+        f.write(raw_bytes)
+
+
+async def _generate_segment_orpheus(voice: str, text: str, output_path: str,
+                                     snac_model, torch) -> bool:
+    """Generate audio for a segment using Orpheus TTS via Ollama."""
+    payload = {
+        "model": ORPHEUS_MODEL,
+        "prompt": f"{voice}: {text}",
+        "stream": False,
+        "options": {
+            "temperature": 0.6,
+            "repetition_penalty": 1.1,
+            "num_predict": 4096,
+        },
+    }
+
     try:
-        subprocess.run(
-            [say_path, "-v", voice, "-o", output_path, text],
-            timeout=60, check=True, capture_output=True,
-        )
+        async with httpx.AsyncClient(timeout=180.0) as client:
+            resp = await client.post(
+                f"{OLLAMA_BASE}/api/generate", json=payload
+            )
+            resp.raise_for_status()
+            response_text = resp.json().get("response", "")
+
+        if not response_text or "<custom_token_" not in response_text:
+            print(f"Orpheus returned no audio tokens for: {text[:50]}...")
+            return False
+
+        audio_np = _decode_audio_tokens(response_text, snac_model, torch)
+        if audio_np is None or len(audio_np) < SAMPLE_RATE // 10:
+            print(f"Orpheus decoded too little audio for: {text[:50]}...")
+            return False
+
+        _save_wav(audio_np, output_path)
         return os.path.exists(output_path) and os.path.getsize(output_path) > 0
-    except (subprocess.TimeoutExpired, subprocess.CalledProcessError) as e:
-        print(f"macOS TTS error for {host}: {e}")
+
+    except Exception as e:
+        print(f"Orpheus TTS error: {e}")
         return False
 
 
 async def generate_podcast_audio(episode_id: int, db_path: str = None) -> dict:
-    """Generate MP3 audio for a podcast episode."""
+    """Generate MP3 audio for a podcast episode using Orpheus TTS."""
     episodes = query(
         "SELECT * FROM podcast_episodes WHERE id=?",
         (episode_id,), db_path=db_path
@@ -115,27 +202,39 @@ async def generate_podcast_audio(episode_id: int, db_path: str = None) -> dict:
     if not segments:
         return {"success": False, "error": "Could not parse script into segments"}
 
-    # Check for TTS availability
-    use_edge = _has_edge_tts()
-    if not use_edge and not os.path.exists("/usr/bin/say"):
-        return {"success": False, "error": "No TTS engine available. Install edge-tts: pip install edge-tts"}
+    # Check Orpheus model availability
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(f"{OLLAMA_BASE}/api/tags")
+            resp.raise_for_status()
+            models = [m["name"] for m in resp.json().get("models", [])]
+            if not any("orpheus" in m.lower() for m in models):
+                return {
+                    "success": False,
+                    "error": f"Orpheus TTS model not found. Install with: ollama pull {ORPHEUS_MODEL}"
+                }
+    except Exception as e:
+        return {"success": False, "error": f"Ollama not reachable: {e}"}
 
     ffmpeg_path = shutil.which("ffmpeg")
     if not ffmpeg_path:
         return {"success": False, "error": "ffmpeg not found. Install ffmpeg to generate audio."}
 
+    # Load SNAC decoder
+    try:
+        snac_model, torch = _load_snac()
+    except RuntimeError as e:
+        return {"success": False, "error": str(e)}
+
     # Generate audio segments in temp directory
     with tempfile.TemporaryDirectory() as tmpdir:
         segment_files = []
-        ext = ".mp3" if use_edge else ".aiff"
 
         for idx, (host, dialogue) in enumerate(segments):
-            seg_path = os.path.join(tmpdir, f"seg_{idx:03d}{ext}")
-            if use_edge:
-                ok = await _generate_segment_edge_tts(host, dialogue, seg_path)
-            else:
-                ok = _generate_segment_mac_tts(host, dialogue, seg_path)
-
+            seg_path = os.path.join(tmpdir, f"seg_{idx:03d}.wav")
+            voice = VOICE_MAP.get(host, DEFAULT_VOICE)
+            ok = await _generate_segment_orpheus(voice, dialogue, seg_path,
+                                                  snac_model, torch)
             if ok:
                 segment_files.append(seg_path)
             else:
@@ -209,7 +308,6 @@ async def generate_podcast_audio(episode_id: int, db_path: str = None) -> dict:
     )
 
     file_size = os.path.getsize(output_path) / (1024 * 1024)
-    tts_engine = "Edge TTS (Microsoft Neural)" if use_edge else "macOS TTS"
 
     return {
         "success": True,
@@ -217,5 +315,5 @@ async def generate_podcast_audio(episode_id: int, db_path: str = None) -> dict:
         "download_url": f"/static/podcasts/{output_filename}",
         "duration_seconds": duration_secs,
         "file_size_mb": round(file_size, 1),
-        "tts_engine": tts_engine,
+        "tts_engine": "Orpheus TTS 3B (via Ollama)",
     }
