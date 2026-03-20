@@ -2022,6 +2022,197 @@ async def mark_message_read(message_id: int):
     return {"success": True}
 
 
+class MessageRespond(BaseModel):
+    response: str
+
+@app.post("/messages/{message_id}/respond")
+async def respond_to_message(message_id: int, body: MessageRespond):
+    """Respond to a message with preset options. Tracks relationship impact."""
+    import random as _rnd
+
+    msg = query("SELECT * FROM messages WHERE id=?", (message_id,))
+    if not msg:
+        raise HTTPException(404, "Message not found")
+    msg = msg[0]
+
+    state = query("SELECT * FROM game_state WHERE id=1")
+    game_date = state[0]["current_date"] if state else "2026-02-14"
+    team_id = state[0]["user_team_id"] if state else 0
+
+    # Mark original as read and responded
+    execute("UPDATE messages SET is_read=1, requires_response=0 WHERE id=?", (message_id,))
+
+    # Determine relationship impact based on response sentiment
+    positive_phrases = ["excited", "great", "well done", "appreciate", "thank",
+                        "best move", "trust", "proud", "congratulations"]
+    negative_phrases = ["no comment", "decline", "not interested", "disagree",
+                        "concerned", "disappointed"]
+    neutral_phrases = ["we felt", "organization", "process", "evaluate"]
+
+    response_lower = body.response.lower()
+    sentiment = "neutral"
+    if any(p in response_lower for p in positive_phrases):
+        sentiment = "positive"
+    elif any(p in response_lower for p in negative_phrases):
+        sentiment = "negative"
+
+    # Update character relationship tracking
+    _ensure_relationship_table()
+
+    sender_type = msg.get("sender_type", "system") if isinstance(msg, dict) else getattr(msg, "sender_type", "system")
+    sender_name = msg.get("sender_name", "") if isinstance(msg, dict) else getattr(msg, "sender_name", "")
+
+    # Track relationship change
+    rel_delta = {"positive": 5, "neutral": 1, "negative": -3}[sentiment]
+    _update_relationship(sender_type, sender_name, team_id, rel_delta)
+
+    # Generate a contextual reply from the character
+    reply_templates = {
+        "reporter": {
+            "positive": [
+                "Thanks for the quote. That's going front page. The fans will love hearing that.",
+                "Great stuff. I'll make sure your words get prominent placement in my column.",
+                "Perfect. That's exactly the kind of transparency the fanbase wants to see.",
+            ],
+            "neutral": [
+                "Alright, I can work with that. Professional response. My editor will appreciate it.",
+                "Noted. I'll include your perspective in the piece. Thanks for getting back to me.",
+            ],
+            "negative": [
+                "\"No comment\" it is. That's going to raise more questions than it answers, but it's your call.",
+                "I see. Well, I have to file something. Don't be surprised if the narrative isn't favorable.",
+                "Understood. I'll write what I have. Might want to reconsider - silence speaks volumes.",
+            ],
+        },
+        "owner": {
+            "positive": [
+                "That's what I like to hear. Keep up the good work.",
+                "Good. We're on the same page. That's important to me.",
+            ],
+            "neutral": [
+                "I hear you. Just make sure we keep moving in the right direction.",
+                "Alright. I trust your judgment for now. Let's revisit this soon.",
+            ],
+            "negative": [
+                "I don't love that answer, but I respect your candor. We'll see.",
+                "Hmm. I was hoping for a different response. Let's talk more about this in person.",
+            ],
+        },
+        "agent": {
+            "positive": [
+                "Great to hear. My client will be pleased. Let's keep the dialogue open.",
+                "That's encouraging. I think we can work together on this.",
+            ],
+            "neutral": [
+                "Understood. I'll relay that to my client. We'll be in touch.",
+                "Fair enough. My client and I will discuss next steps.",
+            ],
+            "negative": [
+                "My client isn't going to be happy about that. But we'll explore our options.",
+                "I see. Well, we have other avenues. Don't be surprised if you hear from me again.",
+            ],
+        },
+        "coach": {
+            "positive": [
+                "Good talk, skip. I'll get the boys ready. Appreciate the support.",
+                "That's the kind of backing we need from the front office. I'll handle it.",
+            ],
+            "neutral": [
+                "Copy that. I'll factor that into my plans.",
+                "Understood. I'll work with what we've got.",
+            ],
+            "negative": [
+                "Alright. You're the boss. But I want you to know I see things differently.",
+                "We'll have to agree to disagree on this one. I'll follow your lead though.",
+            ],
+        },
+    }
+
+    templates = reply_templates.get(sender_type, reply_templates.get("coach", {}))
+    reply_list = templates.get(sentiment, ["Understood. Thanks for getting back to me."])
+    reply_body = _rnd.choice(reply_list)
+
+    # Store the user's response as a message
+    execute("""
+        INSERT INTO messages (game_date, sender_type, sender_name, sender_id,
+            recipient_type, recipient_id, subject, body, is_read)
+        VALUES (?, 'user', 'You', ?, ?, ?, ?, ?, 1)
+    """, (game_date, team_id, sender_type, msg["recipient_id"] if isinstance(msg, dict) else msg.recipient_id,
+          f"Re: {msg['subject'] if isinstance(msg, dict) else msg.subject}",
+          body.response))
+
+    # Store the character's reply
+    execute("""
+        INSERT INTO messages (game_date, sender_type, sender_name, sender_id,
+            recipient_type, recipient_id, subject, body, is_read, priority, category)
+        VALUES (?, ?, ?, ?, 'user', ?, ?, ?, 0, 'normal', 'general')
+    """, (game_date, sender_type, sender_name, msg["recipient_id"] if isinstance(msg, dict) else msg.recipient_id,
+          team_id,
+          f"Re: {msg['subject'] if isinstance(msg, dict) else msg.subject}",
+          reply_body))
+
+    return {"success": True, "message": f"Response sent: {body.response}",
+            "relationship_change": rel_delta, "sentiment": sentiment}
+
+
+def _ensure_relationship_table():
+    """Create character_relationships table if it doesn't exist."""
+    execute("""
+        CREATE TABLE IF NOT EXISTS character_relationships (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            character_type TEXT NOT NULL,
+            character_name TEXT NOT NULL,
+            team_id INTEGER NOT NULL,
+            relationship_score INTEGER NOT NULL DEFAULT 50,
+            total_interactions INTEGER NOT NULL DEFAULT 0,
+            last_interaction_date TEXT,
+            UNIQUE(character_type, character_name, team_id)
+        )
+    """)
+
+
+def _update_relationship(char_type: str, char_name: str, team_id: int, delta: int):
+    """Update relationship score for a character."""
+    existing = query("""
+        SELECT id, relationship_score, total_interactions FROM character_relationships
+        WHERE character_type=? AND character_name=? AND team_id=?
+    """, (char_type, char_name, team_id))
+
+    state = query("SELECT current_date FROM game_state WHERE id=1")
+    game_date = state[0]["current_date"] if state else None
+
+    if existing:
+        new_score = max(0, min(100, existing[0]["relationship_score"] + delta))
+        execute("""
+            UPDATE character_relationships
+            SET relationship_score=?, total_interactions=total_interactions+1, last_interaction_date=?
+            WHERE id=?
+        """, (new_score, game_date, existing[0]["id"]))
+    else:
+        score = max(0, min(100, 50 + delta))
+        execute("""
+            INSERT INTO character_relationships
+            (character_type, character_name, team_id, relationship_score, total_interactions, last_interaction_date)
+            VALUES (?, ?, ?, ?, 1, ?)
+        """, (char_type, char_name, team_id, score, game_date))
+
+
+@app.get("/relationships")
+async def get_relationships():
+    """Get all character relationships for the user's team."""
+    state = query("SELECT user_team_id FROM game_state WHERE id=1")
+    team_id = state[0]["user_team_id"] if state else 0
+    _ensure_relationship_table()
+    rels = query("""
+        SELECT character_type, character_name, relationship_score, total_interactions,
+               last_interaction_date
+        FROM character_relationships
+        WHERE team_id=?
+        ORDER BY total_interactions DESC
+    """, (team_id,))
+    return rels or []
+
+
 class MessageSend(BaseModel):
     recipient_type: str = "system"
     recipient_id: int = 0

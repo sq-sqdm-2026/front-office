@@ -202,6 +202,13 @@ def check_and_send_proactive_messages(team_id: int, game_date: str,
     except Exception:
         pass
 
+    # Clubhouse chemistry events
+    try:
+        chem_msgs = _check_clubhouse_chemistry(team_id, game_date, db_path)
+        sent.extend(chem_msgs)
+    except Exception:
+        pass
+
     return sent
 
 
@@ -1171,6 +1178,124 @@ def _check_winning_streak_triggers(team_id: int, game_date: str,
                            game_date, 10, db_path)
             sent.append({"character_type": "coach", "trigger": "clubhouse_vibe",
                         "character_name": coach_name})
+
+    return sent
+
+
+# ============================================================
+# CLUBHOUSE CHEMISTRY EVENTS
+# ============================================================
+
+CLUBHOUSE_EVENTS = {
+    "veteran_mentor": [
+        "{veteran} has taken {young_player} under his wing. The kid's been staying late for extra work. "
+        "This is the kind of culture we want to build.",
+        "I love what I'm seeing between {veteran} and {young_player}. "
+        "The veteran presence is making a difference in that kid's development.",
+    ],
+    "team_bonding": [
+        "The guys organized a team dinner last night. Everyone showed up. "
+        "That tells you something about the chemistry in this clubhouse.",
+        "Team bowling night was a hit. Even the new guys fit right in. "
+        "This group genuinely likes each other.",
+        "The players set up a charity golf tournament. Good for PR, "
+        "but more importantly, it shows this team is tight.",
+    ],
+    "player_leadership": [
+        "{player} called a players-only meeting after the last few games. "
+        "No coaches invited. That's the kind of leader this team needs.",
+        "{player} has really emerged as a clubhouse leader. "
+        "The younger guys respect him and the vets trust him.",
+    ],
+    "personality_clash": [
+        "Just a heads up - there's some tension between {player1} and {player2}. "
+        "Nothing major yet, but I'm keeping an eye on it.",
+        "I heard some words exchanged in the cage between {player1} and {player2}. "
+        "Competitive guys, but I want to make sure it doesn't become a distraction.",
+    ],
+    "fan_favorite": [
+        "{player} has become a real fan favorite. He stays after every game to sign autographs. "
+        "The marketing team loves him.",
+        "The fans are chanting {player}'s name every home game now. "
+        "This kid is becoming the face of the franchise.",
+    ],
+}
+
+
+def _check_clubhouse_chemistry(team_id: int, game_date: str,
+                                db_path: str = None) -> list:
+    """Generate occasional clubhouse chemistry events."""
+    sent = []
+
+    # Very low probability - these are special moments
+    if random.random() > 0.02:
+        return sent
+
+    # Get manager
+    staff = query("""
+        SELECT * FROM coaching_staff
+        WHERE team_id=? AND role='manager' AND is_available=0
+    """, (team_id,), db_path=db_path)
+    if not staff:
+        return sent
+    coach = staff[0]
+    coach_name = f"{coach['first_name']} {coach['last_name']}"
+    char_id = str(coach["id"])
+
+    if _is_on_cooldown("coach", char_id, "clubhouse_chemistry", team_id, game_date, db_path):
+        return sent
+
+    # Get active players for context
+    players = query("""
+        SELECT first_name, last_name, age, service_years
+        FROM players WHERE team_id=? AND roster_status='active'
+        ORDER BY RANDOM() LIMIT 10
+    """, (team_id,), db_path=db_path)
+
+    if len(players) < 4:
+        return sent
+
+    vets = [p for p in players if (p.get("service_years") or 0) >= 4]
+    youngs = [p for p in players if (p.get("age") or 25) <= 25]
+
+    event_type = random.choice(list(CLUBHOUSE_EVENTS.keys()))
+    template = random.choice(CLUBHOUSE_EVENTS[event_type])
+
+    # Fill template based on event type
+    context = {}
+    if event_type in ("veteran_mentor",) and vets and youngs:
+        v = random.choice(vets)
+        y = random.choice(youngs)
+        context = {"veteran": f"{v['first_name']} {v['last_name']}",
+                   "young_player": f"{y['first_name']} {y['last_name']}"}
+    elif event_type in ("player_leadership", "fan_favorite"):
+        p = random.choice(players)
+        context = {"player": f"{p['first_name']} {p['last_name']}"}
+    elif event_type == "personality_clash" and len(players) >= 2:
+        p1, p2 = random.sample(players, 2)
+        context = {"player1": f"{p1['first_name']} {p1['last_name']}",
+                   "player2": f"{p2['first_name']} {p2['last_name']}"}
+    elif event_type == "team_bonding":
+        context = {}
+    else:
+        # Fallback to team_bonding if we don't have the right players
+        event_type = "team_bonding"
+        template = random.choice(CLUBHOUSE_EVENTS["team_bonding"])
+        context = {}
+
+    try:
+        body = template.format(**context)
+    except KeyError:
+        return sent
+
+    _send_character_message(
+        team_id, "coach", f"{coach_name} (Manager)",
+        "Clubhouse Notes", body, game_date, db_path
+    )
+    _record_message("coach", char_id, "clubhouse_chemistry", team_id,
+                   game_date, 15, db_path)
+    sent.append({"character_type": "coach", "trigger": "clubhouse_chemistry",
+                "character_name": coach_name})
 
     return sent
 
