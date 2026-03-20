@@ -350,9 +350,18 @@ def select_starting_team(team_id: int, db_path: str = None) -> dict:
         db_path=db_path,
     )
 
-    # 6. Owner budget communication
-    budget = query("SELECT payroll_budget FROM teams WHERE id=?", (team_id,), db_path=db_path)
-    budget_val = budget[0]["payroll_budget"] if budget and budget[0].get("payroll_budget") else 80_000_000
+    # 6. Set realistic payroll budget (110% of current payroll) and communicate it
+    payroll_data = query(
+        "SELECT COALESCE(SUM(c.annual_salary), 0) as total FROM contracts c WHERE c.team_id=?",
+        (team_id,), db_path=db_path
+    )
+    actual_payroll = payroll_data[0]["total"] if payroll_data else 100_000_000
+    budget_val = max(60_000_000, round(actual_payroll * 1.10 / 5_000_000) * 5_000_000)
+    # Apply owner patience modifier
+    if raw_scenario:
+        patience_mod = {"low": 0.95, "medium": 1.0, "high": 1.10}
+        budget_val = int(budget_val * patience_mod.get(raw_scenario.get("owner_patience", "medium"), 1.0))
+    execute("UPDATE teams SET payroll_budget=? WHERE id=?", (budget_val, team_id), db_path=db_path)
     execute(
         """INSERT INTO messages
            (game_date, sender_type, sender_name, recipient_type,
