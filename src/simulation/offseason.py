@@ -54,6 +54,24 @@ def process_offseason_day(game_date: str, season: int, db_path: str = None) -> d
     if 1 <= offseason_day <= 7:
         events["phase"] = "contract_expirations"
         if offseason_day == 1:
+            # Process coaching staff contracts (poaching, promotions, expirations)
+            try:
+                from ..ai.coaching_staff import process_coaching_contracts, send_coaching_departure_messages
+                coaching_events = process_coaching_contracts(game_date, db_path)
+                if coaching_events:
+                    events["events"].append({
+                        "type": "coaching_changes",
+                        "count": len(coaching_events),
+                        "details": coaching_events[:10],
+                    })
+                    # Notify user about their staff departures
+                    user_state = query("SELECT user_team_id FROM game_state WHERE id=1", db_path=db_path)
+                    if user_state and user_state[0]["user_team_id"]:
+                        send_coaching_departure_messages(
+                            user_state[0]["user_team_id"], game_date, coaching_events, db_path
+                        )
+            except Exception:
+                pass
             # Process vesting options first
             vesting_results = process_vesting_options(season, db_path)
             if vesting_results:

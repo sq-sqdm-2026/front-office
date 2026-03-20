@@ -1104,6 +1104,10 @@ async function loadCalendar() {
           <div class="dash-stat-sub mono">${rs} RS / ${ra} RA</div>`;
         })()}
       </div>
+      <div class="card" style="flex:1" id="gm-contract-card">
+        <h3>Your Contract</h3>
+        <div style="color:var(--text-tertiary);font-size:12px">Loading...</div>
+      </div>
     </div>
     <div class="cal-header">
       <div class="cal-nav">
@@ -1217,6 +1221,70 @@ async function loadCalendar() {
   calHtml += divHtml + '</div>';
 
   el.innerHTML = calHtml;
+
+  // Load GM contract card async
+  loadGMContractCard();
+}
+
+async function loadGMContractCard() {
+  const card = document.getElementById('gm-contract-card');
+  if (!card) return;
+  try {
+    const [security, staffData] = await Promise.all([
+      api('/owner/job-security'),
+      api(`/coaching-staff/${STATE.userTeamId}`)
+    ]);
+    if (!security) { card.innerHTML = '<h3>Your Contract</h3><div style="color:var(--text-tertiary);font-size:12px">No data</div>'; return; }
+
+    const score = security.security_score || 70;
+    const scoreColor = score >= 70 ? 'var(--green)' : score >= 40 ? 'var(--orange)' : 'var(--red)';
+    const moodLabel = {
+      ecstatic: 'Ecstatic', happy: 'Happy', pleased: 'Pleased', neutral: 'Neutral',
+      concerned: 'Concerned', frustrated: 'Frustrated', furious: 'Furious'
+    }[security.owner_mood] || security.owner_mood || 'Neutral';
+    const moodColor = ['ecstatic','happy','pleased'].includes(security.owner_mood) ? 'var(--green)' :
+                       security.owner_mood === 'neutral' ? 'var(--text-secondary)' : 'var(--red)';
+
+    const warnings = security.warnings_given || 0;
+    const losing = security.consecutive_losing_seasons || 0;
+    const playoffs = security.playoff_appearances || 0;
+
+    // Staff summary
+    let staffHtml = '';
+    if (staffData && staffData.staff && staffData.staff.length) {
+      const mgr = staffData.staff.find(s => s.role === 'manager');
+      const aGM = staffData.staff.find(s => s.role === 'assistant_gm');
+      const farmDir = staffData.staff.find(s => s.role === 'farm_director');
+      if (mgr) staffHtml += `<div style="font-size:11px;color:var(--text-secondary)">MGR: ${mgr.first_name} ${mgr.last_name}</div>`;
+      if (aGM) staffHtml += `<div style="font-size:11px;color:var(--text-secondary)">AGM: ${aGM.first_name} ${aGM.last_name}</div>`;
+      if (farmDir) staffHtml += `<div style="font-size:11px;color:var(--text-secondary)">Farm: ${farmDir.first_name} ${farmDir.last_name}</div>`;
+    }
+
+    card.innerHTML = `
+      <h3>GM Status</h3>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+        <div>
+          <div style="font-size:24px;font-weight:700;color:${scoreColor}">${score}</div>
+          <div style="font-size:10px;color:var(--text-tertiary)">Job Security</div>
+        </div>
+        <div style="text-align:right">
+          <div style="font-size:14px;font-weight:600;color:${moodColor}">${moodLabel}</div>
+          <div style="font-size:10px;color:var(--text-tertiary)">Owner Mood</div>
+        </div>
+      </div>
+      <div style="background:var(--bg-tertiary);border-radius:4px;height:6px;margin-bottom:8px;overflow:hidden">
+        <div style="height:100%;width:${score}%;background:${scoreColor};border-radius:4px;transition:width 0.5s"></div>
+      </div>
+      <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text-tertiary);margin-bottom:6px">
+        <span>Warnings: ${warnings}</span>
+        <span>Losing Szns: ${losing}</span>
+        <span>Playoffs: ${playoffs}</span>
+      </div>
+      ${staffHtml ? '<div style="border-top:1px solid var(--border-light);padding-top:6px;margin-top:4px">' + staffHtml + '</div>' : ''}
+    `;
+  } catch(e) {
+    card.innerHTML = '<h3>Your Contract</h3><div style="color:var(--text-tertiary);font-size:12px">Unable to load</div>';
+  }
 }
 
 function navMonth(delta) {

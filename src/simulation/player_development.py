@@ -124,7 +124,7 @@ def _generate_minor_league_stats(season: int, conn):
                p.eye_rating, p.stuff_rating, p.control_rating, p.stamina_rating,
                p.roster_status, p.team_id
         FROM players p
-        WHERE p.roster_status IN ('minors_aaa', 'minors_aa', 'minors_low')
+        WHERE p.roster_status IN ('minors_aaa', 'minors_aa', 'minors_high_a', 'minors_low', 'minors_rookie')
         AND p.id NOT IN (
             SELECT DISTINCT player_id FROM batting_stats WHERE season=?
             UNION
@@ -137,7 +137,7 @@ def _generate_minor_league_stats(season: int, conn):
         position = m[1]
         team_id = m[10] or 1
         is_pitcher = position in ("SP", "RP")
-        level = {"minors_aaa": "AAA", "minors_aa": "AA", "minors_low": "LOW"}.get(m[9], "AAA")
+        level = {"minors_aaa": "AAA", "minors_aa": "AA", "minors_high_a": "HIGH_A", "minors_low": "LOW", "minors_rookie": "ROOKIE"}.get(m[9], "AAA")
 
         # Get park factors for this team's affiliate at this level
         pf = get_park_factors(team_id, level)
@@ -434,8 +434,21 @@ def _develop_player(p: dict, conn) -> dict:
 
         # --- Calculate development rate ---
         rate = (work_ethic / 50) * dev_rate * farm_mod
-        if p["roster_status"] in ("minors_aaa", "minors_aa", "minors_low"):
+        if p["roster_status"] in ("minors_aaa", "minors_aa", "minors_high_a", "minors_low", "minors_rookie"):
             rate *= farm_mod
+            # Farm director and coaching staff impact on minor league development
+            if p.get("team_id"):
+                try:
+                    farm_dir = conn.execute(
+                        "SELECT reputation FROM coaching_staff WHERE team_id=? AND role='farm_director'",
+                        (p["team_id"],)
+                    ).fetchone()
+                    if farm_dir:
+                        # Good farm directors boost development (rep 70+ = up to +30% boost)
+                        fd_bonus = (farm_dir[0] - 50) / 100  # -0.5 to +0.4 range
+                        rate *= (1.0 + fd_bonus)
+                except Exception:
+                    pass
 
         # Bust: development slows dramatically
         if is_bust:
