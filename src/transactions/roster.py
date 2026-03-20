@@ -454,7 +454,7 @@ def process_rule_5_draft(season: int, db_path: str = None) -> list:
         FROM players p
         JOIN teams t ON t.id = p.team_id
         WHERE p.on_forty_man = 0
-        AND p.roster_status LIKE 'minors%%'
+        AND p.roster_status LIKE 'minors%'
         AND (
             (p.age - 18 >= 5) OR (p.age - 19 >= 4)
         )

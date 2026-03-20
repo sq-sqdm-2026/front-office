@@ -5057,10 +5057,11 @@ function renderMessageConversation(msg) {
     try {
       const opts = typeof msg.response_options_json === 'string' ? JSON.parse(msg.response_options_json) : msg.response_options_json;
       if (opts.options && opts.options.length) {
-        responseHtml = `<div class="msg-response-buttons" style="margin-top:12px; display:flex; gap:8px;">`;
-        opts.options.forEach(opt => {
+        responseHtml = `<div class="msg-response-buttons" style="margin-top:12px; display:flex; flex-wrap:wrap; gap:8px;">`;
+        opts.options.forEach((opt, idx) => {
           const btnClass = opt === 'Accept' ? 'btn-primary' : 'btn-secondary';
-          responseHtml += `<button class="btn ${btnClass}" onclick="respondToMessage(${msg.id}, '${opt}')">${opt}</button>`;
+          const safeOpt = opt.replace(/'/g, "\\'").replace(/"/g, '&quot;');
+          responseHtml += `<button class="btn ${btnClass}" onclick="respondToMessage(${msg.id}, '${safeOpt}')" style="flex:1;min-width:100px">${opt}</button>`;
         });
         responseHtml += `</div>`;
       }
@@ -5134,10 +5135,11 @@ async function respondToMessage(msgId, response) {
   const btn = event.target;
   const allBtns = btn.parentElement.querySelectorAll('button');
   allBtns.forEach(b => { b.disabled = true; });
-  btn.textContent = '...';
+  btn.textContent = 'Sending...';
 
   // Route to correct endpoint based on response
   let r;
+  const isTrade = response === 'Accept' || response === 'Decline';
   if (response === 'Accept') {
     r = await post(`/trade/accept/${msgId}`, {});
   } else if (response === 'Decline') {
@@ -5147,17 +5149,35 @@ async function respondToMessage(msgId, response) {
   }
 
   if (r && (r.success || r.trade_id)) {
-    showToast(r.message || `Trade ${response.toLowerCase()}d!`, 'success');
+    if (isTrade) {
+      showToast(r.message || `Trade ${response.toLowerCase()}d!`, 'success');
+    } else {
+      const sentiment = r.sentiment === 'positive' ? ' (Favorable impression)' :
+                        r.sentiment === 'negative' ? ' (Unfavorable impression)' : '';
+      showToast(`Response sent${sentiment}`, 'success');
+    }
+    // Hide response buttons after successful response
+    const btnContainer = btn.parentElement;
+    if (btnContainer) {
+      btnContainer.innerHTML = `<div style="font-size:11px;color:var(--green);font-style:italic">You responded: "${response}"</div>`;
+    }
   } else {
     showToast(r?.error || r?.detail || 'Response failed', 'error');
-    allBtns.forEach(b => { b.disabled = false; });
+    allBtns.forEach(b => { b.disabled = false; btn.textContent = response; });
   }
-  await loadMessages();
-  if (_msgSelectedId === msgId) {
-    const msgs = await api('/messages?unread_only=false');
-    const updated = (msgs || []).find(m => m.id === msgId);
-    if (updated) renderMessageConversation(updated);
-  }
+
+  // Refresh messages after a short delay to show the character's reply
+  setTimeout(async () => {
+    await loadMessages();
+    if (_msgSelectedId === msgId) {
+      const msgs = await api('/messages?unread_only=false');
+      // Show the newest message in the thread (the character's reply)
+      const related = (msgs || []).filter(m =>
+        m.id === msgId || (m.subject && m.subject.includes('Re:') && m.game_date)
+      ).sort((a, b) => b.id - a.id);
+      if (related.length) renderMessageConversation(related[0]);
+    }
+  }, 500);
 }
 
 async function sendChatMessage() {
@@ -5166,18 +5186,47 @@ async function sendChatMessage() {
   const body = input.value.trim();
   input.value = '';
 
+  const sendBtn = document.querySelector('.chat-send-btn');
+  if (sendBtn) { sendBtn.disabled = true; sendBtn.textContent = '...'; }
+
   // Find the currently selected message to reply in context
   const msgs = await api('/messages?unread_only=false');
   const selected = (msgs || []).find(m => m.id === _msgSelectedId);
 
-  await post('/messages/send', {
+  const result = await post('/messages/send', {
     recipient_type: selected?.sender_type || 'system',
-    recipient_id: selected?.sender_id || 0,
+    recipient_id: selected?.sender_id || selected?.recipient_id || 0,
+    recipient_name: selected?.sender_name || null,
     reply_to_id: _msgSelectedId || null,
+    subject: selected?.subject ? `Re: ${selected.subject.replace(/^Re: /, '')}` : null,
     body: body
   });
-  showToast('Message sent', 'success');
-  loadMessages();
+
+  if (sendBtn) { sendBtn.disabled = false; sendBtn.textContent = 'Send'; }
+
+  if (result?.ai_response) {
+    showToast('Message sent - reply received', 'success');
+  } else {
+    showToast('Message sent', 'success');
+  }
+
+  // Reload and show the conversation thread
+  await loadMessages();
+  // Select the newest reply in the thread
+  const updatedMsgs = await api('/messages?unread_only=false');
+  if (updatedMsgs && updatedMsgs.length) {
+    // Find replies related to this conversation
+    const subj = selected?.subject?.replace(/^Re: /, '') || '';
+    const reply = updatedMsgs.find(m =>
+      m.sender_type === (selected?.sender_type || '') &&
+      m.sender_name === (selected?.sender_name || '') &&
+      !m.is_read
+    );
+    if (reply) {
+      _msgSelectedId = reply.id;
+      renderMessageConversation(reply);
+    }
+  }
 }
 
 // ============================================================

@@ -2388,15 +2388,183 @@ async def get_boxscore(schedule_id: int):
 
 @app.get("/game/{schedule_id}/play-by-play")
 async def get_play_by_play(schedule_id: int):
-    """Get play-by-play data for a game."""
-    result = query("SELECT play_by_play_json FROM game_results WHERE schedule_id=?", (schedule_id,))
-    if not result or not result[0].get("play_by_play_json"):
+    """Get play-by-play data for a game, reconstructed into inning-by-inning format."""
+    import json, random
+
+    game_result = query(
+        "SELECT play_by_play_json, innings_json FROM game_results WHERE schedule_id=?",
+        (schedule_id,))
+    if not game_result:
         return []
-    import json
-    try:
-        return json.loads(result[0]["play_by_play_json"])
-    except:
+
+    schedule = query("SELECT home_team_id, away_team_id, home_score, away_score FROM schedule WHERE id=?",
+                     (schedule_id,))
+    if not schedule:
         return []
+    sched = schedule[0]
+
+    # Load batting lines for rich play descriptions
+    batting_lines = query(
+        "SELECT * FROM batting_lines WHERE schedule_id=? ORDER BY team_id, batting_order",
+        (schedule_id,))
+
+    # Load innings data
+    innings_json = game_result[0].get("innings_json")
+    innings_away = []
+    innings_home = []
+    if innings_json:
+        try:
+            parsed = json.loads(innings_json)
+            if isinstance(parsed, list) and len(parsed) == 2:
+                innings_away, innings_home = parsed
+        except Exception:
+            pass
+
+    # Get team abbreviations
+    home_team = query("SELECT abbreviation FROM teams WHERE id=?", (sched["home_team_id"],))
+    away_team = query("SELECT abbreviation FROM teams WHERE id=?", (sched["away_team_id"],))
+    home_abbr = home_team[0]["abbreviation"] if home_team else "HME"
+    away_abbr = away_team[0]["abbreviation"] if away_team else "AWY"
+
+    # Build batter pools by team
+    home_batters = [b for b in batting_lines if b["team_id"] == sched["home_team_id"]]
+    away_batters = [b for b in batting_lines if b["team_id"] == sched["away_team_id"]]
+
+    def _build_at_bats(batters):
+        """Convert batting lines into a pool of individual at-bat events."""
+        events = []
+        for b in batters:
+            name = ""
+            p = query("SELECT first_name, last_name FROM players WHERE id=?", (b["player_id"],))
+            if p:
+                name = f"{p[0]['first_name'][0]}. {p[0]['last_name']}"
+            else:
+                name = f"Player #{b['player_id']}"
+            for _ in range(b.get("hr", 0)):
+                events.append({"type": "home_run", "desc": f"{name} homered", "player": name, "runs": 1})
+            for _ in range(b.get("triples", 0)):
+                events.append({"type": "triple", "desc": f"{name} tripled", "player": name, "runs": 0})
+            for _ in range(b.get("doubles", 0)):
+                events.append({"type": "double", "desc": f"{name} doubled", "player": name, "runs": 0})
+            singles = b.get("hits", 0) - b.get("hr", 0) - b.get("triples", 0) - b.get("doubles", 0)
+            for _ in range(max(0, singles)):
+                events.append({"type": "single", "desc": f"{name} singled", "player": name, "runs": 0})
+            for _ in range(b.get("bb", 0)):
+                events.append({"type": "walk", "desc": f"{name} walked", "player": name, "runs": 0})
+            for _ in range(b.get("hbp", 0)):
+                events.append({"type": "walk", "desc": f"{name} hit by pitch", "player": name, "runs": 0})
+            for _ in range(b.get("so", 0)):
+                events.append({"type": "strikeout", "desc": f"{name} struck out", "player": name, "runs": 0})
+            # Fill remaining plate appearances with outs
+            pa = b.get("ab", 0) + b.get("bb", 0) + b.get("hbp", 0) + b.get("sf", 0)
+            accounted = b.get("hits", 0) + b.get("bb", 0) + b.get("hbp", 0) + b.get("so", 0)
+            other_outs = pa - accounted
+            out_types = [
+                f"{name} grounded out", f"{name} flied out",
+                f"{name} popped out", f"{name} lined out"
+            ]
+            for _ in range(max(0, other_outs)):
+                events.append({"type": "out", "desc": random.choice(out_types), "player": name, "runs": 0})
+        random.shuffle(events)
+        return events
+
+    away_events = _build_at_bats(away_batters)
+    home_events = _build_at_bats(home_batters)
+
+    # Now distribute events across innings to match the inning scores
+    plays = []
+    home_score = 0
+    away_score = 0
+    away_idx = 0
+    home_idx = 0
+    num_innings = max(len(innings_away), len(innings_home), 9)
+
+    for inning in range(1, num_innings + 1):
+        away_runs_this = innings_away[inning - 1] if inning - 1 < len(innings_away) else 0
+        home_runs_this = innings_home[inning - 1] if inning - 1 < len(innings_home) else None
+
+        # --- TOP OF INNING (away bats) ---
+        outs = 0
+        runs_scored = 0
+        while outs < 3 and away_idx < len(away_events):
+            ev = away_events[away_idx]
+            away_idx += 1
+            is_scoring = ev["type"] == "home_run" or (runs_scored < away_runs_this and ev["type"] in ("single", "double", "triple") and random.random() < 0.4)
+            if is_scoring and ev["type"] != "home_run":
+                ev = dict(ev)
+                ev["desc"] += " (RBI)"
+                ev["runs"] = 1
+            if ev["type"] == "home_run":
+                runs_scored += 1
+            elif is_scoring:
+                runs_scored += 1
+            if ev["type"] in ("strikeout", "out"):
+                outs += 1
+            away_score_now = away_score + runs_scored
+            plays.append({
+                "inning": inning, "half": "top", "outs": outs,
+                "description": ev["desc"],
+                "home_score": home_score, "away_score": away_score_now,
+                "type": ev["type"]
+            })
+            if outs >= 3:
+                break
+            # Prevent infinite at-bats: cap at ~8 per half-inning
+            if len([p for p in plays if p["inning"] == inning and p["half"] == "top"]) >= 8:
+                break
+        # Ensure runs match
+        away_score += away_runs_this
+        # End-of-half marker
+        plays.append({
+            "inning": inning, "half": "top", "outs": 3,
+            "description": f"End of top {inning}",
+            "home_score": home_score, "away_score": away_score,
+            "type": "end_half"
+        })
+
+        # --- BOTTOM OF INNING (home bats) ---
+        if home_runs_this is not None:
+            outs = 0
+            runs_scored = 0
+            while outs < 3 and home_idx < len(home_events):
+                ev = home_events[home_idx]
+                home_idx += 1
+                is_scoring = ev["type"] == "home_run" or (runs_scored < home_runs_this and ev["type"] in ("single", "double", "triple") and random.random() < 0.4)
+                if is_scoring and ev["type"] != "home_run":
+                    ev = dict(ev)
+                    ev["desc"] += " (RBI)"
+                    ev["runs"] = 1
+                if ev["type"] == "home_run":
+                    runs_scored += 1
+                elif is_scoring:
+                    runs_scored += 1
+                if ev["type"] in ("strikeout", "out"):
+                    outs += 1
+                home_score_now = home_score + runs_scored
+                plays.append({
+                    "inning": inning, "half": "bottom", "outs": outs,
+                    "description": ev["desc"],
+                    "home_score": home_score_now, "away_score": away_score,
+                    "type": ev["type"]
+                })
+                if outs >= 3:
+                    break
+                if len([p for p in plays if p["inning"] == inning and p["half"] == "bottom"]) >= 8:
+                    break
+            home_score += home_runs_this
+            plays.append({
+                "inning": inning, "half": "bottom", "outs": 3,
+                "description": f"End of bottom {inning}",
+                "home_score": home_score, "away_score": away_score,
+                "type": "end_half"
+            })
+
+    # Final sanity: ensure last play has correct final score
+    if plays:
+        plays[-1]["home_score"] = sched.get("home_score", home_score)
+        plays[-1]["away_score"] = sched.get("away_score", away_score)
+
+    return plays
 
 
 # ============================================================

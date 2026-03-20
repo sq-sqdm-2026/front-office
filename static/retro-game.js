@@ -68,15 +68,12 @@ function initRetroGame(scheduleId, homeAbbr, awayAbbr, homeName, awayName) {
 }
 
 async function loadRetroPlays(scheduleId) {
+  document.getElementById('retro-situation').textContent = 'Loading play-by-play...';
   const data = await api('/game/' + scheduleId + '/play-by-play');
   if (data && Array.isArray(data) && data.length > 0) {
     RETRO.plays = data;
-    document.getElementById('retro-situation').textContent =
-      RETRO.plays.length + ' plays loaded. Press Play to watch!';
   } else if (data && data.plays) {
     RETRO.plays = data.plays;
-    document.getElementById('retro-situation').textContent =
-      RETRO.plays.length + ' plays loaded. Press Play to watch!';
   } else if (data && data.play_by_play) {
     try {
       RETRO.plays = typeof data.play_by_play === 'string' ?
@@ -84,11 +81,14 @@ async function loadRetroPlays(scheduleId) {
     } catch(e) {
       RETRO.plays = [];
     }
+  } else {
+    RETRO.plays = [];
+  }
+  if (RETRO.plays.length > 0) {
     document.getElementById('retro-situation').textContent =
       RETRO.plays.length + ' plays loaded. Press Play to watch!';
   } else {
-    RETRO.plays = [];
-    document.getElementById('retro-situation').textContent = 'No play-by-play data available';
+    document.getElementById('retro-situation').textContent = 'No play-by-play data. Sim a game first!';
   }
 }
 
@@ -290,11 +290,20 @@ function drawOuts() {
 
 function processPlay(play) {
   // Parse play data and update state
-  var desc = (typeof play === 'string' ? play : play.description || play.play || play.text || play.outcome || '').toLowerCase();
+  // Handle both old format ({type, player}) and new format ({description, inning, half, outs, home_score, away_score})
+  var desc = '';
+  var playType = '';
 
-  // Update inning/half from play data if available
+  if (typeof play === 'string') {
+    desc = play;
+  } else {
+    desc = play.description || play.play || play.text || play.outcome || '';
+    playType = play.type || '';
+  }
+  var descLower = desc.toLowerCase();
+
+  // Update inning/half from play data
   if (play.inning) {
-    // inning field may be like "Top 3" or "Bot 5" or just a number
     var inningStr = String(play.inning);
     var inningMatch = inningStr.match(/(\d+)/);
     if (inningMatch) RETRO.inning = parseInt(inningMatch[1]);
@@ -304,66 +313,81 @@ function processPlay(play) {
   if (play.half) RETRO.halfInning = play.half;
   if (play.outs !== undefined) RETRO.outs = play.outs;
 
-  // Parse scoring
+  // Update scores from play data
   if (play.home_score !== undefined) RETRO.homeScore = play.home_score;
   if (play.away_score !== undefined) RETRO.awayScore = play.away_score;
 
-  // Parse base runners from play description
+  // Skip end-of-half markers (just update state, no animation)
+  if (playType === 'end_half') {
+    RETRO.bases = [false, false, false];
+    RETRO.outs = 0;
+    _updateRetroDisplay(desc, null);
+    drawField();
+    return;
+  }
+
+  // Determine flash text from play type or description
   var flashText = null;
-  if (desc.includes('home run') || desc.includes('homer')) {
+  if (playType === 'home_run' || descLower.includes('home run') || descLower.includes('homer')) {
     RETRO.bases = [false, false, false];
     flashText = 'HR!';
     flashAnimation('HR!', RETRO.COLORS.yellow);
     playRetroSfx('homerun');
-  } else if (desc.includes('triple')) {
+  } else if (playType === 'triple' || descLower.includes('triple')) {
     RETRO.bases = [false, false, true];
     flashText = '3B!';
     flashAnimation('3B!', RETRO.COLORS.yellow);
     playRetroSfx('hit');
-  } else if (desc.includes('double')) {
-    RETRO.bases = [false, true, false];
+  } else if (playType === 'double' || descLower.includes('double')) {
+    // Advance runners
+    if (RETRO.bases[0]) RETRO.bases[2] = true;
+    RETRO.bases[1] = true;
+    RETRO.bases[0] = false;
     flashText = '2B!';
     flashAnimation('2B!', RETRO.COLORS.yellow);
     playRetroSfx('hit');
-  } else if (desc.includes('single') || desc.includes('singled')) {
+  } else if (playType === 'single' || descLower.includes('single') || descLower.includes('singled')) {
+    // Advance runners
+    if (RETRO.bases[1]) RETRO.bases[2] = true;
+    if (RETRO.bases[0]) RETRO.bases[1] = true;
     RETRO.bases[0] = true;
     flashText = 'HIT!';
     flashAnimation('HIT!', RETRO.COLORS.white);
     playRetroSfx('hit');
-  } else if (desc.includes('walk') || desc.includes('walked')) {
+  } else if (playType === 'walk' || descLower.includes('walk') || descLower.includes('hit by pitch')) {
+    // Advance runners on walk (force)
+    if (RETRO.bases[0] && RETRO.bases[1]) RETRO.bases[2] = true;
+    if (RETRO.bases[0]) RETRO.bases[1] = true;
     RETRO.bases[0] = true;
     flashText = 'BB';
     flashAnimation('BB', RETRO.COLORS.white);
-  } else if (desc.includes('strikeout') || desc.includes('struck out')) {
+  } else if (playType === 'strikeout' || descLower.includes('strikeout') || descLower.includes('struck out')) {
     flashText = 'K';
     flashAnimation('K', RETRO.COLORS.red);
     playRetroSfx('strikeout');
-  } else if (desc.includes('ground') || desc.includes('fly') || desc.includes('pop')) {
+  } else if (playType === 'out' || descLower.includes('ground') || descLower.includes('fly') || descLower.includes('pop') || descLower.includes('lined out')) {
     flashText = 'OUT';
     flashAnimation('OUT', RETRO.COLORS.red);
     playRetroSfx('out');
-  } else if (desc.includes('error')) {
+  } else if (descLower.includes('error')) {
     RETRO.bases[0] = true;
     flashText = 'E!';
     flashAnimation('E!', RETRO.COLORS.red);
-  } else if (desc.includes('stolen base') || desc.includes('stole')) {
+  } else if (descLower.includes('stolen base') || descLower.includes('stole')) {
     flashText = 'SB!';
     flashAnimation('SB!', RETRO.COLORS.yellow);
     playRetroSfx('hit');
   }
 
-  // Show commentary below the play description
-  if (flashText) {
-    var commentary = getCommentary(flashText);
-    if (commentary) {
-      var sitEl = document.getElementById('retro-situation');
-      if (sitEl) {
-        var playDesc = typeof play === 'string' ? play : (play.description || play.play || play.text || play.outcome || '');
-        sitEl.innerHTML = playDesc + '<br><span style="color:#ffe66d;font-style:italic">' + commentary + '</span>';
-      }
-    }
-  }
+  // Build display text with commentary
+  var commentary = flashText ? getCommentary(flashText) : '';
+  _updateRetroDisplay(desc, commentary);
 
+  // Redraw field
+  drawField();
+}
+
+function _updateRetroDisplay(playText, commentary) {
   // Update score display with flash effect
   var scoreEl = document.getElementById('retro-score');
   var oldScore = scoreEl.textContent;
@@ -375,17 +399,20 @@ function processPlay(play) {
     scoreEl.classList.add('score-change');
   }
 
-  // Update info bar
+  // Update inning/outs info
   var half = RETRO.halfInning === 'top' ? 'Top' : 'Bot';
   document.getElementById('retro-count').textContent =
     half + ' ' + RETRO.inning + ' | ' + RETRO.outs + ' out';
 
-  var playText = typeof play === 'string' ? play :
-    (play.description || play.play || play.text || play.outcome || '');
-  document.getElementById('retro-situation').textContent = playText;
-
-  // Redraw field
-  drawField();
+  // Update situation text WITH commentary (don't overwrite!)
+  var sitEl = document.getElementById('retro-situation');
+  if (sitEl) {
+    if (commentary) {
+      sitEl.innerHTML = playText + ' <span style="color:#ffe66d;font-style:italic">' + commentary + '</span>';
+    } else {
+      sitEl.textContent = playText;
+    }
+  }
 }
 
 function flashAnimation(text, color) {
@@ -550,7 +577,8 @@ function drawGameOver() {
   ctx.fillStyle = '#fff';
   ctx.fillText(RETRO.awayAbbr + '  ' + RETRO.awayScore + '  -  ' + RETRO.homeScore + '  ' + RETRO.homeAbbr, W/2, H/2);
 
-  var winner = RETRO.homeScore > RETRO.awayScore ? RETRO.homeAbbr : RETRO.awayAbbr;
+  var winner = RETRO.homeScore > RETRO.awayScore ? RETRO.homeAbbr :
+               RETRO.awayScore > RETRO.homeScore ? RETRO.awayAbbr : 'TIE';
   ctx.font = '14px monospace';
   ctx.fillStyle = RETRO.COLORS.yellow;
   ctx.fillText(winner + ' WINS!', W/2, H/2 + 35);

@@ -1219,7 +1219,7 @@ def sim_day(game_date: str = None, db_path: str = None) -> list:
             away_callups = query("""
                 SELECT p.*, c.annual_salary FROM players p
                 LEFT JOIN contracts c ON c.player_id = p.id
-                WHERE p.team_id=? AND p.roster_status LIKE 'minors%%'
+                WHERE p.team_id=? AND p.roster_status LIKE 'minors%'
                 AND p.position NOT IN ('SP', 'RP')
                 ORDER BY p.power_rating + p.contact_rating DESC
                 LIMIT ?
