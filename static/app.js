@@ -157,10 +157,11 @@ function showPhaseTransition(title, subtitle, duration = 2500) {
 let _espnTickerItems = [];
 
 function buildScoreTicker(games) {
-  // Add game scores to ticker items
+  // Add game scores to ticker items — clickable to box score
   if (!games || !games.length) return;
   const scoreItems = games.map(g => {
-    return `<div class="espn-ticker-item">
+    const schedId = g.schedule_id || g.id || 0;
+    return `<div class="espn-ticker-item clickable" onclick="showBoxScore(${schedId})" title="View box score">
       <span class="ticker-cat">Final</span>
       <span class="ticker-team">${g.away_abbr || '???'}</span>
       <span class="ticker-score">${g.away_score ?? '-'}</span>
@@ -169,13 +170,14 @@ function buildScoreTicker(games) {
       <span class="ticker-score">${g.home_score ?? '-'}</span>
     </div>`;
   });
-  // Prepend scores (most recent first), keep last 100 items
   _espnTickerItems = [...scoreItems, ..._espnTickerItems].slice(0, 100);
   renderEspnTicker();
 }
 
-function addTickerItem(category, html) {
-  const item = `<div class="espn-ticker-item"><span class="ticker-cat">${category}</span>${html}</div>`;
+function addTickerItem(category, html, onclick) {
+  const click = onclick ? ` onclick="${onclick}" title="Click for details"` : '';
+  const cls = onclick ? ' clickable' : '';
+  const item = `<div class="espn-ticker-item${cls}"${click}><span class="ticker-cat">${category}</span>${html}</div>`;
   _espnTickerItems.unshift(item);
   if (_espnTickerItems.length > 100) _espnTickerItems = _espnTickerItems.slice(0, 100);
   renderEspnTicker();
@@ -201,21 +203,21 @@ async function refreshEspnTicker() {
       api('/news/feed?limit=10'),
       api('/messages?unread_only=false')
     ]);
-    // Add news headlines
+    // Add news headlines — click to open News tab
     for (const item of (news || []).slice(0, 5)) {
       if (item.type === 'article' && item.headline) {
-        addTickerItem('News', `<span class="ticker-headline">${item.headline}</span>`);
+        addTickerItem('News', `<span class="ticker-headline">${item.headline}</span>`, `showScreen('news')`);
       } else if (item.type === 'transaction') {
-        addTickerItem('Trade', `<span class="ticker-breaking">${(item.description || item.headline || '').slice(0, 80)}</span>`);
+        addTickerItem('Trade', `<span class="ticker-breaking">${(item.description || item.headline || '').slice(0, 80)}</span>`, `showScreen('news')`);
       }
     }
-    // Add unread messages as breaking news
+    // Add unread messages — click to open messages panel
     const unread = (msgs || []).filter(m => !m.is_read).slice(0, 3);
     for (const m of unread) {
       if (m.sender_type === 'gm' && m.subject) {
-        addTickerItem('Breaking', `<span class="ticker-breaking">${m.subject}</span>`);
+        addTickerItem('Breaking', `<span class="ticker-breaking">${m.subject}</span>`, `toggleChatPanel();selectMessage(${m.id})`);
       } else if (m.sender_type === 'reporter') {
-        addTickerItem('Report', `<span class="ticker-headline">${m.subject || m.body?.slice(0, 60)}</span>`);
+        addTickerItem('Report', `<span class="ticker-headline">${m.subject || m.body?.slice(0, 60)}</span>`, `toggleChatPanel();selectMessage(${m.id})`);
       }
     }
   } catch (e) {}
@@ -787,20 +789,20 @@ async function simDays(n) {
     // Push offseason events to ESPN ticker
     if (r.offseason) {
       for (const evt of r.offseason) {
-        if (evt.type === 'owner_pressure') addTickerItem('Owner', `<span class="ticker-headline">${evt.subject || 'Owner message'}</span>`);
-        else if (evt.type === 'record_broken') addTickerItem('Record', `<span class="ticker-milestone">${evt.description || 'New record set!'}</span>`);
-        else if (evt.type === 'all_star_game') addTickerItem('ASG', `<span class="ticker-headline">AL ${evt.al_score} - NL ${evt.nl_score}</span>`);
-        else if (evt.type === 'proactive_message') addTickerItem('News', `<span class="ticker-headline">${evt.subject || ''}</span>`);
+        if (evt.type === 'owner_pressure') addTickerItem('Owner', `<span class="ticker-headline">${evt.subject || 'Owner message'}</span>`, `toggleChatPanel()`);
+        else if (evt.type === 'record_broken') addTickerItem('Record', `<span class="ticker-milestone">${evt.description || 'New record set!'}</span>`, `showScreen('records')`);
+        else if (evt.type === 'all_star_game') addTickerItem('ASG', `<span class="ticker-headline">AL ${evt.al_score} - NL ${evt.nl_score}</span>`, `showScreen('standings')`);
+        else if (evt.type === 'proactive_message') addTickerItem('News', `<span class="ticker-headline">${evt.subject || ''}</span>`, `toggleChatPanel()`);
       }
     }
     if (r.ai_trades) {
       for (const t of r.ai_trades) {
-        addTickerItem('Trade', `<span class="ticker-breaking">${t.description || 'Trade completed'}</span>`);
+        addTickerItem('Trade', `<span class="ticker-breaking">${t.description || 'Trade completed'}</span>`, `showScreen('news')`);
       }
     }
     if (r.waiver_outcomes) {
       for (const w of r.waiver_outcomes) {
-        addTickerItem('Waiver', `<span class="ticker-headline">${w.description || 'Waiver claim'}</span>`);
+        addTickerItem('Waiver', `<span class="ticker-headline">${w.description || 'Waiver claim'}</span>`, `showScreen('transactions')`);
       }
     }
 
