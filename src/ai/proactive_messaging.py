@@ -209,6 +209,13 @@ def check_and_send_proactive_messages(team_id: int, game_date: str,
     except Exception:
         pass
 
+    # September call-up story beat
+    try:
+        sept_msgs = _check_september_callups(team_id, game_date, db_path)
+        sent.extend(sept_msgs)
+    except Exception:
+        pass
+
     return sent
 
 
@@ -1339,6 +1346,136 @@ def _check_clubhouse_chemistry(team_id: int, game_date: str,
                    game_date, 15, db_path)
     sent.append({"character_type": "coach", "trigger": "clubhouse_chemistry",
                 "character_name": coach_name})
+
+    return sent
+
+
+# ============================================================
+# SEPTEMBER CALL-UPS STORY BEAT
+# ============================================================
+
+SEPTEMBER_MESSAGES = {
+    "farm_director": [
+        "September is here. I've put together my recommendations for expanded roster call-ups. "
+        "We've got {count} guys in the system who deserve a look at the big league level. "
+        "Top of my list: {prospect}. He's earned it.",
+        "It's September call-up time. I know the roster expands and I've identified {count} candidates. "
+        "{prospect} should be first on the bus. The kid needs to experience September baseball.",
+    ],
+    "manager_contending": [
+        "September's here and we're in the race. I want fresh arms in the bullpen. "
+        "Anyone you can bring up from AAA who can give us quality innings down the stretch?",
+        "We need reinforcements for the stretch run. Who's ready from the farm? "
+        "A lefty reliever and another bench bat would be huge.",
+    ],
+    "manager_rebuilding": [
+        "September's a great time to see what the young guys can do at this level. "
+        "Let's give some of the top prospects a taste of the big leagues.",
+        "With the season winding down, let's use September to evaluate. "
+        "I want to see our future players in real games.",
+    ],
+    "beat_writer": [
+        "September rosters are expanding. Any plans for call-ups? My readers want to know "
+        "which prospects are getting the invitation to the show.",
+        "It's that time of year. Who's coming up in September? "
+        "I'm hearing buzz about {prospect} - can you confirm?",
+    ],
+}
+
+
+def _check_september_callups(team_id: int, game_date: str,
+                              db_path: str = None) -> list:
+    """September call-up story beat - farm director, manager, beat writer all react."""
+    sent = []
+
+    try:
+        gd = dt_date.fromisoformat(game_date)
+    except Exception:
+        return sent
+
+    # Only trigger Sept 1-3
+    if gd.month != 9 or gd.day > 3:
+        return sent
+
+    # Get top prospect
+    prospect = _get_top_prospect(team_id, db_path)
+    prospect_name = prospect["name"] if prospect else "our top prospect"
+
+    # Count call-up candidates
+    candidates = query("""
+        SELECT COUNT(*) as cnt FROM players
+        WHERE team_id=? AND roster_status IN ('minors_aaa', 'minors_aa')
+        AND overall_rating >= 35
+    """, (team_id,), db_path=db_path)
+    count = candidates[0]["cnt"] if candidates else 3
+
+    # --- Farm Director ---
+    fd = query("""
+        SELECT * FROM coaching_staff
+        WHERE team_id=? AND role='farm_director' AND is_available=0
+    """, (team_id,), db_path=db_path)
+    if fd:
+        fd = fd[0]
+        fd_name = f"{fd['first_name']} {fd['last_name']}"
+        char_id = str(fd["id"])
+        if not _is_on_cooldown("farm_director", char_id, "september_callups", team_id, game_date, db_path):
+            body = random.choice(SEPTEMBER_MESSAGES["farm_director"]).format(
+                count=count, prospect=prospect_name)
+            _send_character_message(
+                team_id, "coach", f"{fd_name} (Farm Director)",
+                "September Call-Up Recommendations", body, game_date, db_path
+            )
+            _record_message("farm_director", char_id, "september_callups", team_id,
+                           game_date, 30, db_path)
+            sent.append({"character_type": "farm_director", "trigger": "september_callups"})
+
+    # --- Manager ---
+    mgr = query("""
+        SELECT * FROM coaching_staff
+        WHERE team_id=? AND role='manager' AND is_available=0
+    """, (team_id,), db_path=db_path)
+    if mgr:
+        mgr = mgr[0]
+        mgr_name = f"{mgr['first_name']} {mgr['last_name']}"
+        char_id = str(mgr["id"])
+        if not _is_on_cooldown("coach", char_id, "september_callups", team_id, game_date, db_path):
+            # Check if contending
+            streak_data = query("""
+                SELECT COUNT(*) as w FROM schedule
+                WHERE (home_team_id=? AND home_score > away_score
+                   OR away_team_id=? AND away_score > home_score) AND is_played=1
+            """, (team_id, team_id), db_path=db_path)
+            loss_data = query("""
+                SELECT COUNT(*) as l FROM schedule
+                WHERE (home_team_id=? AND home_score < away_score
+                   OR away_team_id=? AND away_score < home_score) AND is_played=1
+            """, (team_id, team_id), db_path=db_path)
+            w = streak_data[0]["w"] if streak_data else 0
+            l = loss_data[0]["l"] if loss_data else 0
+            contending = w > l
+
+            key = "manager_contending" if contending else "manager_rebuilding"
+            body = random.choice(SEPTEMBER_MESSAGES[key])
+            _send_character_message(
+                team_id, "coach", f"{mgr_name} (Manager)",
+                "September Plans", body, game_date, db_path
+            )
+            _record_message("coach", char_id, "september_callups", team_id,
+                           game_date, 30, db_path)
+            sent.append({"character_type": "coach", "trigger": "september_callups"})
+
+    # --- Beat Writer ---
+    writer_name = random.choice(BEAT_WRITER_NAMES)
+    char_id = writer_name
+    if not _is_on_cooldown("beat_writer", char_id, "september_callups", team_id, game_date, db_path):
+        body = random.choice(SEPTEMBER_MESSAGES["beat_writer"]).format(prospect=prospect_name)
+        _send_character_message(
+            team_id, "reporter", f"{writer_name} (Beat Writer)",
+            "September Roster Talk", body, game_date, db_path
+        )
+        _record_message("beat_writer", char_id, "september_callups", team_id,
+                       game_date, 30, db_path)
+        sent.append({"character_type": "beat_writer", "trigger": "september_callups"})
 
     return sent
 

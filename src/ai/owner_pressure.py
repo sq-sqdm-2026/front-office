@@ -808,6 +808,86 @@ def _month_name(month: int) -> str:
 
 
 # ============================================================
+# WEEKLY OWNER MOOD PULSE
+# ============================================================
+
+def update_owner_mood_weekly(team_id: int, game_date: str, db_path: str = None) -> dict:
+    """
+    Weekly in-season mood adjustment. Called every ~7 days during regular season.
+    Updates security_score by +-1 to +-5 based on recent performance.
+    Creates a natural escalation/de-escalation of owner satisfaction.
+    """
+    _ensure_job_security_exists(team_id, db_path)
+    security = query("SELECT * FROM gm_job_security WHERE id=1", db_path=db_path)
+    if not security:
+        return {}
+    security = security[0]
+    score = security["security_score"]
+
+    # Get last 7 games
+    recent = query("""
+        SELECT
+            CASE WHEN home_team_id = ? THEN
+                CASE WHEN home_score > away_score THEN 1 ELSE 0 END
+            ELSE
+                CASE WHEN away_score > home_score THEN 1 ELSE 0 END
+            END as win
+        FROM schedule
+        WHERE (home_team_id=? OR away_team_id=?) AND is_played=1
+        ORDER BY game_date DESC LIMIT 7
+    """, (team_id, team_id, team_id), db_path=db_path)
+
+    if not recent:
+        return {}
+
+    wins = sum(r["win"] for r in recent)
+    games = len(recent)
+    if games == 0:
+        return {}
+
+    win_pct = wins / games
+
+    # Mood delta based on recent performance
+    if win_pct >= 0.714:   # 5-2 or better
+        delta = random.randint(1, 3)
+    elif win_pct >= 0.571:  # 4-3
+        delta = random.randint(0, 1)
+    elif win_pct >= 0.429:  # 3-4
+        delta = random.randint(-1, 0)
+    elif win_pct >= 0.286:  # 2-5
+        delta = random.randint(-3, -1)
+    else:                   # 1-6 or worse
+        delta = random.randint(-5, -2)
+
+    # Owner personality modifiers
+    owner = query("SELECT * FROM owner_characters WHERE team_id=?",
+                  (team_id,), db_path=db_path)
+    if owner:
+        archetype = owner[0].get("archetype", "balanced")
+        if archetype == "patient_builder":
+            delta = max(delta, delta + 1)  # More forgiving
+        elif archetype == "ego_meddler":
+            delta = min(delta, delta - 1)  # Less patient
+        elif archetype == "win_now" and win_pct < 0.5:
+            delta -= 1  # Extra impatient when losing
+
+    new_score = max(0, min(100, score + delta))
+    new_mood = _score_to_mood(new_score)
+
+    if new_score != score:
+        execute("""
+            UPDATE gm_job_security SET security_score=?, owner_mood=?
+            WHERE id=1
+        """, (new_score, new_mood), db_path=db_path)
+
+    return {
+        "old_score": score, "new_score": new_score,
+        "delta": delta, "mood": new_mood,
+        "recent_record": f"{wins}-{games - wins}",
+    }
+
+
+# ============================================================
 # PUBLIC API HELPERS
 # ============================================================
 
@@ -851,3 +931,105 @@ def get_owner_objectives_for_team(team_id: int, season: int = None,
             (team_id,), db_path=db_path
         )
     return [dict(r) for r in rows] if rows else []
+
+
+# ============================================================
+# GM LEAGUE REPUTATION
+# ============================================================
+
+def _ensure_gm_reputation_table(db_path=None):
+    """Create gm_reputation table if it doesn't exist."""
+    execute("""
+        CREATE TABLE IF NOT EXISTS gm_reputation (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            team_id INTEGER NOT NULL,
+            trade_fairness INTEGER NOT NULL DEFAULT 50,
+            promise_keeping INTEGER NOT NULL DEFAULT 50,
+            aggression INTEGER NOT NULL DEFAULT 50,
+            media_savvy INTEGER NOT NULL DEFAULT 50,
+            overall_reputation INTEGER NOT NULL DEFAULT 50,
+            total_trades INTEGER NOT NULL DEFAULT 0,
+            trades_won INTEGER NOT NULL DEFAULT 0,
+            trades_lost INTEGER NOT NULL DEFAULT 0
+        )
+    """, db_path=db_path)
+
+
+def get_gm_reputation(team_id: int = None, db_path: str = None) -> dict:
+    """Get the GM's league-wide reputation."""
+    _ensure_gm_reputation_table(db_path)
+    rep = query("SELECT * FROM gm_reputation WHERE id=1", db_path=db_path)
+    if not rep:
+        if team_id:
+            execute("""
+                INSERT OR IGNORE INTO gm_reputation (id, team_id) VALUES (1, ?)
+            """, (team_id,), db_path=db_path)
+        return {
+            "trade_fairness": 50, "promise_keeping": 50,
+            "aggression": 50, "media_savvy": 50,
+            "overall_reputation": 50, "total_trades": 0,
+            "trades_won": 0, "trades_lost": 0,
+            "label": "Unknown Quantity",
+        }
+    r = rep[0]
+    overall = r["overall_reputation"]
+    label = (
+        "League Pariah" if overall < 20 else
+        "Questionable" if overall < 35 else
+        "Unknown Quantity" if overall < 45 else
+        "Respectable" if overall < 60 else
+        "Well-Regarded" if overall < 75 else
+        "Elite Dealmaker" if overall < 90 else
+        "Legend"
+    )
+    return {
+        "trade_fairness": r["trade_fairness"],
+        "promise_keeping": r["promise_keeping"],
+        "aggression": r["aggression"],
+        "media_savvy": r["media_savvy"],
+        "overall_reputation": overall,
+        "total_trades": r["total_trades"],
+        "trades_won": r["trades_won"],
+        "trades_lost": r["trades_lost"],
+        "label": label,
+    }
+
+
+def update_gm_reputation(aspect: str, delta: int, db_path: str = None):
+    """Update a specific aspect of GM reputation."""
+    _ensure_gm_reputation_table(db_path)
+    valid = ("trade_fairness", "promise_keeping", "aggression", "media_savvy")
+    if aspect not in valid:
+        return
+    # Update the aspect
+    execute(f"""
+        UPDATE gm_reputation SET {aspect} = MAX(0, MIN(100, {aspect} + ?))
+        WHERE id=1
+    """, (delta,), db_path=db_path)
+    # Recalculate overall
+    execute("""
+        UPDATE gm_reputation SET overall_reputation =
+            (trade_fairness + promise_keeping + media_savvy) / 3
+        WHERE id=1
+    """, db_path=db_path)
+
+
+def record_trade_outcome(won: bool, db_path: str = None):
+    """Record whether a trade was won or lost (evaluated later)."""
+    _ensure_gm_reputation_table(db_path)
+    if won:
+        execute("""
+            UPDATE gm_reputation SET
+                total_trades = total_trades + 1,
+                trades_won = trades_won + 1,
+                trade_fairness = MAX(0, MIN(100, trade_fairness + 2))
+            WHERE id=1
+        """, db_path=db_path)
+    else:
+        execute("""
+            UPDATE gm_reputation SET
+                total_trades = total_trades + 1,
+                trades_lost = trades_lost + 1,
+                trade_fairness = MAX(0, MIN(100, trade_fairness - 1))
+            WHERE id=1
+        """, db_path=db_path)

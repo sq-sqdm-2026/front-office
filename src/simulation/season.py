@@ -1749,6 +1749,16 @@ def advance_date(days: int = 1, db_path: str = None) -> dict:
                 except Exception:
                     pass  # Don't let sentiment errors block sim
 
+            # Weekly owner mood pulse (Sundays during regular season)
+            if phase == "regular_season" and game_date_obj.weekday() == 6:
+                try:
+                    user_st = query("SELECT user_team_id FROM game_state WHERE id=1", db_path=db_path)
+                    if user_st and user_st[0].get("user_team_id"):
+                        from ..ai.owner_pressure import update_owner_mood_weekly
+                        update_owner_mood_weekly(user_st[0]["user_team_id"], game_date, db_path)
+                except Exception:
+                    pass
+
             # Weekly podcast generation (every 7 days during regular season)
             if phase == "regular_season" and game_date_obj.weekday() == 0:  # Mondays
                 try:

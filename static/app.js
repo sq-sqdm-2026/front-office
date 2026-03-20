@@ -1234,9 +1234,10 @@ async function loadGMContractCard() {
   const card = document.getElementById('gm-contract-card');
   if (!card) return;
   try {
-    const [security, staffData] = await Promise.all([
+    const [security, staffData, reputation] = await Promise.all([
       api('/owner/job-security'),
-      api(`/coaching-staff/${STATE.userTeamId}`)
+      api(`/coaching-staff/${STATE.userTeamId}`),
+      api('/gm/reputation'),
     ]);
     if (!security) { card.innerHTML = '<h3>Your Contract</h3><div style="color:var(--text-tertiary);font-size:12px">No data</div>'; return; }
 
@@ -1285,6 +1286,13 @@ async function loadGMContractCard() {
         <span>Playoffs: ${playoffs}</span>
       </div>
       ${staffHtml ? '<div style="border-top:1px solid var(--border-light);padding-top:6px;margin-top:4px">' + staffHtml + '</div>' : ''}
+      ${reputation ? `<div style="border-top:1px solid var(--border-light);padding-top:6px;margin-top:4px">
+        <div style="font-size:11px;display:flex;justify-content:space-between;align-items:center">
+          <span style="color:var(--text-dim)">League Rep:</span>
+          <span style="font-weight:600;color:${(reputation.overall_reputation||50) >= 60 ? 'var(--green)' : (reputation.overall_reputation||50) >= 40 ? 'var(--text-secondary)' : 'var(--orange)'}">${reputation.label || 'Unknown'}</span>
+        </div>
+        ${reputation.total_trades ? `<div style="font-size:9px;color:var(--text-tertiary);margin-top:2px">${reputation.total_trades} trades | Won ${reputation.trades_won} | Lost ${reputation.trades_lost}</div>` : ''}
+      </div>` : ''}
     `;
   } catch(e) {
     card.innerHTML = '<h3>Your Contract</h3><div style="color:var(--text-tertiary);font-size:12px">Unable to load</div>';

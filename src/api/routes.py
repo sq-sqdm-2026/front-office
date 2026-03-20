@@ -5929,6 +5929,15 @@ async def api_get_job_security():
     return get_job_security()
 
 
+@app.get("/gm/reputation")
+async def api_get_gm_reputation():
+    """Get the GM's league-wide reputation."""
+    from ..ai.owner_pressure import get_gm_reputation
+    state = query("SELECT user_team_id FROM game_state WHERE id=1")
+    team_id = state[0]["user_team_id"] if state else 0
+    return get_gm_reputation(team_id)
+
+
 @app.post("/owner/evaluate")
 async def api_evaluate_performance():
     """Trigger end-of-season GM performance evaluation."""
