@@ -15,7 +15,7 @@ def call_up_player(player_id: int, db_path: str = None) -> dict:
     if not player:
         conn.close()
         return {"error": "Player not found"}
-    if player["roster_status"] not in ("minors_aaa", "minors_aa", "minors_low"):
+    if player["roster_status"] not in ("minors_aaa", "minors_aa", "minors_high_a", "minors_low", "minors_rookie"):
         conn.close()
         return {"error": "Player is not in the minors"}
 

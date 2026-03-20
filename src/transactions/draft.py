@@ -697,7 +697,7 @@ def make_draft_pick(team_id: int, prospect_id: int, round_num: int,
             roster_status, peak_age, development_rate, option_years_remaining)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                 ?, ?, ?, ?, ?, ?, ?, ?,
-                ?, ?, ?, ?, ?, 'minors_low', ?, ?, 3)
+                ?, ?, ?, ?, ?, 'minors_rookie', ?, ?, 3)
     """, (team_id, p["first_name"], p["last_name"], p["age"], p["bats"], p["throws"],
           p["position"], contact, power, speed, fielding, arm, stuff, control,
           random.randint(30, 70),

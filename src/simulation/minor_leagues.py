@@ -12,8 +12,13 @@ from ..database.db import get_connection, query, execute
 LEVEL_STATUS = {
     "AAA": "minors_aaa",
     "AA": "minors_aa",
+    "High-A": "minors_high_a",
     "A": "minors_low",
+    "Rookie": "minors_rookie",
 }
+
+# Display labels for roster_status values
+STATUS_LEVEL = {v: k for k, v in LEVEL_STATUS.items()}
 
 # MiLB season runs roughly April through September
 MILB_SEASON_START_MONTH = 4
@@ -206,7 +211,7 @@ def simulate_milb_day(team_id, game_date, season, db_path=None):
 
     results = []
 
-    for level in ["AAA", "AA", "A"]:
+    for level in ["AAA", "AA", "High-A", "A", "Rookie"]:
         # ~60% chance of game today
         if random.random() > GAME_PROBABILITY:
             continue
@@ -520,63 +525,61 @@ def milb_promotions_check(team_id, season, game_date, db_path=None):
     """Check if any minor leaguers deserve a promotion recommendation.
 
     Called at end of each month. Sends messages for standout performers.
+    Promotion ladder: Rookie → A → High-A → AA → AAA
     """
     messages = []
 
-    # Check A-level batters for promotion to AA
-    a_batters = query("""
-        SELECT mbs.*, p.first_name, p.last_name, p.position
-        FROM milb_batting_stats mbs
-        JOIN players p ON p.id = mbs.player_id
-        WHERE mbs.team_id=? AND mbs.level='A' AND mbs.season=?
-        AND mbs.ab >= 50
-    """, (team_id, season), db_path=db_path)
+    # Batter promotion criteria by level
+    # (from_level, to_level, display_from, min_avg, min_hr, min_ab)
+    batter_criteria = [
+        ("Rookie", "A", "Rookie Ball", 0.320, 5, 30),
+        ("A", "High-A", "Low-A", 0.300, 8, 50),
+        ("High-A", "AA", "High-A", 0.290, 10, 50),
+        ("AA", "AAA", "AA", 0.280, 12, 50),
+    ]
 
-    for b in a_batters:
-        avg = b["hits"] / max(1, b["ab"])
-        if avg >= 0.300 and b["hr"] >= 10:
-            messages.append({
-                "player_id": b["player_id"],
-                "name": f"{b['first_name']} {b['last_name']}",
-                "level": "A",
-                "target": "AA",
-                "reason": f"hitting .{int(avg * 1000)} with {b['hr']} HR at Low-A",
-            })
+    for from_level, to_level, display, min_avg, min_hr, min_ab in batter_criteria:
+        batters = query("""
+            SELECT mbs.*, p.first_name, p.last_name, p.position
+            FROM milb_batting_stats mbs
+            JOIN players p ON p.id = mbs.player_id
+            WHERE mbs.team_id=? AND mbs.level=? AND mbs.season=?
+            AND mbs.ab >= ?
+        """, (team_id, from_level, season, min_ab), db_path=db_path)
 
-    # Check AA-level batters for promotion to AAA
-    aa_batters = query("""
-        SELECT mbs.*, p.first_name, p.last_name, p.position
-        FROM milb_batting_stats mbs
-        JOIN players p ON p.id = mbs.player_id
-        WHERE mbs.team_id=? AND mbs.level='AA' AND mbs.season=?
-        AND mbs.ab >= 50
-    """, (team_id, season), db_path=db_path)
+        for b in batters:
+            avg = b["hits"] / max(1, b["ab"])
+            if avg >= min_avg and b["hr"] >= min_hr:
+                messages.append({
+                    "player_id": b["player_id"],
+                    "name": f"{b['first_name']} {b['last_name']}",
+                    "level": from_level,
+                    "target": to_level,
+                    "reason": f"hitting .{int(avg * 1000)} with {b['hr']} HR at {display}",
+                })
 
-    for b in aa_batters:
-        avg = b["hits"] / max(1, b["ab"])
-        if avg >= 0.280 and b["hr"] >= 15:
-            messages.append({
-                "player_id": b["player_id"],
-                "name": f"{b['first_name']} {b['last_name']}",
-                "level": "AA",
-                "target": "AAA",
-                "reason": f"hitting .{int(avg * 1000)} with {b['hr']} HR at AA",
-            })
+    # Pitcher promotion criteria
+    # (from_level, to_level, max_era, min_so, min_ip_outs)
+    pitcher_criteria = [
+        ("Rookie", "A", 3.50, 25, 20),
+        ("A", "High-A", 3.25, 40, 30),
+        ("High-A", "AA", 3.00, 50, 30),
+        ("AA", "AAA", 3.00, 50, 30),
+    ]
 
-    # Check pitchers at A and AA for promotion
-    for from_level, to_level in [("A", "AA"), ("AA", "AAA")]:
+    for from_level, to_level, max_era, min_so, min_ip in pitcher_criteria:
         pitchers = query("""
             SELECT mps.*, p.first_name, p.last_name, p.position
             FROM milb_pitching_stats mps
             JOIN players p ON p.id = mps.player_id
             WHERE mps.team_id=? AND mps.level=? AND mps.season=?
-            AND mps.ip_outs >= 30
-        """, (team_id, from_level, season), db_path=db_path)
+            AND mps.ip_outs >= ?
+        """, (team_id, from_level, season, min_ip), db_path=db_path)
 
         for p in pitchers:
             ip = p["ip_outs"] / 3
             era = (p["er"] * 9) / max(0.1, ip)
-            if era < 3.00 and p["so"] >= 50:
+            if era < max_era and p["so"] >= min_so:
                 messages.append({
                     "player_id": p["player_id"],
                     "name": f"{p['first_name']} {p['last_name']}",
@@ -585,25 +588,50 @@ def milb_promotions_check(team_id, season, game_date, db_path=None):
                     "reason": f"ERA {era:.2f} with {p['so']} K at {from_level}",
                 })
 
-    # Send messages to the user
+    # Send messages from level-specific minor league coaches
     if messages:
         conn = get_connection(db_path)
         state = conn.execute("SELECT user_team_id FROM game_state WHERE id=1").fetchone()
-        user_team_id = state[0] if state else None
+        user_team_id = state["user_team_id"] if state else None
         conn.close()
 
+        level_coaches = {
+            "Rookie": "Rookie Ball Coordinator",
+            "A": "Single-A Manager",
+            "High-A": "High-A Manager",
+            "AA": "AA Manager",
+            "AAA": "AAA Manager",
+        }
+
+        promotion_templates = [
+            "{name} is tearing it up here at {level}. {reason}. "
+            "I think he's outgrown this level - he needs to be challenged at {target}.",
+            "Boss, you need to see what {name} is doing down here. {reason}. "
+            "This kid is ready for {target}. He's got nothing left to prove at {level}.",
+            "Just wanted to flag {name} for you. {reason}. "
+            "In my opinion, he'd benefit from a promotion to {target}. "
+            "He's dominating the competition at this level.",
+            "{name} has been our best player at {level}. {reason}. "
+            "I've been working with him daily and he's ready for {target}. "
+            "Don't let him get stale down here.",
+        ]
+
         for msg in messages:
-            # Only send messages for the user's team
             if team_id == user_team_id:
+                coach_name = level_coaches.get(msg['level'], 'Farm Director')
+                body = random.choice(promotion_templates).format(
+                    name=msg['name'], level=msg['level'],
+                    target=msg['target'], reason=msg['reason']
+                )
                 execute("""
                     INSERT INTO messages (game_date, sender_type, sender_name,
-                        recipient_type, subject, body, requires_response)
-                    VALUES (?, 'scout', 'Farm Director', 'user',
-                        'Promotion Candidate', ?, 0)
+                        recipient_type, recipient_id, subject, body, requires_response)
+                    VALUES (?, 'coach', ?, 'user', ?,
+                        ?, ?, 0)
                 """, (
-                    game_date,
-                    f"{msg['name']} is dominating at {msg['level']}. "
-                    f"Currently {msg['reason']}. Consider promoting to {msg['target']}."
+                    game_date, coach_name, team_id,
+                    f"Promotion Candidate: {msg['name']}",
+                    body
                 ), db_path=db_path)
 
     return messages

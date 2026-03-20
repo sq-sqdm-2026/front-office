@@ -130,7 +130,7 @@ CREATE TABLE IF NOT EXISTS players (
     sociability INTEGER NOT NULL DEFAULT 50,  -- teammate bonds, clubhouse presence
     morale INTEGER NOT NULL DEFAULT 50,  -- current morale (0-100)
     -- Status
-    roster_status TEXT NOT NULL DEFAULT 'active',  -- active, minors_aaa, minors_aa, minors_low, injured_dl, free_agent, retired
+    roster_status TEXT NOT NULL DEFAULT 'active',  -- active, minors_aaa, minors_aa, minors_high_a, minors_low, minors_rookie, injured_dl, free_agent, retired
     is_injured INTEGER NOT NULL DEFAULT 0,
     injury_type TEXT DEFAULT NULL,
     injury_days_remaining INTEGER DEFAULT 0,

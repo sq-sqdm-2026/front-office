@@ -1394,6 +1394,11 @@ function renderRosterTab(tab) {
     return nameMatch && posMatch;
   });
 
+  // For minors tab, group by level instead of showing one pool
+  if (tab === 'minors') {
+    return renderMinorsGrouped(filtered, data, el);
+  }
+
   const pos = filtered.filter(p => !isPitcher(p));
   const pit = filtered.filter(p => isPitcher(p));
 
@@ -1466,6 +1471,74 @@ function renderRosterTab(tab) {
   // Wire up sorting AFTER innerHTML is set (tables now exist in DOM)
   makeSortable('roster-pos-table');
   makeSortable('roster-pit-table');
+}
+
+function renderMinorsGrouped(players, data, el) {
+  const levelOrder = [
+    { status: 'minors_aaa', label: 'AAA (Triple-A)', color: 'var(--accent)' },
+    { status: 'minors_aa', label: 'AA (Double-A)', color: '#4a90d9' },
+    { status: 'minors_high_a', label: 'High-A', color: '#43a047' },
+    { status: 'minors_low', label: 'A (Single-A)', color: '#f5a623' },
+    { status: 'minors_rookie', label: 'Rookie', color: '#e63946' },
+  ];
+  const isPitcher = p => p.position === 'SP' || p.position === 'RP';
+
+  let html = `<div class="roster-summary-bar">
+    <div class="roster-summary-item"><span>Total Minor Leaguers: ${players.length}</span></div>
+    <div class="roster-summary-item"><span>${data.forty_man_count}/40 40-Man</span></div>
+  </div>`;
+
+  for (const lv of levelOrder) {
+    const lvPlayers = players.filter(p => p.roster_status === lv.status);
+    if (!lvPlayers.length) continue;
+
+    const pos = lvPlayers.filter(p => !isPitcher(p));
+    const pit = lvPlayers.filter(p => isPitcher(p));
+
+    html += `<div style="margin:12px 0 6px;padding:4px 8px;background:${lv.color}22;border-left:3px solid ${lv.color};border-radius:4px">
+      <span style="font-weight:600;color:${lv.color}">${lv.label}</span>
+      <span style="color:var(--text-muted);font-size:11px;margin-left:8px">${lvPlayers.length} players</span>
+    </div>`;
+
+    if (pos.length) {
+      html += `<div class="table-wrap"><table>
+        <thead><tr><th class="text-col">Name</th><th class="c">Pos</th><th class="r">Age</th>
+        <th class="c">Con</th><th class="c">Pow</th><th class="c">Spd</th><th class="c">Fld</th>
+        <th class="c">Pot</th><th class="c">40M</th><th></th></tr></thead>
+        <tbody>
+        ${pos.map(p => `<tr>
+          <td class="text-col clickable" onclick="showPlayer(${p.id})"><span class="roster-portrait-wrap"><img src="/player/${p.id}/portrait" class="roster-portrait-thumb" onerror="this.style.display='none'"/></span>${p.first_name} ${p.last_name}</td>
+          <td class="c">${p.position}</td><td class="r">${p.age}</td>
+          <td class="c">${gradeHtml(p.contact_rating)}</td><td class="c">${gradeHtml(p.power_rating)}</td>
+          <td class="c">${gradeHtml(p.speed_rating)}</td><td class="c">${gradeHtml(p.fielding_rating)}</td>
+          <td class="c">${gradeHtml(Math.max(p.contact_potential||0, p.power_potential||0))}</td>
+          <td class="c">${p.on_forty_man ? '&#10003;' : ''}</td>
+          <td><button class="btn btn-primary btn-sm" style="padding:1px 5px;font-size:10px" onclick="callUpPlayer(${p.id})">Call Up</button></td>
+        </tr>`).join('')}
+        </tbody></table></div>`;
+    }
+
+    if (pit.length) {
+      html += `<div class="table-wrap"><table>
+        <thead><tr><th class="text-col">Name</th><th class="c">Pos</th><th class="r">Age</th>
+        <th class="c">Stuff</th><th class="c">Ctrl</th><th class="c">Stam</th>
+        <th class="c">Pot</th><th class="c">40M</th><th></th></tr></thead>
+        <tbody>
+        ${pit.map(p => `<tr>
+          <td class="text-col clickable" onclick="showPlayer(${p.id})"><span class="roster-portrait-wrap"><img src="/player/${p.id}/portrait" class="roster-portrait-thumb" onerror="this.style.display='none'"/></span>${p.first_name} ${p.last_name}</td>
+          <td class="c">${p.position}</td><td class="r">${p.age}</td>
+          <td class="c">${gradeHtml(p.stuff_rating)}</td><td class="c">${gradeHtml(p.control_rating)}</td>
+          <td class="c">${gradeHtml(p.stamina_rating)}</td>
+          <td class="c">${gradeHtml(Math.max(p.stuff_potential||0, p.control_potential||0))}</td>
+          <td class="c">${p.on_forty_man ? '&#10003;' : ''}</td>
+          <td><button class="btn btn-primary btn-sm" style="padding:1px 5px;font-size:10px" onclick="callUpPlayer(${p.id})">Call Up</button></td>
+        </tr>`).join('')}
+        </tbody></table></div>`;
+    }
+  }
+
+  if (!players.length) html = '<div class="empty-state">No minor leaguers</div>';
+  el.innerHTML = html;
 }
 
 // ============================================================
@@ -2702,7 +2775,9 @@ function showOptionMenu(pid) {
     <div style="display:flex;gap:8px">
       <button class="btn btn-sm" onclick="optionPlayer(${pid}, 'minors_aaa'); document.getElementById('action-confirm-panel').remove()">AAA</button>
       <button class="btn btn-sm" onclick="optionPlayer(${pid}, 'minors_aa'); document.getElementById('action-confirm-panel').remove()">AA</button>
-      <button class="btn btn-sm" onclick="optionPlayer(${pid}, 'minors_low'); document.getElementById('action-confirm-panel').remove()">Low-A</button>
+      <button class="btn btn-sm" onclick="optionPlayer(${pid}, 'minors_high_a'); document.getElementById('action-confirm-panel').remove()">High-A</button>
+      <button class="btn btn-sm" onclick="optionPlayer(${pid}, 'minors_low'); document.getElementById('action-confirm-panel').remove()">A</button>
+      <button class="btn btn-sm" onclick="optionPlayer(${pid}, 'minors_rookie'); document.getElementById('action-confirm-panel').remove()">Rookie</button>
       <button class="btn btn-sm" onclick="document.getElementById('action-confirm-panel').remove()">Cancel</button>
     </div>
   `;
@@ -6984,7 +7059,7 @@ async function loadFarm(level) {
   body.innerHTML = '<div class="empty-state">Loading farm system...</div>';
 
   // Update tab active states
-  ['AAA', 'AA', 'A'].forEach(lv => {
+  ['AAA', 'AA', 'High-A', 'A', 'Rookie'].forEach(lv => {
     const tab = document.getElementById('farm-tab-' + lv);
     if (tab) tab.classList.toggle('active', lv === _farmCurrentLevel);
   });

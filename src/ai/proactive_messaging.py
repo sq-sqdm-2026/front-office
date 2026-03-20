@@ -931,7 +931,7 @@ def _get_ready_prospect(team_id: int, db_path: str = None) -> dict:
         FROM players p
         LEFT JOIN batting_stats bs ON bs.player_id = p.id
         WHERE p.team_id=? AND p.age <= 25
-        AND p.roster_status IN ('minors_aaa', 'minors_aa')
+        AND p.roster_status IN ('minors_aaa', 'minors_aa', 'minors_high_a')
         AND (p.contact_potential >= 60 OR p.power_potential >= 60
              OR p.stuff_potential >= 60 OR p.control_potential >= 60)
         ORDER BY (p.contact_potential + p.power_potential) DESC
@@ -943,7 +943,7 @@ def _get_ready_prospect(team_id: int, db_path: str = None) -> dict:
         hits = p.get("hits") or 0
         avg = f".{int(hits / ab * 1000):03d}" if ab >= 30 else ".---"
         if ab >= 30 and hits / ab >= 0.270:
-            level = {"minors_aaa": "AAA", "minors_aa": "AA"}.get(
+            level = {"minors_aaa": "AAA", "minors_aa": "AA", "minors_high_a": "High-A", "minors_low": "A", "minors_rookie": "Rookie"}.get(
                 p["roster_status"], "the minors")
             return {
                 "name": f"{p['first_name']} {p['last_name']}",
@@ -957,7 +957,7 @@ def _get_ready_prospect(team_id: int, db_path: str = None) -> dict:
         ab = p.get("ab") or 0
         hits = p.get("hits") or 0
         avg = f".{int(hits / ab * 1000):03d}" if ab >= 30 else ".---"
-        level = {"minors_aaa": "AAA", "minors_aa": "AA"}.get(
+        level = {"minors_aaa": "AAA", "minors_aa": "AA", "minors_high_a": "High-A", "minors_low": "A", "minors_rookie": "Rookie"}.get(
             p["roster_status"], "the minors")
         if random.random() < 0.3:
             return {"name": f"{p['first_name']} {p['last_name']}",

@@ -363,7 +363,7 @@ def process_international_signings(season: int, db_path: str = None) -> list:
                      fielding_potential, arm_potential,
                      roster_status, on_forty_man, service_years)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                            ?, ?, ?, ?, ?, 'minors_low', 0, 0)
+                            ?, ?, ?, ?, ?, 'minors_rookie', 0, 0)
                 """, (
                     team_id, prospect["first_name"], prospect["last_name"],
                     prospect["age"], prospect["birth_country"],
