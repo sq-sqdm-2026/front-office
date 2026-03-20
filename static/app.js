@@ -4128,8 +4128,17 @@ function updateTradeSlots() {
   const reqSal = STATE.tradeRequest.reduce((s, p) => s + (p.salary || 0), 0);
   const salaryInfo = document.getElementById('trade-salary-info');
   if (salaryInfo) {
-    salaryInfo.innerHTML = (offerSal || reqSal) ?
-      `<span style="font-size:10px;color:var(--text-tertiary)">Sending: $${(offerSal/1e6).toFixed(1)}M | Receiving: $${(reqSal/1e6).toFixed(1)}M | Net: ${(reqSal-offerSal) >= 0 ? '+' : ''}$${((reqSal-offerSal)/1e6).toFixed(1)}M</span>` : '';
+    if (offerSal || reqSal) {
+      const net = reqSal - offerSal;
+      const netColor = net >= 0 ? 'var(--green)' : 'var(--red)';
+      salaryInfo.innerHTML = `<div style="display:flex;gap:16px;font-size:11px;font-family:var(--font-mono);padding:6px 0">
+        <span style="color:var(--text-secondary)">Sending: <strong>$${(offerSal/1e6).toFixed(1)}M</strong></span>
+        <span style="color:var(--text-secondary)">Receiving: <strong>$${(reqSal/1e6).toFixed(1)}M</strong></span>
+        <span style="color:${netColor}">Net: <strong>${net >= 0 ? '+' : ''}$${(net/1e6).toFixed(1)}M</strong></span>
+      </div>`;
+    } else {
+      salaryInfo.innerHTML = '';
+    }
   }
 }
 
@@ -6025,7 +6034,7 @@ function renderDraftProspectsList(prospects) {
     const badgesHtml = topRatings.map(r => `<span style="display: inline-block; margin-right: 4px; padding: 2px 6px; background: var(--bg-3); border-radius: 2px; font-size: 10px; color: var(--accent); font-weight: 600;">${r.label} ${r.value}</span>`).join('');
 
     html += `
-      <div class="draft-prospect-item" onclick="selectProspect(${p.id})" style="padding: 10px 12px; border-bottom: 1px solid var(--border); cursor: pointer; transition: background 0.2s; ${_selectedProspect?.id === p.id ? 'background: var(--bg-selected);' : 'background: var(--bg-1);'} hover {background: var(--bg-3);}">
+      <div class="draft-prospect-item clickable" onclick="selectProspect(${p.id})" style="padding: 10px 12px; border-bottom: 1px solid var(--border); cursor: pointer; transition: background 0.2s; ${_selectedProspect?.id === p.id ? 'background: var(--bg-active);' : ''}">
         <div style="display: flex; justify-content: space-between; align-items: flex-start;">
           <div style="flex: 1;">
             <div style="font-weight: 600;">${p.first_name} ${p.last_name}</div>
