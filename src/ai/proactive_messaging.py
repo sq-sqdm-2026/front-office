@@ -181,6 +181,27 @@ def check_and_send_proactive_messages(team_id: int, game_date: str,
     except Exception:
         pass
 
+    # Farm director check-ins
+    try:
+        farm_msgs = _check_farm_director_triggers(team_id, game_date, db_path)
+        sent.extend(farm_msgs)
+    except Exception:
+        pass
+
+    # Assistant GM operational messages
+    try:
+        agm_msgs = _check_assistant_gm_triggers(team_id, game_date, db_path)
+        sent.extend(agm_msgs)
+    except Exception:
+        pass
+
+    # Winning streak celebrations
+    try:
+        win_msgs = _check_winning_streak_triggers(team_id, game_date, db_path)
+        sent.extend(win_msgs)
+    except Exception:
+        pass
+
     return sent
 
 
@@ -291,6 +312,28 @@ OWNER_MESSAGES = {
             "The stadium is looking half-empty. We need to put a better product on the field or make some exciting moves.",
         ],
     },
+    "midseason_review": {
+        "win_now": [
+            "We're at the All-Star break. I expected us to be contending. Are we going to be buyers at the deadline? I want a championship.",
+            "Halfway through the season. I need to know - are we in this thing or not? I'm ready to spend if you say the word.",
+        ],
+        "budget_conscious": [
+            "All-Star break assessment: How are the finances looking? I want to make sure we're being smart with our resources for the second half.",
+            "Mid-season check-in. Where do we stand financially? Any trades we should consider to balance the books?",
+        ],
+        "patient_builder": [
+            "Just checking in at the midpoint. How are the young players developing? I'm more interested in progress than wins right now.",
+            "All-Star break. I know we're building. How's the trajectory? Are the prospects we invested in showing growth?",
+        ],
+        "ego_meddler": [
+            "I've been at every home game this half. I have some thoughts. Come to my office before the second half starts.",
+            "All-Star break and I want a full presentation. Wins, losses, fan engagement, merchandise sales. The whole picture.",
+        ],
+        "default": [
+            "All-Star break seems like a good time to touch base. How do you feel about where we are? What's the second-half plan?",
+            "Mid-season review time. I'd like to hear your assessment of the first half and what adjustments you're planning.",
+        ],
+    },
 }
 
 
@@ -355,6 +398,25 @@ def _check_owner_triggers(team_id: int, game_date: str,
                            game_date, OWNER_COOLDOWN_DAYS * 4, db_path)
             sent.append({"character_type": "owner", "trigger": "attendance_dropping",
                         "character_name": owner_name})
+
+    # --- Mid-season review (around All-Star break, July 10-15) ---
+    if not _is_on_cooldown("owner", char_id, "midseason_review", team_id, game_date, db_path):
+        try:
+            gd = dt_date.fromisoformat(game_date)
+            if gd.month == 7 and 10 <= gd.day <= 15:
+                templates = OWNER_MESSAGES["midseason_review"].get(
+                    archetype, OWNER_MESSAGES["midseason_review"]["default"])
+                body = random.choice(templates)
+                _send_character_message(
+                    team_id, "owner", owner_name, "Mid-Season Assessment",
+                    body, game_date, db_path
+                )
+                _record_message("owner", char_id, "midseason_review", team_id,
+                               game_date, 90, db_path)  # Once per season
+                sent.append({"character_type": "owner", "trigger": "midseason_review",
+                            "character_name": owner_name})
+        except Exception:
+            pass
 
     return sent
 
@@ -803,6 +865,317 @@ def _check_beat_writer_triggers(team_id: int, game_date: str,
 
 
 # ============================================================
+# FARM DIRECTOR TRIGGERS
+# ============================================================
+
+FARM_DIRECTOR_MESSAGES = {
+    "prospect_update": [
+        "Weekly prospect report: {prospect} is looking sharp in {level}. "
+        "His {stat_type} has been {stat_adj}. I think he could be a contributor by {timeline}.",
+        "Wanted to give you an update on {prospect} in {level}. "
+        "The coaches there are impressed with his {skill}. He's got a real future.",
+        "Checking in on {prospect}. The kid's {stat_type} in {level} is {stat_adj}. "
+        "I've been working with the {level} staff on his development plan.",
+    ],
+    "development_concern": [
+        "We might have a problem with {prospect}. His numbers in {level} have been declining. "
+        "I'm adjusting his development program but wanted you to know.",
+        "I hate to be the bearer of bad news, but {prospect} has been struggling in {level}. "
+        "I'm considering whether we need to pull him back a level.",
+        "I need to flag {prospect} - the {level} coaches say his work ethic has slipped. "
+        "I'm going to have a talk with him.",
+    ],
+    "system_overview": [
+        "Just finished my monthly system evaluation. Our {level} affiliate looks {assessment}. "
+        "We've got {count} prospects I'm really excited about.",
+        "Farm system check-in: The {level} team is {record}. "
+        "More importantly, we're developing talent. {count} guys are trending up.",
+        "Wanted to brief you on the system. Our pipeline at {level} is {assessment}. "
+        "I've identified {count} guys who could help the big club in the next year or two.",
+    ],
+}
+
+
+def _check_farm_director_triggers(team_id: int, game_date: str,
+                                   db_path: str = None) -> list:
+    """Check farm director trigger conditions."""
+    sent = []
+
+    # Only fire ~5% of the time
+    if random.random() > 0.05:
+        return sent
+
+    # Get farm director
+    fd = query("""
+        SELECT * FROM coaching_staff
+        WHERE team_id=? AND role='farm_director' AND is_available=0
+    """, (team_id,), db_path=db_path)
+    if not fd:
+        return sent
+    fd = fd[0]
+    fd_name = f"{fd['first_name']} {fd['last_name']}"
+    char_id = str(fd["id"])
+
+    # --- Prospect spotlight ---
+    if not _is_on_cooldown("farm_director", char_id, "prospect_update", team_id, game_date, db_path):
+        prospect = _get_top_prospect(team_id, db_path)
+        if prospect:
+            skills = ["bat speed", "plate discipline", "arm strength", "defensive instincts",
+                      "power potential", "pitch command", "changeup development"]
+            timelines = ["next spring", "September call-ups", "mid-season next year", "2-3 years"]
+            stat_types = ["batting average", "on-base percentage", "strikeout rate", "ERA"]
+            stat_adjs = ["really impressive", "trending in the right direction", "elite for his level",
+                        "above average and improving"]
+            body = random.choice(FARM_DIRECTOR_MESSAGES["prospect_update"]).format(
+                prospect=prospect["name"],
+                level=prospect.get("level", "the minors"),
+                stat_type=random.choice(stat_types),
+                stat_adj=random.choice(stat_adjs),
+                skill=random.choice(skills),
+                timeline=random.choice(timelines),
+            )
+            _send_character_message(
+                team_id, "coach", f"{fd_name} (Farm Director)",
+                f"Prospect Update: {prospect['name']}", body, game_date, db_path
+            )
+            _record_message("farm_director", char_id, "prospect_update", team_id,
+                           game_date, 10, db_path)
+            sent.append({"character_type": "farm_director", "trigger": "prospect_update",
+                        "character_name": fd_name})
+
+    # --- System overview (monthly) ---
+    if not sent and not _is_on_cooldown("farm_director", char_id, "system_overview", team_id, game_date, db_path):
+        levels = ["AAA", "AA", "High-A", "A", "Rookie"]
+        level = random.choice(levels)
+        assessments = ["strong", "solid", "developing nicely", "a real strength",
+                      "improving", "competitive", "one of the best in the league"]
+        count = random.randint(2, 6)
+        records = [f"{random.randint(30,55)}-{random.randint(30,55)}"]
+        body = random.choice(FARM_DIRECTOR_MESSAGES["system_overview"]).format(
+            level=level, assessment=random.choice(assessments),
+            count=count, record=records[0],
+        )
+        _send_character_message(
+            team_id, "coach", f"{fd_name} (Farm Director)",
+            "Farm System Report", body, game_date, db_path
+        )
+        _record_message("farm_director", char_id, "system_overview", team_id,
+                       game_date, 25, db_path)
+        sent.append({"character_type": "farm_director", "trigger": "system_overview",
+                    "character_name": fd_name})
+
+    return sent
+
+
+# ============================================================
+# ASSISTANT GM TRIGGERS
+# ============================================================
+
+ASSISTANT_GM_MESSAGES = {
+    "roster_crunch": [
+        "Heads up - we've got {count} guys on the 40-man roster. "
+        "We're going to need to make some tough decisions soon. "
+        "I've identified a few candidates for DFA or outright if we need space.",
+        "40-man roster is getting tight at {count}. "
+        "With rule 5 protection deadlines coming up, we need to plan ahead. "
+        "I can put together a list of options.",
+    ],
+    "budget_alert": [
+        "Just ran the numbers. Our luxury tax payroll is at ${payroll}M against a ${threshold}M threshold. "
+        "We've got ${room}M in room. Wanted to make sure you know before any moves.",
+        "Financial update: We're currently at ${payroll}M in committed salary. "
+        "Based on our revenue projections, I'd recommend keeping some powder dry.",
+    ],
+    "waiver_wire": [
+        "Spotted a player on waivers who might interest us: {player}. "
+        "He's a {position} who could help our {need}. Want me to put in a claim?",
+        "Quick waiver update - {player} ({position}) just hit wires. "
+        "Could be a low-risk addition for our {need}. Thoughts?",
+    ],
+    "schedule_note": [
+        "Looking at the upcoming schedule: we've got a {stretch} stretch ahead. "
+        "Might want to think about bullpen usage and the rotation.",
+        "Just a heads up on the schedule. We play {opponent} {count} times in the next two weeks. "
+        "Worth considering any matchup advantages.",
+    ],
+}
+
+
+def _check_assistant_gm_triggers(team_id: int, game_date: str,
+                                  db_path: str = None) -> list:
+    """Check assistant GM trigger conditions."""
+    sent = []
+
+    # Only fire ~4% of the time
+    if random.random() > 0.04:
+        return sent
+
+    agm = query("""
+        SELECT * FROM coaching_staff
+        WHERE team_id=? AND role='assistant_gm' AND is_available=0
+    """, (team_id,), db_path=db_path)
+    if not agm:
+        return sent
+    agm = agm[0]
+    agm_name = f"{agm['first_name']} {agm['last_name']}"
+    char_id = str(agm["id"])
+
+    # --- 40-man roster crunch ---
+    if not _is_on_cooldown("assistant_gm", char_id, "roster_crunch", team_id, game_date, db_path):
+        roster_count = query("""
+            SELECT COUNT(*) as cnt FROM players
+            WHERE team_id=? AND roster_status NOT IN ('free_agent', 'retired')
+            AND is_on_40_man_roster=1
+        """, (team_id,), db_path=db_path)
+        count = roster_count[0]["cnt"] if roster_count else 0
+        if count >= 37:
+            body = random.choice(ASSISTANT_GM_MESSAGES["roster_crunch"]).format(count=count)
+            _send_character_message(
+                team_id, "coach", f"{agm_name} (Asst. GM)",
+                "Roster Management", body, game_date, db_path
+            )
+            _record_message("assistant_gm", char_id, "roster_crunch", team_id,
+                           game_date, 14, db_path)
+            sent.append({"character_type": "assistant_gm", "trigger": "roster_crunch",
+                        "character_name": agm_name})
+
+    # --- Schedule / upcoming stretch notes ---
+    if not sent and not _is_on_cooldown("assistant_gm", char_id, "schedule_note", team_id, game_date, db_path):
+        stretches = ["grueling 10-game road trip", "7-game homestand",
+                     "tough series against division leaders",
+                     "soft part of the schedule coming up"]
+        opponents = query("""
+            SELECT DISTINCT t.name FROM schedule s
+            JOIN teams t ON (CASE WHEN s.home_team_id=? THEN s.away_team_id ELSE s.home_team_id END) = t.id
+            WHERE (s.home_team_id=? OR s.away_team_id=?) AND s.is_played=0
+            ORDER BY s.game_date LIMIT 5
+        """, (team_id, team_id, team_id), db_path=db_path)
+        if opponents and random.random() < 0.3:
+            opp = random.choice(opponents)["name"]
+            body = random.choice(ASSISTANT_GM_MESSAGES["schedule_note"]).format(
+                stretch=random.choice(stretches), opponent=opp, count=random.randint(3, 6)
+            )
+            _send_character_message(
+                team_id, "coach", f"{agm_name} (Asst. GM)",
+                "Schedule Note", body, game_date, db_path
+            )
+            _record_message("assistant_gm", char_id, "schedule_note", team_id,
+                           game_date, 14, db_path)
+            sent.append({"character_type": "assistant_gm", "trigger": "schedule_note",
+                        "character_name": agm_name})
+
+    return sent
+
+
+# ============================================================
+# WINNING STREAK / CELEBRATION TRIGGERS
+# ============================================================
+
+CELEBRATION_MESSAGES = {
+    "owner_win_streak": {
+        "win_now": [
+            "Now THIS is what I'm talking about! {streak} straight wins! Keep this energy going!",
+            "I love what I'm seeing. {streak} wins in a row. The fans are back and the stadium is rocking!",
+        ],
+        "budget_conscious": [
+            "{streak} straight wins - and we're doing it efficiently. Smart baseball. Well done.",
+            "I appreciate what you've built here. {streak} in a row without breaking the bank.",
+        ],
+        "ego_meddler": [
+            "I told everyone we'd turn this around! {streak} straight W's! My friends are jealous!",
+            "{streak} wins running! I'm telling everyone at the country club about MY team!",
+        ],
+        "default": [
+            "Great stretch of baseball. {streak} straight wins. The whole organization should be proud.",
+            "{streak} in a row! Whatever you and the coaches are doing, keep doing it.",
+        ],
+    },
+    "coach_clubhouse": {
+        "fiery": [
+            "The energy in this clubhouse right now is ELECTRIC. {streak} wins and counting! "
+            "The guys are loose, confident, and hungry. This is what championship teams feel like.",
+            "I've been doing this a long time. The vibe in this clubhouse during this {streak}-game streak? "
+            "That's special. Don't mess with the chemistry.",
+        ],
+        "steady": [
+            "The guys are feeling good after {streak} straight. I'm keeping them focused on one game at a time. "
+            "The process is working.",
+            "Nice run we're on. {streak} wins. The guys are staying disciplined and not getting too high. "
+            "That's a good sign for the rest of the season.",
+        ],
+        "default": [
+            "The clubhouse is in a great place right now. {streak} wins have everyone believing. "
+            "The camaraderie is real.",
+            "{streak} straight. The guys are playing loose and having fun. "
+            "This is the kind of team I love managing.",
+        ],
+    },
+}
+
+
+def _check_winning_streak_triggers(team_id: int, game_date: str,
+                                    db_path: str = None) -> list:
+    """Check winning streak celebration triggers."""
+    sent = []
+
+    streak = _get_winning_streak(team_id, db_path)
+    if streak < 6:
+        return sent
+
+    # --- Owner celebration ---
+    owner = query("SELECT * FROM owner_characters WHERE team_id=?",
+                  (team_id,), db_path=db_path)
+    if owner:
+        owner = owner[0]
+        owner_name = f"{owner['first_name']} {owner['last_name']}"
+        archetype = owner.get("archetype", "balanced")
+        char_id = str(owner["id"])
+
+        if not _is_on_cooldown("owner", char_id, "win_streak", team_id, game_date, db_path):
+            templates = CELEBRATION_MESSAGES["owner_win_streak"].get(
+                archetype, CELEBRATION_MESSAGES["owner_win_streak"]["default"])
+            body = random.choice(templates).format(streak=streak)
+            _send_character_message(
+                team_id, "owner", owner_name, "Love What I'm Seeing!",
+                body, game_date, db_path
+            )
+            _record_message("owner", char_id, "win_streak", team_id,
+                           game_date, 8, db_path)
+            sent.append({"character_type": "owner", "trigger": "win_streak",
+                        "character_name": owner_name})
+
+    # --- Coach clubhouse vibe ---
+    staff = query("""
+        SELECT * FROM coaching_staff
+        WHERE team_id=? AND role='manager' AND is_available=0
+    """, (team_id,), db_path=db_path)
+    if staff:
+        coach = staff[0]
+        coach_name = f"{coach['first_name']} {coach['last_name']}"
+        personality = coach.get("philosophy", "balanced")
+        personality_key = {
+            "aggressive": "fiery", "analytics": "innovator",
+            "conservative": "steady", "balanced": "steady",
+        }.get(personality, "default")
+        char_id = str(coach["id"])
+
+        if not _is_on_cooldown("coach", char_id, "clubhouse_vibe", team_id, game_date, db_path):
+            templates = CELEBRATION_MESSAGES["coach_clubhouse"].get(
+                personality_key, CELEBRATION_MESSAGES["coach_clubhouse"]["default"])
+            body = random.choice(templates).format(streak=streak)
+            _send_character_message(
+                team_id, "coach", f"{coach_name} (Manager)",
+                "Clubhouse Report", body, game_date, db_path
+            )
+            _record_message("coach", char_id, "clubhouse_vibe", team_id,
+                           game_date, 10, db_path)
+            sent.append({"character_type": "coach", "trigger": "clubhouse_vibe",
+                        "character_name": coach_name})
+
+    return sent
+
+
+# ============================================================
 # MESSAGE SENDING HELPER
 # ============================================================
 
@@ -1110,6 +1483,56 @@ def _get_trade_rumor_context(team_id: int, db_path: str = None) -> dict:
         "player": player_name,
         "rival_team": f"{rival['city']} {rival['name']}",
         "division": rival["division"],
+    }
+
+
+def _get_winning_streak(team_id: int, db_path: str = None) -> int:
+    """Get current consecutive win count."""
+    recent = query("""
+        SELECT
+            CASE
+                WHEN home_team_id = ? THEN
+                    CASE WHEN home_score > away_score THEN 'W' ELSE 'L' END
+                ELSE
+                    CASE WHEN away_score > home_score THEN 'W' ELSE 'L' END
+            END as result
+        FROM schedule
+        WHERE (home_team_id=? OR away_team_id=?) AND is_played=1
+        ORDER BY game_date DESC, id DESC
+        LIMIT 20
+    """, (team_id, team_id, team_id), db_path=db_path)
+
+    streak = 0
+    for g in recent:
+        if g["result"] == "W":
+            streak += 1
+        else:
+            break
+    return streak
+
+
+def _get_top_prospect(team_id: int, db_path: str = None) -> dict:
+    """Get a top prospect from the minor league system for farm director updates."""
+    level_labels = {"minors_aaa": "AAA", "minors_aa": "AA", "minors_high_a": "High-A",
+                    "minors_low": "A", "minors_rookie": "Rookie"}
+    prospects = query("""
+        SELECT id, first_name, last_name, roster_status, overall_rating, potential_rating,
+               age, position
+        FROM players
+        WHERE team_id=? AND roster_status IN ('minors_aaa', 'minors_aa', 'minors_high_a', 'minors_low', 'minors_rookie')
+        ORDER BY potential_rating DESC
+        LIMIT 10
+    """, (team_id,), db_path=db_path)
+
+    if not prospects:
+        return None
+
+    p = random.choice(prospects[:5])  # Top 5 by potential
+    return {
+        "name": f"{p['first_name']} {p['last_name']}",
+        "level": level_labels.get(p["roster_status"], "the minors"),
+        "overall": p["overall_rating"],
+        "potential": p["potential_rating"],
     }
 
 

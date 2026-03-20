@@ -212,13 +212,17 @@ async function refreshEspnTicker() {
       }
     }
     // Add unread messages — click to open messages panel
-    const unread = (msgs || []).filter(m => !m.is_read).slice(0, 3);
+    const unread = (msgs || []).filter(m => !m.is_read).slice(0, 5);
     for (const m of unread) {
-      if (m.sender_type === 'gm' && m.subject) {
-        addTickerItem('Breaking', `<span class="ticker-breaking">${m.subject}</span>`, `toggleChatPanel();selectMessage(${m.id})`);
-      } else if (m.sender_type === 'reporter') {
-        addTickerItem('Report', `<span class="ticker-headline">${m.subject || m.body?.slice(0, 60)}</span>`, `toggleChatPanel();selectMessage(${m.id})`);
-      }
+      const tickerLabels = {
+        gm: 'Trade', rival_gm: 'League', reporter: 'Report',
+        owner: 'Owner', coach: 'Clubhouse', agent: 'Agent',
+      };
+      const label = tickerLabels[m.sender_type] || 'Alert';
+      const isBreaking = m.priority === 'urgent' || m.sender_type === 'gm';
+      const spanClass = isBreaking ? 'ticker-breaking' : 'ticker-headline';
+      addTickerItem(label, `<span class="${spanClass}">${m.subject || m.body?.slice(0, 60)}</span>`,
+        `toggleChatPanel();selectMessage(${m.id})`);
     }
   } catch (e) {}
 }
@@ -4093,29 +4097,57 @@ async function loadCoachingStaff() {
     api('/coaching-staff/available')
   ]);
 
-  const roles = ['manager', 'hitting_coach', 'pitching_coach'];
-  const roleLabels = { manager: 'Manager', hitting_coach: 'Hitting Coach', pitching_coach: 'Pitching Coach' };
+  const roles = ['manager', 'assistant_gm', 'farm_director', 'hitting_coach', 'pitching_coach',
+                  'bench_coach', 'bullpen_coach', 'first_base_coach', 'third_base_coach', 'development_coordinator'];
+  const roleLabels = {
+    manager: 'Manager', hitting_coach: 'Hitting Coach', pitching_coach: 'Pitching Coach',
+    bench_coach: 'Bench Coach', bullpen_coach: 'Bullpen Coach', first_base_coach: '1B Coach',
+    third_base_coach: '3B Coach', development_coordinator: 'Dev Coordinator',
+    assistant_gm: 'Assistant GM', farm_director: 'Farm Director',
+  };
+  const roleIcons = {
+    manager: '\u{1F9E2}', assistant_gm: '\u{1F4CB}', farm_director: '\u{1F33E}',
+    hitting_coach: '\u{26BE}', pitching_coach: '\u{1F3AF}', bench_coach: '\u{1F4DD}',
+    bullpen_coach: '\u{1F4AA}', first_base_coach: '\u{1F3C3}', third_base_coach: '\u{1F3C3}',
+    development_coordinator: '\u{1F4C8}',
+  };
+  const personalityColors = {
+    fiery: 'var(--red)', steady: 'var(--blue)', innovator: 'var(--green)',
+    players_coach: 'var(--orange)', disciplinarian: 'var(--text-secondary)',
+  };
   const currentStaff = staff?.staff || [];
 
   let html = '';
   for (const role of roles) {
     const coach = currentStaff.find(c => c.role === role);
+    const icon = roleIcons[role] || '\u{1F464}';
     if (coach) {
+      const pColor = personalityColors[coach.personality] || 'var(--text-dim)';
+      const repBar = coach.reputation ? `<div style="background:var(--bg-tertiary);border-radius:2px;height:3px;width:60px;display:inline-block;vertical-align:middle;margin-left:4px">
+        <div style="height:100%;width:${coach.reputation}%;background:${coach.reputation >= 70 ? 'var(--green)' : coach.reputation >= 40 ? 'var(--orange)' : 'var(--red)'};border-radius:2px"></div>
+      </div>` : '';
       html += `<div style="padding:8px 0;border-bottom:1px solid var(--border-light);display:flex;justify-content:space-between;align-items:center">
-        <div>
-          <div style="font-weight:600;font-size:12px">${coach.name}</div>
-          <div style="font-size:10px;color:var(--text-dim)">${roleLabels[role]} | ${fmt$(coach.annual_salary)}/yr | ${coach.years_remaining}yr</div>
-          <div style="font-size:10px;color:var(--text-dim)">${coach.personality || ''}</div>
+        <div style="display:flex;align-items:center;gap:8px">
+          <span style="font-size:16px">${icon}</span>
+          <div>
+            <div style="font-weight:600;font-size:12px">${coach.name}</div>
+            <div style="font-size:10px;color:var(--text-dim)">${roleLabels[role]} | ${fmt$(coach.annual_salary)}/yr | ${coach.years_remaining}yr left</div>
+            <div style="font-size:10px">
+              <span style="color:${pColor};font-style:italic">${coach.personality || ''}</span>
+              ${coach.reputation ? `<span style="color:var(--text-dim);margin-left:6px">Rep: ${coach.reputation}</span>${repBar}` : ''}
+            </div>
+            ${coach.catchphrase ? `<div style="font-size:9px;color:var(--text-tertiary);font-style:italic;margin-top:2px">"${coach.catchphrase}"</div>` : ''}
+          </div>
         </div>
         <button class="btn btn-sm" style="font-size:9px;padding:2px 6px;color:var(--red)" onclick="fireCoach(${coach.id})">Fire</button>
       </div>`;
     } else {
       const candidates = (available || []).filter(c => c.role === role).slice(0, 3);
       html += `<div style="padding:8px 0;border-bottom:1px solid var(--border-light)">
-        <div style="font-weight:600;font-size:12px;color:var(--text-dim)">${roleLabels[role]} — VACANT</div>
+        <div style="font-weight:600;font-size:12px;color:var(--text-dim)">${icon} ${roleLabels[role]} — VACANT</div>
         ${candidates.length ? candidates.map(c => `
           <div style="padding:4px 0;display:flex;justify-content:space-between;align-items:center;font-size:11px">
-            <span>${c.name} (skill:${c.skill_rating || '?'}) ${fmt$(c.annual_salary)}/yr</span>
+            <span>${c.name} <span style="color:var(--text-dim)">(rep:${c.reputation || c.skill_rating || '?'})</span> ${fmt$(c.annual_salary)}/yr</span>
             <button class="btn btn-sm" style="font-size:9px;padding:2px 6px" onclick="hireCoach(${c.id})">Hire</button>
           </div>
         `).join('') : '<div style="font-size:10px;color:var(--text-dim)">No candidates available</div>'}
@@ -4948,14 +4980,24 @@ async function loadMessages() {
       badgeHtml = `<span class="chat-unread-badge${badgeClass}">1</span>`;
     }
 
+    const sIcon = {
+      owner: '\u{1F3E2}', coach: '\u{1F9E2}', reporter: '\u{1F4F0}',
+      agent: '\u{1F4BC}', rival_gm: '\u{1F4DE}', system: '\u{2699}', scout: '\u{1F50D}',
+    }[m.sender_type] || '\u{1F4AC}';
+    const roleIcon = (m.sender_name || '').includes('Farm Director') ? '\u{1F33E}' :
+      (m.sender_name || '').includes('Asst') ? '\u{1F4CB}' : sIcon;
+
     contactsHtml += `
       <div class="chat-contact-item ${isActive ? 'active' : ''} ${isUnread ? 'unread' : ''}"
            onclick="selectMessage(${m.id})">
-        <div class="chat-contact-info">
-          <div class="chat-contact-name">${dotClass}${m.sender_name || 'System'}
-            <span class="msg-category">${categoryLabel}</span>
+        <div style="display:flex;align-items:center;gap:8px;flex:1;min-width:0">
+          <span style="font-size:18px;flex-shrink:0">${roleIcon}</span>
+          <div class="chat-contact-info" style="min-width:0">
+            <div class="chat-contact-name">${dotClass}${m.sender_name || 'System'}
+              <span class="msg-category">${categoryLabel}</span>
+            </div>
+            <div class="chat-contact-preview">${m.subject || preview}</div>
           </div>
-          <div class="chat-contact-preview">${m.subject || preview}</div>
         </div>
         <div class="chat-contact-meta">
           <span class="chat-contact-date">${m.game_date || ''}</span>
@@ -5017,10 +5059,23 @@ function renderMessageConversation(msg) {
     } catch(e) {}
   }
 
+  const senderIcon = {
+    owner: '\u{1F3E2}', coach: '\u{1F9E2}', reporter: '\u{1F4F0}',
+    agent: '\u{1F4BC}', rival_gm: '\u{1F4DE}', system: '\u{2699}',
+    scout: '\u{1F50D}',
+  }[msg.sender_type] || '\u{1F4AC}';
+  const senderRole = (msg.sender_name || '').includes('Farm Director') ? '\u{1F33E}' :
+    (msg.sender_name || '').includes('Asst') ? '\u{1F4CB}' : senderIcon;
+
   chatMsgs.innerHTML = `
     <div class="msg-item priority-${priority}">
-      <span class="msg-from">${msg.sender_name || 'System'}</span>
-      <span class="msg-date">${msg.game_date || ''}</span>
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+        <span style="font-size:20px">${senderRole}</span>
+        <div>
+          <span class="msg-from">${msg.sender_name || 'System'}</span>
+          <span class="msg-date" style="margin-left:8px">${msg.game_date || ''}</span>
+        </div>
+      </div>
       <div class="msg-body" style="margin-top:8px; white-space:pre-wrap;">${linkifyTradeMessage(msg)}</div>
       ${responseHtml}
     </div>`;
