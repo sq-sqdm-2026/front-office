@@ -221,6 +221,8 @@ def generate_coaching_pool():
             "bullpen_coach": (300000, 800000),
             "first_base_coach": (250000, 600000),
             "third_base_coach": (250000, 600000),
+            "farm_director": (400000, 1200000),
+            "assistant_gm": (600000, 2000000),
         }
         sal_range = salary_base.get(role, (300000, 1000000))
         salary = random.randint(sal_range[0], sal_range[1])
@@ -278,20 +280,24 @@ def generate_coaching_pool():
             c["is_available"],
         ))
 
-    # Assign one manager, one hitting coach, one pitching coach per team
+    # Assign one manager, one hitting coach, one pitching coach,
+    # one farm director, and one assistant GM per team
     for tid in team_ids:
-        for role in ["manager", "hitting_coach", "pitching_coach"]:
+        for role in ["manager", "hitting_coach", "pitching_coach",
+                     "farm_director", "assistant_gm"]:
             coach = _make_coach(tid, role, is_available=0)
             _insert_coach(coach)
             coaches_created += 1
 
-    # Generate ~20 free agent coaches
+    # Generate ~25 free agent coaches
     fa_roles = (
         ["manager"] * 5 +
         ["hitting_coach"] * 5 +
         ["pitching_coach"] * 5 +
         ["bench_coach"] * 3 +
-        ["bullpen_coach"] * 2
+        ["bullpen_coach"] * 2 +
+        ["farm_director"] * 3 +
+        ["assistant_gm"] * 2
     )
     for role in fa_roles:
         coach = _make_coach(0, role, is_available=1)
@@ -938,3 +944,181 @@ def get_team_coaching_staff(team_id: int) -> list:
         (team_id,)
     )
     return [dict(c) for c in coaches]
+
+
+# ============================================================
+# COACHING CAREER PROGRESSION & POACHING
+# ============================================================
+
+# Career ladder for front office/coaching roles
+CAREER_LADDER = {
+    "first_base_coach": ["third_base_coach", "bench_coach"],
+    "third_base_coach": ["bench_coach", "farm_director"],
+    "bench_coach": ["manager", "farm_director"],
+    "bullpen_coach": ["pitching_coach"],
+    "hitting_coach": ["bench_coach", "farm_director", "assistant_gm"],
+    "pitching_coach": ["bench_coach", "farm_director", "assistant_gm"],
+    "farm_director": ["assistant_gm"],
+    "assistant_gm": ["manager"],  # Can become GM elsewhere (flavor only)
+    "manager": [],
+}
+
+ROLE_DISPLAY = {
+    "manager": "Manager",
+    "hitting_coach": "Hitting Coach",
+    "pitching_coach": "Pitching Coach",
+    "bench_coach": "Bench Coach",
+    "bullpen_coach": "Bullpen Coach",
+    "first_base_coach": "1B Coach",
+    "third_base_coach": "3B Coach",
+    "farm_director": "Farm Director",
+    "assistant_gm": "Assistant GM",
+    "development_coordinator": "Dev Coordinator",
+}
+
+
+def process_coaching_contracts(game_date: str, db_path=None) -> list:
+    """Process coaching contracts at end of season. Expire, poach, promote.
+
+    Called during offseason processing.
+    Returns list of events.
+    """
+    events = []
+
+    # Ensure memory_log column exists
+    try:
+        execute("ALTER TABLE coaching_staff ADD COLUMN memory_log TEXT DEFAULT '[]'",
+                db_path=db_path)
+    except Exception:
+        pass
+
+    # Decrement contract years
+    execute("UPDATE coaching_staff SET years_remaining = years_remaining - 1 "
+            "WHERE is_available = 0 AND years_remaining > 0", db_path=db_path)
+
+    # Free coaches whose contracts expired
+    expired = query(
+        "SELECT * FROM coaching_staff WHERE is_available=0 AND years_remaining <= 0",
+        db_path=db_path
+    )
+    for c in expired:
+        execute("UPDATE coaching_staff SET is_available=1, team_id=0 WHERE id=?",
+                (c["id"],), db_path=db_path)
+        events.append({
+            "type": "contract_expired",
+            "name": c["name"],
+            "role": c["role"],
+            "team_id": c["team_id"],
+        })
+
+    # Poaching: successful coaches with high reputation get offers from other teams
+    poach_candidates = query("""
+        SELECT * FROM coaching_staff
+        WHERE is_available=0 AND reputation >= 70 AND years_remaining <= 1
+        ORDER BY reputation DESC
+    """, db_path=db_path)
+
+    for candidate in poach_candidates:
+        if random.random() > 0.15:  # 15% chance per high-rep coach
+            continue
+
+        # Find a team that needs this role's next step
+        next_roles = CAREER_LADDER.get(candidate["role"], [])
+        if not next_roles:
+            continue
+
+        target_role = random.choice(next_roles)
+
+        # Find a team missing this role (or with a weak coach)
+        teams_needing = query("""
+            SELECT t.id, t.city, t.name FROM teams t
+            WHERE t.id != ?
+            AND NOT EXISTS (
+                SELECT 1 FROM coaching_staff cs
+                WHERE cs.team_id = t.id AND cs.role = ? AND cs.is_available = 0
+            )
+            ORDER BY RANDOM() LIMIT 1
+        """, (candidate["team_id"], target_role), db_path=db_path)
+
+        if teams_needing:
+            new_team = teams_needing[0]
+            old_team_id = candidate["team_id"]
+
+            # Promote and move
+            new_salary = int(candidate["annual_salary"] * random.uniform(1.3, 1.8))
+            new_salary = (new_salary // 50000) * 50000
+            execute("""
+                UPDATE coaching_staff SET team_id=?, role=?, annual_salary=?,
+                    years_remaining=? WHERE id=?
+            """, (new_team["id"], target_role, new_salary,
+                  random.randint(2, 4), candidate["id"]), db_path=db_path)
+
+            events.append({
+                "type": "poached",
+                "name": candidate["name"],
+                "old_role": candidate["role"],
+                "new_role": target_role,
+                "old_team_id": old_team_id,
+                "new_team_id": new_team["id"],
+                "new_team_name": f"{new_team['city']} {new_team['name']}",
+            })
+
+            # Log memory
+            _add_coaching_memory(
+                candidate["id"],
+                f"Promoted to {ROLE_DISPLAY.get(target_role, target_role)} "
+                f"with {new_team['city']} {new_team['name']}",
+                db_path
+            )
+
+    return events
+
+
+def send_coaching_departure_messages(team_id: int, game_date: str,
+                                      events: list, db_path=None):
+    """Notify the user when their coaches depart."""
+    for ev in events:
+        if ev.get("old_team_id") == team_id or ev.get("team_id") == team_id:
+            if ev["type"] == "poached":
+                body = (
+                    f"{ev['name']} has been hired away by the "
+                    f"{ev['new_team_name']} as their "
+                    f"{ROLE_DISPLAY.get(ev['new_role'], ev['new_role'])}. "
+                    f"His strong reputation made him an attractive target. "
+                    f"You'll need to find a replacement."
+                )
+                execute("""
+                    INSERT INTO messages (game_date, sender_type, sender_name,
+                        recipient_type, recipient_id, subject, body, is_read)
+                    VALUES (?, 'system', 'Front Office', 'user', ?, ?, ?, 0)
+                """, (game_date, team_id,
+                      f"Staff Departure: {ev['name']}",
+                      body), db_path=db_path)
+            elif ev["type"] == "contract_expired":
+                execute("""
+                    INSERT INTO messages (game_date, sender_type, sender_name,
+                        recipient_type, recipient_id, subject, body, is_read)
+                    VALUES (?, 'system', 'Front Office', 'user', ?, ?, ?, 0)
+                """, (game_date, team_id,
+                      f"Contract Expired: {ev['name']}",
+                      f"{ev['name']}'s contract as "
+                      f"{ROLE_DISPLAY.get(ev['role'], ev['role'])} has expired. "
+                      f"He's now a free agent. You can re-sign him or hire a replacement."),
+                    db_path=db_path)
+
+
+def _add_coaching_memory(coach_id: int, memory: str, db_path=None):
+    """Add a memory entry to a coach's memory log."""
+    rows = query("SELECT memory_log FROM coaching_staff WHERE id=?",
+                 (coach_id,), db_path=db_path)
+    if not rows:
+        return
+    try:
+        log = json.loads(rows[0].get("memory_log") or "[]")
+    except (json.JSONDecodeError, TypeError):
+        log = []
+    log.append(memory)
+    if len(log) > 20:
+        log = log[-20:]
+    execute("UPDATE coaching_staff SET memory_log=? WHERE id=?",
+            (json.dumps(log), coach_id), db_path=db_path)
