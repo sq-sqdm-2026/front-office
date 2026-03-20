@@ -5175,6 +5175,64 @@ async function sendChatMessage() {
 // ============================================================
 // COMPOSE NEW MESSAGE (Contact Picker + Compose View)
 // ============================================================
+async function showRelationships() {
+  const chatMsgs = document.getElementById('chat-messages');
+  const convHeader = document.getElementById('chat-conv-header');
+  const inputArea = document.getElementById('chat-input-area');
+  if (!chatMsgs || !convHeader) return;
+
+  convHeader.innerHTML = '<span class="chat-conv-name">Contacts &amp; Relationships</span>';
+  if (inputArea) inputArea.style.display = 'none';
+  chatMsgs.innerHTML = '<div style="padding:12px;color:var(--text-dim)">Loading...</div>';
+
+  try {
+    const rels = await api('/relationships');
+    if (!rels || !rels.length) {
+      chatMsgs.innerHTML = `<div style="padding:16px;text-align:center">
+        <div style="font-size:24px;margin-bottom:8px">\u{1F465}</div>
+        <div style="color:var(--text-dim)">No relationships tracked yet. Respond to messages to build connections.</div>
+      </div>`;
+      return;
+    }
+
+    const typeIcons = {
+      owner: '\u{1F3E2}', coach: '\u{1F9E2}', reporter: '\u{1F4F0}',
+      agent: '\u{1F4BC}', rival_gm: '\u{1F4DE}',
+    };
+    const getDisposition = (score) => {
+      if (score >= 80) return { label: 'Ally', color: 'var(--green)' };
+      if (score >= 65) return { label: 'Friendly', color: '#4CAF50' };
+      if (score >= 45) return { label: 'Neutral', color: 'var(--text-secondary)' };
+      if (score >= 30) return { label: 'Cool', color: 'var(--orange)' };
+      return { label: 'Hostile', color: 'var(--red)' };
+    };
+
+    let html = '<div style="padding:8px">';
+    rels.forEach(r => {
+      const icon = typeIcons[r.character_type] || '\u{1F464}';
+      const disp = getDisposition(r.relationship_score);
+      const barWidth = r.relationship_score;
+      html += `<div style="padding:8px 0;border-bottom:1px solid var(--border-light);display:flex;align-items:center;gap:8px">
+        <span style="font-size:16px">${icon}</span>
+        <div style="flex:1;min-width:0">
+          <div style="font-weight:600;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${r.character_name}</div>
+          <div style="display:flex;align-items:center;gap:6px;margin-top:2px">
+            <div style="background:var(--bg-tertiary);border-radius:2px;height:4px;flex:1;overflow:hidden">
+              <div style="height:100%;width:${barWidth}%;background:${disp.color};border-radius:2px;transition:width 0.3s"></div>
+            </div>
+            <span style="font-size:10px;color:${disp.color};font-weight:600;white-space:nowrap">${disp.label}</span>
+          </div>
+          <div style="font-size:9px;color:var(--text-tertiary);margin-top:1px">${r.total_interactions} interaction${r.total_interactions !== 1 ? 's' : ''}</div>
+        </div>
+      </div>`;
+    });
+    html += '</div>';
+    chatMsgs.innerHTML = html;
+  } catch(e) {
+    chatMsgs.innerHTML = '<div style="padding:12px;color:var(--red)">Failed to load relationships</div>';
+  }
+}
+
 let _composeContacts = [];
 
 async function openComposeMessage() {

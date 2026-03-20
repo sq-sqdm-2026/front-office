@@ -808,10 +808,40 @@ BEAT_WRITER_MESSAGES = {
     ],
 }
 
+# Relationship-modified messages for beat writers
+BEAT_WRITER_FRIENDLY = {
+    "wants_quote": [
+        "Hey, hope I'm not catching you at a bad time. Working on a piece and you always give great quotes. Got a minute?",
+        "Quick one for my column - you've been one of the most accessible GMs I've covered. What's your take on the season so far?",
+        "My editor wants me to do a profile piece on the front office. I told her you'd be great for it. Interested?",
+    ],
+    "heard_rumor": [
+        "I'm hearing some things, but I want to check with you first before I publish anything. {player} and the {rival_team} - any truth?",
+        "Between us, I got a tip about {player}. I trust you to give it to me straight. What's the deal?",
+    ],
+}
+
+BEAT_WRITER_HOSTILE = {
+    "wants_quote": [
+        "I'm writing a piece with or without your input. Your silence on team direction speaks volumes. Care to comment?",
+        "The fans deserve answers and frankly so do I. What's the plan here? Because from the outside, it's not clear.",
+        "My column is going to press tonight. I can either include your perspective or just the results on the field. Your choice.",
+    ],
+    "heard_rumor": [
+        "Sources are talking, and they're not saying nice things about the front office. {player} and the {rival_team}. Confirm or deny?",
+        "I'm hearing from multiple sources about {player}. You can either get ahead of this story or read about it tomorrow.",
+    ],
+    "cold_streak_story": [
+        "Another loss. The fans want accountability. When does the front office take responsibility for this roster?",
+        "I've been covering this team a long time. This stretch is hard to watch. The fans deserve an explanation.",
+        "My inbox is full of angry fans. They're pointing fingers at the front office. What do you say to them?",
+    ],
+}
+
 
 def _check_beat_writer_triggers(team_id: int, game_date: str,
                                  db_path: str = None) -> list:
-    """Check beat writer trigger conditions."""
+    """Check beat writer trigger conditions. Uses relationship to modulate tone."""
     sent = []
 
     # Low probability - beat writers message occasionally
@@ -821,11 +851,24 @@ def _check_beat_writer_triggers(team_id: int, game_date: str,
     writer_name = random.choice(BEAT_WRITER_NAMES)
     char_id = writer_name  # Use name as ID since there's no table
 
+    # Check relationship with this writer
+    rel_score = _get_relationship_score("reporter", f"{writer_name} (Beat Writer)", team_id, db_path)
+    is_friendly = rel_score >= 65
+    is_hostile = rel_score <= 30
+
     # Determine what to write about
     streak = _get_recent_streak(team_id, db_path)
 
+    # Helper to pick relationship-aware message pool
+    def _pick_msg(key):
+        if is_friendly and key in BEAT_WRITER_FRIENDLY:
+            return random.choice(BEAT_WRITER_FRIENDLY[key])
+        elif is_hostile and key in BEAT_WRITER_HOSTILE:
+            return random.choice(BEAT_WRITER_HOSTILE[key])
+        return random.choice(BEAT_WRITER_MESSAGES[key])
+
     if streak >= 5 and not _is_on_cooldown("beat_writer", char_id, "hot_streak_story", team_id, game_date, db_path):
-        body = random.choice(BEAT_WRITER_MESSAGES["hot_streak_story"])
+        body = _pick_msg("hot_streak_story")
         _send_character_message(
             team_id, "reporter", f"{writer_name} (Beat Writer)",
             "Quick Question for a Story", body, game_date, db_path
@@ -835,7 +878,7 @@ def _check_beat_writer_triggers(team_id: int, game_date: str,
         sent.append({"character_type": "beat_writer", "trigger": "hot_streak_story",
                     "character_name": writer_name})
     elif streak <= -5 and not _is_on_cooldown("beat_writer", char_id, "cold_streak_story", team_id, game_date, db_path):
-        body = random.choice(BEAT_WRITER_MESSAGES["cold_streak_story"])
+        body = _pick_msg("cold_streak_story")
         _send_character_message(
             team_id, "reporter", f"{writer_name} (Beat Writer)",
             "Need a Comment", body, game_date, db_path
@@ -845,10 +888,9 @@ def _check_beat_writer_triggers(team_id: int, game_date: str,
         sent.append({"character_type": "beat_writer", "trigger": "cold_streak_story",
                     "character_name": writer_name})
     elif not _is_on_cooldown("beat_writer", char_id, "heard_rumor", team_id, game_date, db_path):
-        # Rumor about a player
         rumor = _get_trade_rumor_context(team_id, db_path)
         if rumor:
-            body = random.choice(BEAT_WRITER_MESSAGES["heard_rumor"]).format(**rumor)
+            body = _pick_msg("heard_rumor").format(**rumor)
             _send_character_message(
                 team_id, "reporter", f"{writer_name} (Beat Writer)",
                 "Heard Something Interesting...", body, game_date, db_path
@@ -858,10 +900,11 @@ def _check_beat_writer_triggers(team_id: int, game_date: str,
             sent.append({"character_type": "beat_writer", "trigger": "heard_rumor",
                         "character_name": writer_name})
     elif not _is_on_cooldown("beat_writer", char_id, "wants_quote", team_id, game_date, db_path):
-        body = random.choice(BEAT_WRITER_MESSAGES["wants_quote"])
+        body = _pick_msg("wants_quote")
+        subj = "Quick Chat?" if is_friendly else "Need a Comment" if is_hostile else "Request for Comment"
         _send_character_message(
             team_id, "reporter", f"{writer_name} (Beat Writer)",
-            "Request for Comment", body, game_date, db_path
+            subj, body, game_date, db_path
         )
         _record_message("beat_writer", char_id, "wants_quote", team_id,
                        game_date, BEAT_WRITER_COOLDOWN_DAYS, db_path)
@@ -1609,6 +1652,19 @@ def _get_trade_rumor_context(team_id: int, db_path: str = None) -> dict:
         "rival_team": f"{rival['city']} {rival['name']}",
         "division": rival["division"],
     }
+
+
+def _get_relationship_score(char_type: str, char_name: str, team_id: int,
+                             db_path: str = None) -> int:
+    """Get relationship score for a character. Returns 50 (neutral) if no record."""
+    try:
+        rows = query("""
+            SELECT relationship_score FROM character_relationships
+            WHERE character_type=? AND character_name=? AND team_id=?
+        """, (char_type, char_name, team_id), db_path=db_path)
+        return rows[0]["relationship_score"] if rows else 50
+    except Exception:
+        return 50
 
 
 def _get_winning_streak(team_id: int, db_path: str = None) -> int:
