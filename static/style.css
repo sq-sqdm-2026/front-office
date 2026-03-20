@@ -1862,6 +1862,10 @@ input[type="range"]::-webkit-slider-thumb {
   .dashboard-grid {
     grid-template-columns: repeat(2, 1fr);
   }
+
+  .leaders-grid {
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  }
 }
 
 @media (max-width: 768px) {
@@ -1893,6 +1897,9 @@ input[type="range"]::-webkit-slider-thumb {
   .responsive-2col { grid-template-columns: 1fr !important; }
   .fin-grid { grid-template-columns: 1fr; }
   .trade-layout { grid-template-columns: 1fr; }
+  .comparison-grid { grid-template-columns: 1fr; }
+  .comparison-column, .comparison-column-center { padding: 8px; }
+  .comparison-header-spacer { width: auto; }
   .top-bar-center { gap: 8px; }
   .game-clock { font-size: 12px; min-width: auto; padding: 2px 6px; }
   .header-record, .header-phase { font-size: 11px; }
@@ -1902,6 +1909,7 @@ input[type="range"]::-webkit-slider-thumb {
   .chat-contacts { width: 100%; min-width: 0; border-right: none; border-bottom: 1px solid var(--border); max-height: 40vh; }
   .chat-conversation { min-height: 300px; }
   .cal-grid { grid-template-columns: repeat(7, 1fr); font-size: 11px; }
+  .cal-day { padding: 2px; min-height: 28px; }
   .section-bar { flex-wrap: wrap; gap: 8px; }
   .filter-bar { flex-wrap: wrap; }
 }
@@ -1914,6 +1922,9 @@ input[type="range"]::-webkit-slider-thumb {
   .section-bar { padding: 8px; }
   .modal-content { width: 100%; max-width: 100%; border-radius: 12px 12px 0 0; }
   .modal { align-items: flex-end; }
+  .dashboard-grid { grid-template-columns: 1fr; }
+  .cal-grid { font-size: 10px; }
+  .cal-day { padding: 1px; min-height: 24px; font-size: 10px; }
 }
 
 /* ===== MOBILE TICKER & CHAT FIXES ===== */
@@ -1923,17 +1934,17 @@ input[type="range"]::-webkit-slider-thumb {
     height: 28px;
     font-size: 11px;
   }
-  .espn-ticker-label { padding: 0 8px; font-size: 9px; }
-  .espn-ticker-item { padding: 0 12px; }
-  .espn-ticker-item .ticker-team { font-size: 12px; }
-  .espn-ticker-item .ticker-score { font-size: 13px; }
+  .espn-ticker-label { padding: 0 6px; font-size: 9px; letter-spacing: 0.5px; }
+  .espn-ticker-item { padding: 0 10px; }
+  .espn-ticker-item .ticker-team { font-size: 11px; }
+  .espn-ticker-item .ticker-score { font-size: 12px; }
   #main-wrap { padding-bottom: 32px; }
   .chat-panel { padding-bottom: 32px; }
 
-  /* Chat panel: fixed fullscreen on mobile */
+  /* Chat panel: fixed fullscreen on mobile, leave room for ticker */
   .chat-panel.open {
     position: fixed;
-    top: 0; left: 0; right: 0; bottom: 0;
+    top: 0; left: 0; right: 0; bottom: 28px;
     width: 100%; min-width: 100%;
     z-index: 1001;
     border-left: none;
