@@ -410,6 +410,16 @@ def sign_free_agent(player_id: int, team_id: int, salary: int, years: int,
         player_name = f"{player['first_name']} {player['last_name']}"
         send_free_agent_signing_message(user_team_id, player_name, team_name, salary, db_path=db_path)
 
+        # Character reactions to the signing
+        try:
+            from ..ai.proactive_messaging import send_signing_reactions
+            send_signing_reactions(
+                user_team_id, game_date, player_name,
+                salary, years, db_path=db_path
+            )
+        except Exception:
+            pass
+
     # Clear bidding state
     _best_offers.pop(player_id, None)
 

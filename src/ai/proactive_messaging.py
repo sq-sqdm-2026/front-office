@@ -1111,3 +1111,547 @@ def _get_trade_rumor_context(team_id: int, db_path: str = None) -> dict:
         "rival_team": f"{rival['city']} {rival['name']}",
         "division": rival["division"],
     }
+
+
+# ============================================================
+# EVENT-DRIVEN REACTIONS
+# Characters react to specific game events as they happen.
+# These are called from the event sources (injuries, roster
+# moves, signings, milestones, etc.) instead of being polled.
+# ============================================================
+
+def send_injury_reactions(team_id: int, game_date: str, player_name: str,
+                          injury_type: str, il_tier: str, player_id: int = None,
+                          db_path: str = None) -> list:
+    """React to a key player injury. Coach, beat writer, and agent respond."""
+    sent = []
+    _ensure_table_exists(db_path)
+
+    # --- Coach reaction ---
+    staff = query("""
+        SELECT * FROM coaching_staff
+        WHERE team_id=? AND role='manager' AND is_available=0
+    """, (team_id,), db_path=db_path)
+    if staff:
+        coach = staff[0]
+        coach_name = f"{coach['first_name']} {coach['last_name']}"
+        char_id = str(coach["id"])
+        if not _is_on_cooldown("coach", char_id, "injury_reaction", team_id, game_date, db_path):
+            personality = coach.get("philosophy", "balanced")
+            severity = "out a while" if il_tier == "60-day" else "day-to-day"
+            coach_templates = {
+                "aggressive": [
+                    f"Losing {player_name} to a {injury_type} hurts. We need somebody to step up NOW. "
+                    f"Next man up mentality.",
+                    f"{player_name} is down with a {injury_type}. This is a gut check for the whole team. "
+                    f"I'll adjust the lineup.",
+                ],
+                "analytics": [
+                    f"With {player_name} out ({injury_type}), I've been looking at our depth options. "
+                    f"The numbers say we can cover this. Let me show you what I'm thinking.",
+                    f"We lose some WAR with {player_name} on the shelf, but I think we can "
+                    f"redistribute production. Let me work on the matchups.",
+                ],
+                "conservative": [
+                    f"Hate to see {player_name} go down with a {injury_type}. "
+                    f"We'll be careful with the replacement. No need to panic.",
+                    f"{player_name}'s {injury_type} is a setback, but we've got capable guys ready. "
+                    f"We'll manage.",
+                ],
+                "default": [
+                    f"Just wanted to let you know I'm adjusting things with {player_name} out. "
+                    f"The {injury_type} looks like he'll be {severity}. We'll manage.",
+                    f"Tough blow losing {player_name} to a {injury_type}. "
+                    f"I have some ideas on how to fill the gap.",
+                ],
+            }
+            key = {"aggressive": "aggressive", "analytics": "analytics",
+                   "conservative": "conservative"}.get(personality, "default")
+            body = random.choice(coach_templates.get(key, coach_templates["default"]))
+            _send_character_message(
+                team_id, "coach", f"{coach_name} (Manager)",
+                f"{player_name} Injury Update", body, game_date, db_path
+            )
+            _record_message("coach", char_id, "injury_reaction", team_id,
+                           game_date, 2, db_path)
+            sent.append({"character_type": "coach", "trigger": "injury_reaction"})
+
+    # --- Beat writer reaction (asks for comment on significant injuries) ---
+    if il_tier in ("15-day", "60-day"):
+        writer_name = random.choice(BEAT_WRITER_NAMES)
+        char_id = writer_name
+        if not _is_on_cooldown("beat_writer", char_id, "injury_story", team_id, game_date, db_path):
+            writer_templates = [
+                f"Just heard {player_name} is heading to the IL with a {injury_type}. "
+                f"How does this affect the team's plans? I need a quote for the story.",
+                f"Sources saying {player_name} has a {injury_type}. This is a big loss. "
+                f"Any idea on the timeline? My readers are going to want to know.",
+                f"Breaking: {player_name} to the {il_tier} IL ({injury_type}). "
+                f"What's the plan to replace his production? Filing in an hour.",
+            ]
+            _send_character_message(
+                team_id, "reporter", f"{writer_name} (Beat Writer)",
+                f"Injury Report: {player_name}", random.choice(writer_templates),
+                game_date, db_path
+            )
+            _record_message("beat_writer", char_id, "injury_story", team_id,
+                           game_date, 3, db_path)
+            sent.append({"character_type": "beat_writer", "trigger": "injury_story"})
+
+    # --- Agent reaction (if player has an agent and it's a serious injury) ---
+    if player_id and il_tier in ("15-day", "60-day"):
+        agent = _get_player_agent_safe(player_id, db_path)
+        if agent:
+            agent_name = agent["name"]
+            char_id = str(agent["id"])
+            if not _is_on_cooldown("agent", char_id, "injury_concern", team_id, game_date, db_path):
+                personality = agent.get("personality", "collaborative")
+                agent_templates = {
+                    "aggressive": [
+                        f"I just heard about {player_name}'s {injury_type}. I need to know he's "
+                        f"getting the best medical care. Don't rush him back.",
+                        f"We need to talk about {player_name}. A {injury_type} is serious. "
+                        f"I want to make sure the team's medical staff has a proper rehab plan.",
+                    ],
+                    "player_first": [
+                        f"{player_name} called me about the {injury_type}. He's worried. "
+                        f"Can you assure me the team will take care of him?",
+                        f"Just checking in on {player_name}. He's dealing with a lot right now. "
+                        f"The {injury_type} has him down. Please take good care of him.",
+                    ],
+                    "default": [
+                        f"Reaching out about {player_name}'s {injury_type}. "
+                        f"I'd appreciate an update on the timeline when you have one.",
+                        f"Wanted to check in on {player_name}. How's the {injury_type} looking? "
+                        f"We just want to make sure everything is being handled well.",
+                    ],
+                }
+                key = personality if personality in agent_templates else "default"
+                body = random.choice(agent_templates[key])
+                sender = f"{agent_name} ({agent.get('agency_name', 'Sports Agency')})"
+                _send_character_message(
+                    team_id, "agent", sender,
+                    f"Checking on {player_name}", body, game_date, db_path
+                )
+                _record_message("agent", char_id, "injury_concern", team_id,
+                               game_date, 5, db_path)
+                sent.append({"character_type": "agent", "trigger": "injury_concern"})
+
+    return sent
+
+
+def send_callup_reactions(team_id: int, game_date: str, player_name: str,
+                          from_level: str = "AAA", db_path: str = None) -> list:
+    """React to a prospect call-up. Coach and beat writer respond."""
+    sent = []
+    _ensure_table_exists(db_path)
+
+    # --- Coach reaction ---
+    staff = query("""
+        SELECT * FROM coaching_staff
+        WHERE team_id=? AND role='manager' AND is_available=0
+    """, (team_id,), db_path=db_path)
+    if staff:
+        coach = staff[0]
+        coach_name = f"{coach['first_name']} {coach['last_name']}"
+        char_id = str(coach["id"])
+        if not _is_on_cooldown("coach", char_id, "callup_reaction", team_id, game_date, db_path):
+            coach_templates = [
+                f"Good call bringing up {player_name}. I've been watching him in {from_level} "
+                f"and I think he's ready. I'll find him at-bats right away.",
+                f"Excited to have {player_name} up here. The reports from {from_level} "
+                f"were outstanding. I'll work him into the lineup this week.",
+                f"{player_name} joining us from {from_level} is a shot of energy this team needs. "
+                f"The clubhouse is buzzing about the kid.",
+                f"I'll take good care of {player_name}. He earned this promotion from {from_level}. "
+                f"Might ease him in off the bench first, then we'll see.",
+            ]
+            _send_character_message(
+                team_id, "coach", f"{coach_name} (Manager)",
+                f"Welcome {player_name}", random.choice(coach_templates),
+                game_date, db_path
+            )
+            _record_message("coach", char_id, "callup_reaction", team_id,
+                           game_date, 5, db_path)
+            sent.append({"character_type": "coach", "trigger": "callup_reaction"})
+
+    # --- Beat writer covers the call-up ---
+    writer_name = random.choice(BEAT_WRITER_NAMES)
+    char_id = writer_name
+    if not _is_on_cooldown("beat_writer", char_id, "callup_story", team_id, game_date, db_path):
+        writer_templates = [
+            f"Hearing that {player_name} is getting the call from {from_level}. "
+            f"What's the plan for him? Everyday player or easing him in?",
+            f"The {player_name} call-up is the story of the day. Prospect hounds are excited. "
+            f"How do you see him fitting in with the big league club?",
+            f"Sources confirm {player_name} is being promoted from {from_level}. "
+            f"The fans have been waiting for this. Any comment on his role?",
+        ]
+        _send_character_message(
+            team_id, "reporter", f"{writer_name} (Beat Writer)",
+            f"Call-Up: {player_name}", random.choice(writer_templates),
+            game_date, db_path
+        )
+        _record_message("beat_writer", char_id, "callup_story", team_id,
+                       game_date, 3, db_path)
+        sent.append({"character_type": "beat_writer", "trigger": "callup_story"})
+
+    return sent
+
+
+def send_signing_reactions(team_id: int, game_date: str, player_name: str,
+                           salary: int, years: int, db_path: str = None) -> list:
+    """React to a free agent signing. Owner and beat writer respond."""
+    sent = []
+    _ensure_table_exists(db_path)
+
+    salary_m = salary / 1_000_000
+    total_m = salary_m * years
+
+    # --- Owner reaction ---
+    owner = query("SELECT * FROM owner_characters WHERE team_id=?",
+                  (team_id,), db_path=db_path)
+    if owner:
+        owner = owner[0]
+        owner_name = f"{owner['first_name']} {owner['last_name']}"
+        char_id = str(owner["id"])
+        archetype = owner.get("archetype", "balanced")
+        if not _is_on_cooldown("owner", char_id, "signing_reaction", team_id, game_date, db_path):
+            if total_m >= 50:  # Big contract
+                owner_templates = {
+                    "budget_conscious": [
+                        f"${total_m:.0f}M for {player_name}? That's a lot of money. "
+                        f"He better be worth every penny. I'm trusting your judgment here.",
+                        f"I see we're committing ${salary_m:.0f}M a year to {player_name}. "
+                        f"That's a big chunk of the budget. This better pay off.",
+                    ],
+                    "win_now": [
+                        f"Love the {player_name} signing! ${salary_m:.0f}M/year shows we're "
+                        f"serious about winning. This is the kind of move I want to see.",
+                        f"{player_name} is exactly what we needed. The money? Don't worry about it. "
+                        f"I want a championship.",
+                    ],
+                    "default": [
+                        f"Good signing getting {player_name}. {years} years, ${salary_m:.0f}M per. "
+                        f"I think the fans will be excited about this one.",
+                        f"Just saw the {player_name} deal. ${total_m:.0f}M total. "
+                        f"I hope this is the piece that puts us over the top.",
+                    ],
+                }
+            else:  # Smaller deal
+                owner_templates = {
+                    "default": [
+                        f"Nice pickup getting {player_name}. Smart, affordable move.",
+                        f"I like the {player_name} signing. Good value at ${salary_m:.1f}M.",
+                    ],
+                }
+            key = archetype if archetype in owner_templates else "default"
+            body = random.choice(owner_templates.get(key, owner_templates["default"]))
+            _send_character_message(
+                team_id, "owner", owner_name, f"Re: {player_name} Signing",
+                body, game_date, db_path
+            )
+            _record_message("owner", char_id, "signing_reaction", team_id,
+                           game_date, 3, db_path)
+            sent.append({"character_type": "owner", "trigger": "signing_reaction"})
+
+    # --- Beat writer wants a quote ---
+    if total_m >= 20 or years >= 3:  # Newsworthy signings only
+        writer_name = random.choice(BEAT_WRITER_NAMES)
+        char_id = writer_name
+        if not _is_on_cooldown("beat_writer", char_id, "signing_story", team_id, game_date, db_path):
+            writer_templates = [
+                f"The {player_name} signing is official. {years} years, ${salary_m:.0f}M AAV. "
+                f"How does he fit into the plan? I'm putting together a column.",
+                f"Just got confirmation on the {player_name} deal. ${total_m:.0f}M total. "
+                f"Big investment. What made him the guy?",
+                f"Fans are reacting to the {player_name} signing. "
+                f"Some love it, some hate the money. What's the message from the front office?",
+            ]
+            _send_character_message(
+                team_id, "reporter", f"{writer_name} (Beat Writer)",
+                f"New Signing: {player_name}", random.choice(writer_templates),
+                game_date, db_path
+            )
+            _record_message("beat_writer", char_id, "signing_story", team_id,
+                           game_date, 3, db_path)
+            sent.append({"character_type": "beat_writer", "trigger": "signing_story"})
+
+    return sent
+
+
+def send_milestone_reactions(team_id: int, game_date: str, player_name: str,
+                             milestone: str, db_path: str = None) -> list:
+    """React to a player milestone or record. Beat writer and owner respond."""
+    sent = []
+    _ensure_table_exists(db_path)
+
+    # --- Beat writer wants the story ---
+    writer_name = random.choice(BEAT_WRITER_NAMES)
+    char_id = writer_name
+    if not _is_on_cooldown("beat_writer", char_id, "milestone_story", team_id, game_date, db_path):
+        writer_templates = [
+            f"Historic moment for {player_name}: {milestone}! "
+            f"I'm writing a feature piece. Can I get a quote from the front office?",
+            f"{player_name} just hit a milestone - {milestone}. "
+            f"The fans are going crazy. What does this moment mean to the organization?",
+            f"Incredible achievement by {player_name}: {milestone}. "
+            f"I need a comment from the GM for the story. This is front-page stuff.",
+        ]
+        _send_character_message(
+            team_id, "reporter", f"{writer_name} (Beat Writer)",
+            f"Milestone: {player_name}", random.choice(writer_templates),
+            game_date, db_path
+        )
+        _record_message("beat_writer", char_id, "milestone_story", team_id,
+                       game_date, 3, db_path)
+        sent.append({"character_type": "beat_writer", "trigger": "milestone_story"})
+
+    # --- Owner congratulates ---
+    owner = query("SELECT * FROM owner_characters WHERE team_id=?",
+                  (team_id,), db_path=db_path)
+    if owner:
+        owner = owner[0]
+        owner_name = f"{owner['first_name']} {owner['last_name']}"
+        char_id = str(owner["id"])
+        if not _is_on_cooldown("owner", char_id, "milestone_reaction", team_id, game_date, db_path):
+            owner_templates = [
+                f"Did you see {player_name}? {milestone}! "
+                f"That's the kind of thing that makes owning a team worth it. Congratulations.",
+                f"{player_name} - {milestone}. Outstanding. "
+                f"Make sure he knows how much we appreciate what he's doing for this franchise.",
+                f"What a moment for {player_name}. {milestone}. "
+                f"This is good for the brand. The whole city is talking about us.",
+            ]
+            _send_character_message(
+                team_id, "owner", owner_name,
+                f"Congrats on {player_name}", random.choice(owner_templates),
+                game_date, db_path
+            )
+            _record_message("owner", char_id, "milestone_reaction", team_id,
+                           game_date, 5, db_path)
+            sent.append({"character_type": "owner", "trigger": "milestone_reaction"})
+
+    return sent
+
+
+def send_dfa_reactions(team_id: int, game_date: str, player_name: str,
+                       player_id: int = None, db_path: str = None) -> list:
+    """React to a player being DFA'd. Beat writer and agent respond."""
+    sent = []
+    _ensure_table_exists(db_path)
+
+    # --- Beat writer asks about the move ---
+    writer_name = random.choice(BEAT_WRITER_NAMES)
+    char_id = writer_name
+    if not _is_on_cooldown("beat_writer", char_id, "dfa_story", team_id, game_date, db_path):
+        writer_templates = [
+            f"Sources say {player_name} has been designated for assignment. "
+            f"Surprising move. What led to this decision?",
+            f"Just got word on the {player_name} DFA. "
+            f"The fans are going to have questions. Can I get a comment?",
+            f"{player_name} DFA'd. That's a roster shakeup. "
+            f"Is this about making room for someone or a performance decision?",
+        ]
+        _send_character_message(
+            team_id, "reporter", f"{writer_name} (Beat Writer)",
+            f"DFA: {player_name}", random.choice(writer_templates),
+            game_date, db_path
+        )
+        _record_message("beat_writer", char_id, "dfa_story", team_id,
+                       game_date, 3, db_path)
+        sent.append({"character_type": "beat_writer", "trigger": "dfa_story"})
+
+    # --- Agent is unhappy ---
+    if player_id:
+        agent = _get_player_agent_safe(player_id, db_path)
+        if agent:
+            agent_name = agent["name"]
+            char_id = str(agent["id"])
+            if not _is_on_cooldown("agent", char_id, "dfa_reaction", team_id, game_date, db_path):
+                personality = agent.get("personality", "collaborative")
+                agent_templates = {
+                    "aggressive": [
+                        f"You DFA'd {player_name}? We're going to remember this. "
+                        f"My client deserved better than being thrown away.",
+                        f"I can't believe you're cutting {player_name} loose. "
+                        f"This is going to make it very hard for us to do business in the future.",
+                    ],
+                    "shark": [
+                        f"So {player_name} is DFA'd. Fine. I'll have him signed somewhere else "
+                        f"by the end of the week. Your loss.",
+                        f"You're making a mistake letting {player_name} go. "
+                        f"Mark my words, you'll regret this.",
+                    ],
+                    "player_first": [
+                        f"{player_name} is devastated by the DFA. He gave everything to this team. "
+                        f"I hope you at least had the decency to tell him face to face.",
+                        f"My client is hurting right now. The DFA was unexpected. "
+                        f"I just hope he lands somewhere that appreciates him.",
+                    ],
+                    "default": [
+                        f"I understand the {player_name} DFA is a business decision. "
+                        f"I'll be working to find him a new home.",
+                        f"Disappointed about {player_name}, but I get it. "
+                        f"Any chance you'd work out a trade instead of putting him through waivers?",
+                    ],
+                }
+                key = personality if personality in agent_templates else "default"
+                body = random.choice(agent_templates[key])
+                sender = f"{agent_name} ({agent.get('agency_name', 'Sports Agency')})"
+                _send_character_message(
+                    team_id, "agent", sender,
+                    f"About {player_name}'s DFA", body, game_date, db_path
+                )
+                _record_message("agent", char_id, "dfa_reaction", team_id,
+                               game_date, 5, db_path)
+                sent.append({"character_type": "agent", "trigger": "dfa_reaction"})
+
+    return sent
+
+
+def send_deadline_urgency(team_id: int, game_date: str,
+                          db_path: str = None) -> list:
+    """Send urgent messages as the trade deadline approaches (last 3 days of July)."""
+    sent = []
+    _ensure_table_exists(db_path)
+
+    from datetime import date as date_cls
+    d = date_cls.fromisoformat(game_date)
+    if d.month != 7 or d.day < 29:
+        return sent
+
+    days_left = 31 - d.day  # July has 31 days, deadline is July 31
+
+    # --- Rival GMs get aggressive ---
+    rivals = query("""
+        SELECT t.id, t.city, t.name FROM teams t
+        WHERE t.id != ? ORDER BY RANDOM() LIMIT 2
+    """, (team_id,), db_path=db_path)
+    for rival in rivals:
+        char_id = str(rival["id"])
+        rival_name = f"{rival['city']} {rival['name']}"
+        if not _is_on_cooldown("rival_gm", char_id, "deadline_push", team_id, game_date, db_path):
+            if days_left <= 1:
+                templates = [
+                    "Last chance. Deadline's in hours. I have a deal that works for both of us. "
+                    "Yes or no?",
+                    "Clock is ticking. I need an answer on a deal today or I'm calling someone else.",
+                    "Final offer. After today, we're done. What do you say?",
+                ]
+            else:
+                templates = [
+                    f"We've got {days_left} days until the deadline. I'm ready to make a move. "
+                    f"Are you buying or selling?",
+                    f"Deadline is {days_left} days away. My owner wants a splash. "
+                    f"Got anyone you'd move?",
+                ]
+            _send_character_message(
+                team_id, "rival_gm", f"GM, {rival_name}",
+                "Trade Deadline", random.choice(templates), game_date, db_path
+            )
+            _record_message("rival_gm", char_id, "deadline_push", team_id,
+                           game_date, 2, db_path)
+            sent.append({"character_type": "rival_gm", "trigger": "deadline_push",
+                        "character_name": rival_name})
+
+    # --- Beat writer wants deadline preview ---
+    writer_name = random.choice(BEAT_WRITER_NAMES)
+    char_id = writer_name
+    if not _is_on_cooldown("beat_writer", char_id, "deadline_story", team_id, game_date, db_path):
+        if days_left <= 1:
+            templates = [
+                "It's deadline day. Phones are ringing across the league. "
+                "Are you a buyer or a seller? I need to file my story.",
+                "Trade deadline is HERE. My sources say you've been in talks with multiple teams. "
+                "Anything close to getting done?",
+            ]
+        else:
+            templates = [
+                f"Trade deadline is {days_left} days away. The whole league is making calls. "
+                f"Where does your team stand? Buying or selling?",
+                f"I'm writing my deadline preview piece. {days_left} days to go. "
+                f"Any hints on what moves the front office is considering?",
+            ]
+        _send_character_message(
+            team_id, "reporter", f"{writer_name} (Beat Writer)",
+            "Trade Deadline Watch", random.choice(templates), game_date, db_path
+        )
+        _record_message("beat_writer", char_id, "deadline_story", team_id,
+                       game_date, 2, db_path)
+        sent.append({"character_type": "beat_writer", "trigger": "deadline_story"})
+
+    # --- Agents push for clarity ---
+    expiring = _get_expiring_contracts(team_id, db_path)
+    for ep in expiring[:1]:
+        agent = ep.get("agent")
+        if not agent:
+            continue
+        char_id = str(agent["id"])
+        if not _is_on_cooldown("agent", char_id, "deadline_pressure", team_id, game_date, db_path):
+            templates = [
+                f"Deadline's almost here. If you're not going to extend {ep['name']}, "
+                f"I need to know NOW so we can plan for free agency.",
+                f"With the deadline {days_left} days away, other teams are calling about {ep['name']}. "
+                f"Are you trading him or extending him? I need an answer.",
+            ]
+            sender = f"{agent['name']} ({agent.get('agency_name', 'Sports Agency')})"
+            _send_character_message(
+                team_id, "agent", sender,
+                f"Deadline: {ep['name']}'s Future", random.choice(templates),
+                game_date, db_path
+            )
+            _record_message("agent", char_id, "deadline_pressure", team_id,
+                           game_date, 3, db_path)
+            sent.append({"character_type": "agent", "trigger": "deadline_pressure"})
+
+    return sent
+
+
+def send_option_reactions(team_id: int, game_date: str, player_name: str,
+                          level: str = "AAA", player_id: int = None,
+                          db_path: str = None) -> list:
+    """React to a player being optioned to the minors."""
+    sent = []
+    _ensure_table_exists(db_path)
+
+    # --- Agent unhappy about demotion ---
+    if player_id:
+        agent = _get_player_agent_safe(player_id, db_path)
+        if agent:
+            agent_name = agent["name"]
+            char_id = str(agent["id"])
+            if not _is_on_cooldown("agent", char_id, "option_reaction", team_id, game_date, db_path):
+                personality = agent.get("personality", "collaborative")
+                agent_templates = {
+                    "aggressive": [
+                        f"Sending {player_name} down to {level}? He's not going to be happy about this. "
+                        f"You're hurting his development by jerking him around.",
+                        f"{player_name} deserves a real shot, not a bus ticket to {level}. "
+                        f"This better be temporary.",
+                    ],
+                    "player_first": [
+                        f"{player_name} is disappointed about the {level} assignment. "
+                        f"He was hoping to prove himself up here. When can he expect another chance?",
+                        f"I get the roster math, but {player_name} took the {level} option hard. "
+                        f"Just wanted you to know where his head is at.",
+                    ],
+                    "default": [
+                        f"I understand the {player_name} option to {level}. "
+                        f"Can you give me a timeline on when he might be back?",
+                        f"My client {player_name} is heading to {level}. He'll make the most of it. "
+                        f"Just keep him in mind when a spot opens up.",
+                    ],
+                }
+                key = personality if personality in agent_templates else "default"
+                body = random.choice(agent_templates[key])
+                sender = f"{agent_name} ({agent.get('agency_name', 'Sports Agency')})"
+                _send_character_message(
+                    team_id, "agent", sender,
+                    f"Re: {player_name} to {level}", body, game_date, db_path
+                )
+                _record_message("agent", char_id, "option_reaction", team_id,
+                               game_date, 7, db_path)
+                sent.append({"character_type": "agent", "trigger": "option_reaction"})
+
+    return sent

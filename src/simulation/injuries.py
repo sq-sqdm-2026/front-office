@@ -588,15 +588,25 @@ def _check_injuries_for_day_impl(conn, game_date: str, db_path: str = None) -> l
             # Send notification if player is on user's team
             state = conn.execute("SELECT user_team_id FROM game_state WHERE id=1").fetchone()
             user_team_id = state["user_team_id"] if state else None
+            player_name = f"{p['first_name']} {p['last_name']}"
             if p["team_id"] == user_team_id:
                 from ..transactions.messages import send_injury_message
-                player_name = f"{p['first_name']} {p['last_name']}"
                 send_injury_message(user_team_id, player_name, il_tier, db_path=db_path)
+
+                # Character reactions to the injury
+                try:
+                    from ..ai.proactive_messaging import send_injury_reactions
+                    send_injury_reactions(
+                        user_team_id, game_date, player_name,
+                        injury[0], il_tier, player_id=p["id"], db_path=db_path
+                    )
+                except Exception:
+                    pass
 
             events.append({
                 "type": "new_injury",
                 "player_id": p["id"],
-                "name": f"{p['first_name']} {p['last_name']}",
+                "name": player_name,
                 "team_id": p["team_id"],
                 "injury": injury[0],
                 "days": days,

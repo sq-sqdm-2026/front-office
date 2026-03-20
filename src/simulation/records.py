@@ -676,6 +676,25 @@ def _handle_record_broken(record_type, category, stat_name, value, player_name,
             game_date=game_date, priority="urgent", db_path=db_path
         )
 
+    # Character reactions to the milestone (owner + beat writer)
+    try:
+        if user_state and user_state[0].get("user_team_id"):
+            player_team = query(
+                "SELECT team_id FROM players WHERE id=?", (player_id,), db_path=db_path
+            ) if player_id else []
+            if player_team and player_team[0]["team_id"] == user_state[0]["user_team_id"]:
+                from ..ai.proactive_messaging import send_milestone_reactions
+                milestone_desc = (
+                    f"{type_label} {stat_display.lower()} record "
+                    f"({new_display}, breaking {old_holder}'s {old_display})"
+                )
+                send_milestone_reactions(
+                    user_state[0]["user_team_id"], game_date, player_name,
+                    milestone_desc, db_path=db_path
+                )
+    except Exception:
+        pass
+
     # Generate beat writer article about the record
     try:
         from ..ai.beat_writers import generate_article

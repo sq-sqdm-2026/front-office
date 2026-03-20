@@ -65,6 +65,22 @@ def call_up_player(player_id: int, db_path: str = None) -> dict:
     """, (call_up_date, player["team_id"], str(player_id)))
 
     conn.commit()
+
+    # Character reactions to the call-up
+    player_name = f"{player['first_name']} {player['last_name']}"
+    from_level = {"minors_aaa": "AAA", "minors_aa": "AA",
+                  "minors_low": "Low-A"}.get(player["roster_status"], "the minors")
+    try:
+        state = query("SELECT user_team_id FROM game_state WHERE id=1", db_path=db_path)
+        if state and state[0]["user_team_id"] == player["team_id"]:
+            from ..ai.proactive_messaging import send_callup_reactions
+            send_callup_reactions(
+                player["team_id"], call_up_date, player_name,
+                from_level, db_path=db_path
+            )
+    except Exception:
+        pass
+
     conn.close()
     return {"success": True, "player_id": player_id}
 
@@ -97,6 +113,22 @@ def option_player(player_id: int, level: str = "minors_aaa",
     """, (option_date, json.dumps({"level": level}), player["team_id"], str(player_id)))
 
     conn.commit()
+
+    # Character reactions to the option
+    player_name = f"{player['first_name']} {player['last_name']}"
+    level_label = {"minors_aaa": "AAA", "minors_aa": "AA",
+                   "minors_low": "Low-A"}.get(level, level)
+    try:
+        state = query("SELECT user_team_id FROM game_state WHERE id=1", db_path=db_path)
+        if state and state[0]["user_team_id"] == player["team_id"]:
+            from ..ai.proactive_messaging import send_option_reactions
+            send_option_reactions(
+                player["team_id"], option_date, player_name,
+                level_label, player_id=player_id, db_path=db_path
+            )
+    except Exception:
+        pass
+
     conn.close()
     return {"success": True, "player_id": player_id, "level": level}
 
@@ -131,6 +163,20 @@ def dfa_player(player_id: int, db_path: str = None) -> dict:
     """, (dfa_date, player["team_id"], str(player_id)))
 
     conn.commit()
+
+    # Character reactions to the DFA
+    player_name = f"{player['first_name']} {player['last_name']}"
+    try:
+        user_state = query("SELECT user_team_id FROM game_state WHERE id=1", db_path=db_path)
+        if user_state and user_state[0]["user_team_id"] == player["team_id"]:
+            from ..ai.proactive_messaging import send_dfa_reactions
+            send_dfa_reactions(
+                player["team_id"], dfa_date, player_name,
+                player_id=player_id, db_path=db_path
+            )
+    except Exception:
+        pass
+
     conn.close()
     return {"success": True, "player_id": player_id, "waiver_expiry": expiry_date}
 

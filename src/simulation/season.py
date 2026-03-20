@@ -1691,6 +1691,20 @@ def advance_date(days: int = 1, db_path: str = None) -> dict:
                 except Exception:
                     pass
 
+                # Trade deadline urgency (last 3 days of July)
+                if game_date_obj.month == 7 and game_date_obj.day >= 29:
+                    try:
+                        from ..ai.proactive_messaging import send_deadline_urgency
+                        user_state_dl = query("SELECT user_team_id FROM game_state WHERE id=1", db_path=db_path)
+                        if user_state_dl and user_state_dl[0]["user_team_id"]:
+                            deadline_msgs = send_deadline_urgency(
+                                user_state_dl[0]["user_team_id"], game_date, db_path
+                            )
+                            if deadline_msgs:
+                                offseason_events.extend([{"type": "deadline_urgency", **m} for m in deadline_msgs])
+                    except Exception:
+                        pass
+
                 # Minor league promotion checks on the 1st of each month
                 if game_date_obj.day == 1:
                     try:
