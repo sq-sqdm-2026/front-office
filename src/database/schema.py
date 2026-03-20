@@ -151,6 +151,8 @@ CREATE TABLE IF NOT EXISTS players (
     height_inches INTEGER DEFAULT NULL,  -- player height in inches for strike zone modeling
     -- Scouted ratings cache: JSON format {"season": 2026, "scouted": {"contact": 55, "power": 48, ...}, "mode": "traditional"}
     scouted_ratings_json TEXT DEFAULT NULL,
+    -- External IDs (for real players imported from MLB API)
+    mlb_id INTEGER DEFAULT NULL,  -- MLB Stats API player ID (for headshot photos)
     -- Player narrative / backstory fields
     backstory TEXT DEFAULT NULL,  -- 3-5 sentence generated backstory
     nickname TEXT DEFAULT NULL,  -- colorful player nickname

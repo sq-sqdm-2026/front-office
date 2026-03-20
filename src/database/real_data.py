@@ -798,6 +798,7 @@ def _build_player_dict(details: dict, roster_entry: dict) -> dict:
         "bats": details["bats"],
         "throws": details["throws"],
         "position": position,
+        "mlb_id": roster_entry.get("mlb_id"),
         **hit_ratings,
         **pitch_ratings,
         "contact_potential": min(80, hit_ratings["contact_rating"] + pot_bonus),

@@ -6,6 +6,7 @@ import json
 from datetime import date
 from ..database.db import get_connection, query, execute
 from ..ai.gm_brain import evaluate_trade
+from ..ai.proactive_messaging import send_trade_reaction_messages
 
 
 async def propose_trade(proposing_team_id: int, receiving_team_id: int,
@@ -230,6 +231,58 @@ def execute_trade(proposing_team_id: int, receiving_team_id: int,
           ",".join(str(x) for x in players_offered + players_requested)))
 
     conn.commit()
+
+    # Trigger beat writer and owner reactions for the user's team
+    try:
+        state_row = query("SELECT user_team_id FROM game_state WHERE id=1", db_path=db_path)
+        user_team_id = state_row[0]["user_team_id"] if state_row else None
+
+        if user_team_id and user_team_id in (proposing_team_id, receiving_team_id):
+            # Get player names
+            offered_names = []
+            for pid in players_offered:
+                p = query("SELECT first_name, last_name FROM players WHERE id=?",
+                         (pid,), db_path=db_path)
+                if p:
+                    offered_names.append(f"{p[0]['first_name']} {p[0]['last_name']}")
+
+            requested_names = []
+            for pid in players_requested:
+                p = query("SELECT first_name, last_name FROM players WHERE id=?",
+                         (pid,), db_path=db_path)
+                if p:
+                    requested_names.append(f"{p[0]['first_name']} {p[0]['last_name']}")
+
+            # Get team names
+            t1 = query("SELECT city, name FROM teams WHERE id=?",
+                       (proposing_team_id,), db_path=db_path)
+            t2 = query("SELECT city, name FROM teams WHERE id=?",
+                       (receiving_team_id,), db_path=db_path)
+            team1_name = f"{t1[0]['city']} {t1[0]['name']}" if t1 else "Team"
+            team2_name = f"{t2[0]['city']} {t2[0]['name']}" if t2 else "Team"
+
+            # From user's perspective: offered = what user gave up, requested = what user got
+            if user_team_id == proposing_team_id:
+                trade_reaction_details = {
+                    "offered_names": offered_names,
+                    "requested_names": requested_names,
+                    "team_name": team1_name,
+                    "other_team_name": team2_name,
+                }
+            else:
+                trade_reaction_details = {
+                    "offered_names": requested_names,
+                    "requested_names": offered_names,
+                    "team_name": team2_name,
+                    "other_team_name": team1_name,
+                }
+
+            send_trade_reaction_messages(
+                user_team_id, game_date, trade_reaction_details, db_path=db_path
+            )
+    except Exception:
+        pass  # Don't let reaction failures break trade execution
+
     conn.close()
 
     return {"success": True, "details": details}

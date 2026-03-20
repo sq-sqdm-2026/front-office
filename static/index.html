@@ -603,7 +603,10 @@
   <aside id="chat-panel" class="chat-panel">
     <div class="chat-panel-header">
       <span class="chat-panel-title">Messages</span>
-      <button class="chat-panel-close" onclick="toggleChatPanel()">&times;</button>
+      <div style="display:flex;gap:6px;align-items:center;">
+        <button class="chat-compose-btn" onclick="openComposeMessage()" title="New Message">&#9998; New</button>
+        <button class="chat-panel-close" onclick="toggleChatPanel()">&times;</button>
+      </div>
     </div>
     <div class="chat-panel-tabs" id="chat-contacts">
       <div class="chat-contacts-header"><span class="section-title" style="display:none">Messages</span></div>

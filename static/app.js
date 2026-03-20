@@ -3216,54 +3216,56 @@ async function genScout(pid) {
   el.style.display = 'block';
   el.innerHTML = '<span class="spinner"></span> Scout evaluating player...';
   const r = await api('/player/' + pid + '/scouting-report-full');
-  if (!r || r.error) { el.innerHTML = 'Scout report unavailable.'; return; }
+  if (!r || r.error) { el.innerHTML = '<div class="empty-state">Scout report unavailable.</div>'; return; }
 
   const pg = r.present_grades || {};
   const fg = r.future_grades || {};
   const margin = r.uncertainty_margin || 0;
 
   function gradePair(label, pres, fut) {
-    const pCls = gradeClass(pres);
-    const fCls = gradeClass(fut);
-    return `<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border);font-size:11px">
-      <span style="width:70px;color:var(--text-dim)">${label}</span>
-      <span class="grade-pair"><span class="${pCls}" style="font-weight:700">${convertRating(pres)}</span><span style="color:var(--text-muted)">/</span><span class="${fCls}" style="font-weight:700">${convertRating(fut)}</span></span>
-      <span style="color:var(--text-muted);font-size:9px">+/-${margin}</span>
+    return `<div class="scout-grade-row">
+      <span class="scout-grade-label">${label}</span>
+      <span class="scout-grade-pair">
+        <span class="${gradeClass(pres)}">${convertRating(pres)}</span>
+        <span class="separator">/</span>
+        <span class="${gradeClass(fut)}">${convertRating(fut)}</span>
+      </span>
+      <span class="scout-margin">\u00b1${margin}</span>
     </div>`;
   }
 
-  let gradesHtml = '<div class="scouting-grid"><div>';
-  gradesHtml += '<div style="font-size:9px;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:4px;padding-bottom:4px;border-bottom:1px solid var(--accent)">Present / Future Grades (20-80)</div>';
+  // Grades section
+  let gradesHtml = '<div class="scouting-grid"><div class="scout-section">';
+  gradesHtml += '<div class="scout-section-title">Present / Future Grades</div>';
   for (const [key, val] of Object.entries(pg)) {
-    gradesHtml += gradePair(key.charAt(0).toUpperCase() + key.slice(1), val, fg[key] || val);
+    gradesHtml += gradePair(key.charAt(0).toUpperCase() + key.slice(1).replace(/_/g, ' '), val, fg[key] || val);
   }
-  gradesHtml += '</div><div>';
+  gradesHtml += '</div>';
 
-  // OFP, ceiling, floor, risk
-  gradesHtml += `<div class="card" style="padding:10px">
-    <div style="text-align:center;margin-bottom:8px">
-      <div style="font-size:9px;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px">Overall Future Potential</div>
-      <div class="grade ${gradeClass(r.ofp)}" style="font-size:28px;width:auto">${convertRating(r.ofp)}</div>
-    </div>
-    <div style="font-size:11px;margin-top:8px">
-      <div style="display:flex;justify-content:space-between;margin-bottom:3px"><span style="color:var(--green)">Ceiling</span><span>${r.ceiling || 'N/A'}</span></div>
-      <div style="display:flex;justify-content:space-between;margin-bottom:3px"><span style="color:var(--red)">Floor</span><span>${r.floor || 'N/A'}</span></div>
-      <div style="display:flex;justify-content:space-between;margin-bottom:3px"><span style="color:var(--text-dim)">Risk</span><span style="text-transform:capitalize">${r.risk_level || 'N/A'}</span></div>
-      <div style="display:flex;justify-content:space-between"><span style="color:var(--text-dim)">ETA</span><span>${r.eta || 'N/A'}</span></div>
+  // OFP card
+  gradesHtml += `<div class="scout-ofp-card">
+    <div class="scout-section-title">Overall Future Potential</div>
+    <div class="scout-ofp-value ${gradeClass(r.ofp)}">${convertRating(r.ofp)}</div>
+    <div style="margin-top:8px">
+      <div class="scout-detail-row"><span class="scout-detail-label" style="color:var(--green)">Ceiling</span><span class="scout-detail-value">${r.ceiling || 'N/A'}</span></div>
+      <div class="scout-detail-row"><span class="scout-detail-label" style="color:var(--red)">Floor</span><span class="scout-detail-value">${r.floor || 'N/A'}</span></div>
+      <div class="scout-detail-row"><span class="scout-detail-label">Risk</span><span class="scout-detail-value" style="text-transform:capitalize">${r.risk_level || 'N/A'}</span></div>
+      <div class="scout-detail-row"><span class="scout-detail-label">ETA</span><span class="scout-detail-value">${r.eta || 'N/A'}</span></div>
     </div>
   </div>`;
-  gradesHtml += '</div></div>';
+  gradesHtml += '</div>';
 
   // MLB comp
   let compHtml = '';
   if (r.mlb_comp) {
     const c = r.mlb_comp;
-    compHtml = `<div style="background:var(--bg-2);border:1px solid var(--border);padding:10px;margin:12px 0;border-radius:2px">
-      <div style="font-size:9px;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px">MLB Comparison</div>
-      <div style="font-size:14px;font-weight:700;color:var(--accent)">${c.name}</div>
-      <div style="font-size:11px;color:var(--text-dim)">${c.position} | ${c.years}</div>
-      <div style="font-size:11px;color:var(--text-dim);margin-top:2px">${c.peak_stats || ''}</div>
-      <div style="font-size:12px;margin-top:6px;color:var(--text);line-height:1.5">${c.description || c.reasoning || ''}</div>
+    compHtml = `<div class="scout-comp">
+      <div class="scout-comp-info">
+        <div class="scout-section-title" style="border-bottom:none;padding-bottom:0;margin-bottom:4px">MLB Comparison</div>
+        <div class="scout-comp-name">${c.name}</div>
+        <div class="scout-comp-meta">${c.position} | ${c.years}${c.peak_stats ? ' | ' + c.peak_stats : ''}</div>
+        <div class="scout-comp-desc">${c.description || c.reasoning || ''}</div>
+      </div>
     </div>`;
   }
 
@@ -3271,75 +3273,57 @@ async function genScout(pid) {
   let makeupHtml = '';
   if (r.makeup) {
     const m = r.makeup;
-    makeupHtml = `<div style="display:flex;gap:8px;margin:8px 0;flex-wrap:wrap">
+    makeupHtml = `<div class="scout-makeup-grid">
       ${[['Work Ethic', m.work_ethic], ['Leadership', m.leadership], ['Clutch', m.clutch], ['Ego', m.ego]].map(([l, v]) =>
-        `<div class="grade-box" style="min-width:60px"><div class="grade-label">${l}</div><div class="grade-value ${gradeClass(v)}" style="font-size:14px">${convertRating(v)}</div></div>`
+        `<div class="scout-makeup-item">
+          <div class="scout-makeup-label">${l}</div>
+          <div class="scout-makeup-value ${gradeClass(v)}">${convertRating(v)}</div>
+        </div>`
       ).join('')}
     </div>`;
   }
 
-  // Pitch Arsenal (for pitchers)
+  // Pitch Arsenal
   let arsenalHtml = '';
   if (r.pitch_arsenal && Array.isArray(r.pitch_arsenal)) {
-    arsenalHtml = `<div style="background:var(--bg-2);border:1px solid var(--border);padding:10px;margin:12px 0;border-radius:2px">
-      <div style="font-size:9px;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;padding-bottom:8px;border-bottom:1px solid var(--accent)">Pitch Arsenal</div>
-      <table style="width:100%;font-size:11px;border-collapse:collapse">
-        <thead>
-          <tr style="border-bottom:1px solid var(--border)">
-            <th style="text-align:left;padding:4px;color:var(--text-dim)">Pitch</th>
-            <th style="text-align:right;padding:4px;color:var(--text-dim)">Avg Velo</th>
-            <th style="text-align:right;padding:4px;color:var(--text-dim)">Top Velo</th>
-            <th style="text-align:right;padding:4px;color:var(--text-dim)">Grade</th>
-          </tr>
-        </thead>
+    arsenalHtml = `<div class="scout-section">
+      <div class="scout-section-title">Pitch Arsenal</div>
+      <table class="scout-arsenal-table">
+        <thead><tr><th>Pitch</th><th>Avg Velo</th><th>Top Velo</th><th>Grade</th></tr></thead>
         <tbody>
-          ${r.pitch_arsenal.map(p => `
-            <tr style="border-bottom:1px solid var(--border-light)">
-              <td style="padding:4px;color:var(--text)">${p.label || p.type}</td>
-              <td style="text-align:right;padding:4px;color:var(--text)">${p.avg_velocity} mph</td>
-              <td style="text-align:right;padding:4px;color:var(--text)">${p.top_velocity} mph</td>
-              <td style="text-align:right;padding:4px"><span class="grade ${gradeClass(p.rating)}" style="font-weight:700">${convertRating(p.rating)}</span></td>
-            </tr>
-          `).join('')}
+          ${r.pitch_arsenal.map(p => `<tr>
+            <td>${p.label || p.type}</td>
+            <td>${p.avg_velocity} mph</td>
+            <td>${p.top_velocity} mph</td>
+            <td><span class="${gradeClass(p.rating)}" style="font-weight:700">${convertRating(p.rating)}</span></td>
+          </tr>`).join('')}
         </tbody>
       </table>
     </div>`;
   }
 
-  // Exit Velocity (for batters)
+  // Exit Velocity
   let exitVeloHtml = '';
   if (r.exit_velo) {
     const ev = r.exit_velo;
-    exitVeloHtml = `<div style="background:var(--bg-2);border:1px solid var(--border);padding:10px;margin:12px 0;border-radius:2px">
-      <div style="font-size:9px;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;padding-bottom:8px;border-bottom:1px solid var(--accent)">Exit Velocity</div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:11px">
-        <div style="display:flex;justify-content:space-between">
-          <span style="color:var(--text-dim)">Avg Exit Velo</span>
-          <span style="color:var(--text);font-weight:600">${ev.avg_exit_velo} mph</span>
-        </div>
-        <div style="display:flex;justify-content:space-between">
-          <span style="color:var(--text-dim)">Max Exit Velo</span>
-          <span style="color:var(--text);font-weight:600">${ev.max_exit_velo} mph</span>
-        </div>
-        <div style="display:flex;justify-content:space-between">
-          <span style="color:var(--text-dim)">Barrel Rate</span>
-          <span style="color:var(--text);font-weight:600">${ev.barrel_rate}%</span>
-        </div>
-        <div style="display:flex;justify-content:space-between">
-          <span style="color:var(--text-dim)">Hard Hit Rate</span>
-          <span style="color:var(--text);font-weight:600">${ev.hard_hit_rate}%</span>
-        </div>
+    exitVeloHtml = `<div class="scout-section">
+      <div class="scout-section-title">Exit Velocity</div>
+      <div class="scout-ev-grid">
+        <div class="scout-ev-item"><span class="scout-ev-label">Avg Exit Velo</span><span class="scout-ev-value">${ev.avg_exit_velo} mph</span></div>
+        <div class="scout-ev-item"><span class="scout-ev-label">Max Exit Velo</span><span class="scout-ev-value">${ev.max_exit_velo} mph</span></div>
+        <div class="scout-ev-item"><span class="scout-ev-label">Barrel Rate</span><span class="scout-ev-value">${ev.barrel_rate}%</span></div>
+        <div class="scout-ev-item"><span class="scout-ev-label">Hard Hit Rate</span><span class="scout-ev-value">${ev.hard_hit_rate}%</span></div>
       </div>
     </div>`;
   }
 
   // Narrative
   const narrativeHtml = r.narrative
-    ? `<div class="scouting-report" style="font-style:italic">"${r.narrative}"</div>`
+    ? `<div class="scout-narrative">"${r.narrative}"</div>`
     : '';
 
   el.innerHTML = gradesHtml + compHtml + makeupHtml + arsenalHtml + exitVeloHtml + narrativeHtml +
-    `<div style="font-size:9px;color:var(--text-muted);margin-top:8px;text-align:right">Scout confidence: ${r.scout_quality || 'N/A'}/100 | Margin: +/-${margin}</div>`;
+    `<div class="scout-confidence">Scout confidence: ${r.scout_quality || 'N/A'}/100 | Margin: \u00b1${margin}</div>`;
 }
 
 function closeModal() {
@@ -4979,6 +4963,207 @@ async function sendChatMessage() {
   });
   showToast('Message sent', 'success');
   loadMessages();
+}
+
+// ============================================================
+// COMPOSE NEW MESSAGE (Contact Picker + Compose View)
+// ============================================================
+let _composeContacts = [];
+
+async function openComposeMessage() {
+  // Fetch contacts from backend
+  try {
+    _composeContacts = await api('/messages/contacts') || [];
+  } catch (e) {
+    _composeContacts = [];
+  }
+
+  // Group contacts by type
+  const groups = {
+    owner: { label: 'Owner', icon: '&#128081;', items: [] },
+    coach: { label: 'Coaches', icon: '&#128203;', items: [] },
+    reporter: { label: 'Beat Writers', icon: '&#128240;', items: [] },
+    gm: { label: 'Rival GMs', icon: '&#128188;', items: [] },
+    agent: { label: 'Player Agents', icon: '&#128188;', items: [] },
+  };
+  _composeContacts.forEach(c => {
+    if (groups[c.type]) groups[c.type].items.push(c);
+  });
+
+  // Build contact picker HTML in the conversation panel
+  const convHeader = document.getElementById('chat-conv-header');
+  const chatMsgs = document.getElementById('chat-messages');
+  const inputArea = document.getElementById('chat-input-area');
+  if (!convHeader || !chatMsgs) return;
+
+  convHeader.innerHTML = `
+    <span class="chat-conv-name">New Message - Select Contact</span>
+    <button class="btn btn-sm" onclick="loadMessages()" style="float:right;font-size:11px;">Cancel</button>`;
+
+  if (inputArea) inputArea.style.display = 'none';
+  _msgSelectedId = null;
+
+  let html = '<div class="compose-contact-picker" style="padding:8px;">';
+
+  // Search filter
+  html += `<input type="text" class="search-box" id="contact-search" placeholder="Search contacts..."
+    onkeyup="filterComposeContacts()" style="width:100%;margin-bottom:10px;box-sizing:border-box;">`;
+
+  for (const [type, group] of Object.entries(groups)) {
+    if (!group.items.length) continue;
+    const collapsed = type === 'gm' ? 'style="display:none;"' : '';
+    const arrow = type === 'gm' ? '&#9654;' : '&#9660;';
+    html += `<div class="contact-group" data-type="${type}">
+      <div class="contact-group-header" style="font-weight:600;font-size:12px;color:var(--text-secondary);
+        padding:6px 0 4px;border-bottom:1px solid var(--border);margin-bottom:4px;cursor:pointer;"
+        onclick="toggleContactGroup('${type}')">
+        <span>${group.icon} ${group.label}</span>
+        <span class="contact-group-arrow" id="contact-arrow-${type}" style="float:right;font-size:10px;color:var(--text-muted);">${group.items.length} ${arrow}</span>
+      </div>
+      <div class="contact-group-list" id="contact-group-${type}" ${collapsed}>`;
+    group.items.forEach(c => {
+      html += `
+        <div class="contact-pick-item" data-name="${(c.name || '').toLowerCase()}"
+          style="padding:6px 8px;cursor:pointer;border-radius:var(--radius-sm);display:flex;justify-content:space-between;align-items:center;"
+          onmouseover="this.style.background='var(--bg-hover)'" onmouseout="this.style.background=''"
+          onclick='selectComposeContact(${JSON.stringify(c)})'>
+          <div>
+            <div style="font-size:13px;font-weight:500;">${c.name}</div>
+            <div style="font-size:11px;color:var(--text-muted);">${c.role}</div>
+          </div>
+          <span style="font-size:10px;color:var(--text-muted);">&#9654;</span>
+        </div>`;
+    });
+    html += `</div></div>`;
+  }
+  html += '</div>';
+
+  chatMsgs.innerHTML = html;
+}
+
+function toggleContactGroup(type) {
+  const el = document.getElementById(`contact-group-${type}`);
+  const arrow = document.getElementById(`contact-arrow-${type}`);
+  if (el) {
+    const hidden = el.style.display === 'none';
+    el.style.display = hidden ? '' : 'none';
+    if (arrow) {
+      const count = el.querySelectorAll('.contact-pick-item').length;
+      arrow.innerHTML = count + (hidden ? ' &#9660;' : ' &#9654;');
+    }
+  }
+}
+
+function filterComposeContacts() {
+  const q = (document.getElementById('contact-search')?.value || '').toLowerCase();
+  document.querySelectorAll('.contact-pick-item').forEach(item => {
+    const name = item.getAttribute('data-name') || '';
+    item.style.display = name.includes(q) ? '' : 'none';
+  });
+}
+
+function selectComposeContact(contact) {
+  const convHeader = document.getElementById('chat-conv-header');
+  const chatMsgs = document.getElementById('chat-messages');
+  const inputArea = document.getElementById('chat-input-area');
+  if (!convHeader || !chatMsgs) return;
+
+  const escapedName = (contact.name || '').replace(/'/g, "\\'");
+
+  convHeader.innerHTML = `
+    <span class="chat-conv-name">&#9998; New Message to ${contact.name}</span>
+    <button class="btn btn-sm" onclick="openComposeMessage()" style="float:right;font-size:11px;">&#8592; Back</button>`;
+
+  const contactJson = JSON.stringify(contact).replace(/&/g, '&amp;').replace(/'/g, '&#39;');
+
+  chatMsgs.innerHTML = `
+    <div class="compose-form" style="padding:12px;">
+      <div style="margin-bottom:10px;">
+        <label style="font-size:11px;font-weight:600;color:var(--text-secondary);display:block;margin-bottom:3px;">To:</label>
+        <div style="padding:6px 8px;background:var(--bg-hover);border-radius:var(--radius-sm);font-size:13px;">
+          ${contact.name} <span style="color:var(--text-muted);font-size:11px;">(${contact.role})</span>
+        </div>
+      </div>
+      <div style="margin-bottom:10px;">
+        <label style="font-size:11px;font-weight:600;color:var(--text-secondary);display:block;margin-bottom:3px;">Subject:</label>
+        <input type="text" id="compose-subject" class="search-box" placeholder="Message subject..."
+          style="width:100%;box-sizing:border-box;">
+      </div>
+      <div style="margin-bottom:10px;">
+        <label style="font-size:11px;font-weight:600;color:var(--text-secondary);display:block;margin-bottom:3px;">Message:</label>
+        <textarea id="compose-body" class="search-box" placeholder="Write your message..."
+          style="width:100%;min-height:120px;resize:vertical;box-sizing:border-box;font-family:inherit;"></textarea>
+      </div>
+      <button class="btn btn-primary" id="compose-send-btn" style="width:100%;"
+        onclick='sendComposeMessage(${contactJson})'>
+        Send Message
+      </button>
+    </div>`;
+
+  if (inputArea) inputArea.style.display = 'none';
+}
+
+async function sendComposeMessage(contact) {
+  const subjectEl = document.getElementById('compose-subject');
+  const bodyEl = document.getElementById('compose-body');
+  if (!bodyEl || !bodyEl.value.trim()) {
+    showToast('Please enter a message', 'error');
+    return;
+  }
+
+  const subject = (subjectEl?.value || '').trim() || null;
+  const body = bodyEl.value.trim();
+
+  // Disable the send button while sending
+  const sendBtn = document.getElementById('compose-send-btn');
+  if (sendBtn) { sendBtn.disabled = true; sendBtn.textContent = 'Sending...'; }
+
+  try {
+    const result = await post('/messages/send', {
+      recipient_type: contact.type,
+      recipient_id: parseInt((contact.id || '0').toString().replace(/\D+/g, '')) || 0,
+      recipient_name: contact.name,
+      subject: subject,
+      body: body
+    });
+
+    showToast('Message sent to ' + contact.name, 'success');
+
+    // Show the sent message and response in the conversation
+    const convHeader = document.getElementById('chat-conv-header');
+    const chatMsgs = document.getElementById('chat-messages');
+
+    if (convHeader) {
+      convHeader.innerHTML = `
+        <span class="chat-conv-name">${subject || 'Message to ' + contact.name}</span>
+        <button class="btn btn-sm" onclick="loadMessages()" style="float:right;font-size:11px;">&#8592; Inbox</button>`;
+    }
+
+    let conversationHtml = `
+      <div class="msg-item" style="margin-bottom:12px;">
+        <span class="msg-from" style="color:var(--accent);">You</span>
+        <span class="msg-date" style="float:right;font-size:11px;color:var(--text-muted);">Just now</span>
+        <div class="msg-body" style="margin-top:8px;white-space:pre-wrap;">${body.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</div>
+      </div>`;
+
+    if (result && result.ai_response) {
+      conversationHtml += `
+        <div class="msg-item" style="margin-bottom:12px;border-left:3px solid var(--accent);padding-left:10px;">
+          <span class="msg-from">${contact.name}</span>
+          <span class="msg-date" style="float:right;font-size:11px;color:var(--text-muted);">Just now</span>
+          <div class="msg-body" style="margin-top:8px;white-space:pre-wrap;">${result.ai_response}</div>
+        </div>`;
+    }
+
+    if (chatMsgs) chatMsgs.innerHTML = conversationHtml;
+
+    // Refresh the messages list in background
+    loadMessages();
+
+  } catch (e) {
+    showToast('Failed to send message', 'error');
+    if (sendBtn) { sendBtn.disabled = false; sendBtn.textContent = 'Send Message'; }
+  }
 }
 
 // ============================================================
@@ -6987,26 +7172,39 @@ async function loadNews(filter) {
   }).join('');
 }
 
+function _formatArticleBody(text) {
+  if (!text) return '';
+  return text.split(/\n\n+/).map(p => {
+    const trimmed = p.trim();
+    if (!trimmed) return '';
+    return `<p style="margin:0 0 10px 0;line-height:1.7">${trimmed}</p>`;
+  }).join('');
+}
+
 function renderArticleCard(item) {
   const sentimentIcon = item.sentiment === 'positive' ? '\u{1F4C8}' :
                         item.sentiment === 'negative' ? '\u{1F4C9}' :
                         item.sentiment === 'critical' ? '\u{1F525}' : '\u{1F4F0}';
-  const preview = (item.body || '').slice(0, 120) + '...';
+  const bodyText = item.body || '';
+  const preview = bodyText.slice(0, 160).replace(/\n/g, ' ').trim() + (bodyText.length > 160 ? '...' : '');
   const uid = 'art-' + Math.random().toString(36).slice(2, 8);
+  const typeLabel = item.article_type ? item.article_type.replace(/_/g, ' ') : '';
   return `<div class="news-card news-article clickable" onclick="toggleNewsBody('${uid}')">
     <div class="news-card-header">
-      <span class="news-source">${sentimentIcon} ${item.source || 'News'}</span>
+      <span class="news-source">${sentimentIcon} ${item.source || 'News'}${typeLabel ? ' <span style="color:var(--text-tertiary);font-size:9px;text-transform:uppercase;letter-spacing:0.5px;margin-left:6px">' + typeLabel + '</span>' : ''}</span>
       <span class="news-date">${item.date}</span>
     </div>
     <div class="news-headline">${item.headline}</div>
     <div class="news-byline">By ${item.author}</div>
     <div class="news-preview" id="${uid}-preview">${preview}</div>
-    <div class="news-body-full" id="${uid}-full" style="display:none">${item.body}</div>
+    <div class="news-body-full" id="${uid}-full" style="display:none">${_formatArticleBody(bodyText)}</div>
   </div>`;
 }
 
 function renderTVCard(item) {
   const uid = 'tv-' + Math.random().toString(36).slice(2, 8);
+  const bodyText = item.body || '';
+  const preview = bodyText.slice(0, 160).replace(/\n/g, ' ').trim() + (bodyText.length > 160 ? '...' : '');
   return `<div class="news-card news-tv clickable" onclick="toggleNewsBody('${uid}')">
     <div class="news-card-header">
       <span class="news-network-badge">${item.source || 'ESPN'}</span>
@@ -7014,14 +7212,23 @@ function renderTVCard(item) {
     </div>
     <div class="news-headline">${item.headline}</div>
     <div class="news-byline">${item.author} \u2014 ${item.segment_type || 'Analysis'}</div>
-    <div class="news-preview" id="${uid}-preview">${(item.body || '').slice(0, 120)}...</div>
-    <div class="news-body-full" id="${uid}-full" style="display:none">${item.body}</div>
+    <div class="news-preview" id="${uid}-preview">${preview}</div>
+    <div class="news-body-full" id="${uid}-full" style="display:none">${_formatArticleBody(bodyText)}</div>
   </div>`;
+}
+
+function _formatPodcastScript(text) {
+  if (!text) return '';
+  return text
+    .replace(/^(MIKE:)/gm, '<strong style="color:var(--accent)">MIKE:</strong>')
+    .replace(/^(LISA:)/gm, '<strong style="color:var(--green)">LISA:</strong>')
+    .replace(/^(EARL:)/gm, '<strong style="color:var(--orange)">EARL:</strong>')
+    .replace(/^(THE FRONT OFFICE PODCAST.*)/gm, '<div style="text-align:center;font-weight:700;padding:8px 0;border-bottom:1px solid var(--border);margin-bottom:8px">$1</div>')
+    .replace(/\n/g, '<br>');
 }
 
 function renderPodcastCard(item) {
   const uid = 'pod-' + Math.random().toString(36).slice(2, 8);
-  const scriptPreview = (item.body || '').split('\n').slice(0, 3).join('\n');
   return `<div class="news-card news-podcast">
     <div class="news-card-header">
       <span class="news-source">\u{1F399}\uFE0F ${item.source}</span>
@@ -7036,7 +7243,7 @@ function renderPodcastCard(item) {
         Read Script
       </button>
     </div>
-    <div class="news-body-full" id="${uid}-full" style="display:none;white-space:pre-wrap;font-family:var(--font-mono);font-size:12px;max-height:400px;overflow-y:auto">${item.body}</div>
+    <div class="news-body-full" id="${uid}-full" style="display:none;font-family:var(--font-mono);font-size:12px;line-height:1.8;max-height:400px;overflow-y:auto;padding:12px;background:var(--bg-hover);border-radius:var(--radius-md)">${_formatPodcastScript(item.body)}</div>
   </div>`;
 }
 

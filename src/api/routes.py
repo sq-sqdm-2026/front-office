@@ -86,6 +86,15 @@ try:
 except Exception:
     pass  # Column already exists
 
+# --- Schema migration: add mlb_id column if missing ---
+try:
+    _conn_mlb = get_connection()
+    _conn_mlb.execute("ALTER TABLE players ADD COLUMN mlb_id INTEGER DEFAULT NULL")
+    _conn_mlb.commit()
+    _conn_mlb.close()
+except Exception:
+    pass  # Column already exists
+
 # --- Schema migration: add auto_sim columns if missing ---
 for _col_def in [
     "ALTER TABLE game_state ADD COLUMN auto_sim_enabled INTEGER NOT NULL DEFAULT 0",
@@ -1602,6 +1611,18 @@ async def extend_contract(req: ContractExtensionRequest):
     counter_offer = None
     reason = ""
 
+    # Get game date for messages
+    state = query("SELECT * FROM game_state WHERE id=1")
+    game_date = state[0]["current_date"] if state else "2026-04-01"
+    player_name = f"{p['first_name']} {p['last_name']}"
+    fmt_salary = f"${req.salary:,}"
+    fmt_current = f"${current_salary:,}"
+
+    # Send user's offer as a message
+    from ..transactions.messages import send_message
+    import json
+
+    # Create the negotiation message from the agent
     if accepted:
         # Update contract in database
         conn = None
@@ -1613,7 +1634,6 @@ async def extend_contract(req: ContractExtensionRequest):
                 WHERE player_id = ?
             """, (req.salary, req.years, req.years, int(req.no_trade_clause), req.player_id))
 
-            # Log transaction
             conn.execute("""
                 INSERT INTO transactions (team_id, transaction_type, player_id, details, transaction_date)
                 VALUES (?, 'contract_extension', ?, ?, date('now'))
@@ -1626,16 +1646,61 @@ async def extend_contract(req: ContractExtensionRequest):
         finally:
             if conn:
                 conn.close()
+
+        # Agent sends acceptance message
+        agent_body = (
+            f"Good news. {player_name} has agreed to terms on a {req.years}-year extension "
+            f"worth {fmt_salary} per season. He's happy to stay and is looking forward to competing "
+            f"for years to come. I'll have the paperwork to you by end of day."
+        )
+        execute("""
+            INSERT INTO messages (game_date, sender_type, sender_name, recipient_type,
+                                 recipient_id, subject, body, is_read, requires_response,
+                                 priority, category)
+            VALUES (?, 'agent', ?, 'user', ?, ?, ?, 0, 0, 'important', 'transaction')
+        """, (game_date, f"Agent for {player_name}", req.team_id,
+              f"Extension Agreed - {player_name}", agent_body))
     else:
         # Generate counter-offer
-        counter_salary = int(current_salary * 1.05)  # +5% counter
+        counter_salary = int(current_salary * 1.05)
         counter_years = req.years - 1 if req.years > 1 else 1
 
         counter_offer = {
             "salary": counter_salary,
             "years": counter_years
         }
-        reason = "Player countered - wants more or fewer years"
+
+        # Agent sends counter-offer as a message thread
+        if req.salary < current_salary * 0.85:
+            agent_body = (
+                f"I appreciate you reaching out about {player_name}, but I have to be frank - "
+                f"your offer of {fmt_salary}/yr is well below his current salary of {fmt_current}. "
+                f"My client feels disrespected. If you're serious about keeping him, we need to see "
+                f"something that reflects his value to this organization."
+            )
+        else:
+            agent_body = (
+                f"Thanks for the offer on {player_name}. We've discussed your proposal of "
+                f"{req.years} years at {fmt_salary}/yr internally. While {player_name} wants to stay, "
+                f"we feel the numbers don't quite reflect his market value.\n\n"
+                f"We'd be willing to continue talks at {req.years} years, ${counter_salary:,}/yr. "
+                f"Let me know if there's room to move on your end."
+            )
+        reason = "Player's agent countered - check your messages"
+
+        response_opts = json.dumps({
+            "options": ["Accept Counter", "Make New Offer", "Walk Away"],
+            "counter_data": counter_offer,
+            "player_id": req.player_id,
+        })
+
+        execute("""
+            INSERT INTO messages (game_date, sender_type, sender_name, recipient_type,
+                                 recipient_id, subject, body, is_read, requires_response,
+                                 response_options_json, priority, category)
+            VALUES (?, 'agent', ?, 'user', ?, ?, ?, 0, 1, ?, 'important', 'transaction')
+        """, (game_date, f"Agent for {player_name}", req.team_id,
+              f"Re: Extension Offer - {player_name}", agent_body, response_opts))
 
     return {
         "accepted": accepted,
@@ -1820,6 +1885,116 @@ async def get_message_categories():
     return get_message_categories(team_id)
 
 
+@app.get("/messages/contacts")
+async def get_message_contacts():
+    """Get available contacts the user can proactively message."""
+    state = query("SELECT user_team_id FROM game_state WHERE id=1")
+    team_id = state[0]["user_team_id"] if state else None
+    if not team_id:
+        return []
+
+    contacts = []
+
+    # 1. Owner
+    try:
+        owner = query("SELECT * FROM owner_characters WHERE team_id=?", (team_id,))
+        if owner:
+            o = owner[0]
+            contacts.append({
+                "id": f"owner_{o['id']}",
+                "name": f"{o['first_name']} {o['last_name']}",
+                "type": "owner",
+                "role": "Team Owner",
+                "description": f"Owner of your team"
+            })
+    except Exception:
+        pass
+
+    # 2. Coaching staff (manager and coaches)
+    try:
+        staff = query("""
+            SELECT * FROM coaching_staff
+            WHERE team_id=? AND is_available=0
+        """, (team_id,))
+        for s in (staff or []):
+            role_label = s['role'].replace('_', ' ').title()
+            contacts.append({
+                "id": f"coach_{s['id']}",
+                "name": f"{s['first_name']} {s['last_name']}",
+                "type": "coach",
+                "role": role_label,
+                "description": f"{role_label} - {s.get('philosophy', 'balanced')} approach"
+            })
+    except Exception:
+        pass
+
+    # 3. Beat writers covering user's team (or national writers with team_id IS NULL)
+    try:
+        writers = query("""
+            SELECT * FROM beat_writers
+            WHERE (team_id=? OR team_id IS NULL) AND is_active=1
+        """, (team_id,))
+        for w in (writers or []):
+            contacts.append({
+                "id": f"writer_{w['id']}",
+                "name": w['name'],
+                "type": "reporter",
+                "role": f"Beat Writer - {w['outlet']}",
+                "description": f"{w.get('personality', 'analyst').title()} writer at {w['outlet']}"
+            })
+    except Exception:
+        pass
+
+    # 4. Rival GMs (other teams)
+    try:
+        teams = query("SELECT id, city, name FROM teams WHERE id != ?", (team_id,))
+        for t in (teams or []):
+            contacts.append({
+                "id": f"gm_{t['id']}",
+                "name": f"GM {t['city']} {t['name']}",
+                "type": "gm",
+                "role": f"General Manager",
+                "description": f"{t['city']} {t['name']} front office"
+            })
+    except Exception:
+        pass
+
+    # 5. Player agents (generic contacts)
+    try:
+        agents = query("SELECT DISTINCT id, name, agency_name, personality FROM player_agents LIMIT 10")
+        if agents:
+            for a in agents:
+                contacts.append({
+                    "id": f"agent_{a['id']}",
+                    "name": a['name'],
+                    "type": "agent",
+                    "role": f"Player Agent - {a.get('agency_name', 'Sports Agency')}",
+                    "description": f"Agent at {a.get('agency_name', 'Sports Agency')}"
+                })
+        else:
+            # Fallback generic agents if no player_agents table
+            for i, name in enumerate(["Mike Sullivan", "Rachel Torres", "David Kim"], 1):
+                contacts.append({
+                    "id": f"agent_{i}",
+                    "name": name,
+                    "type": "agent",
+                    "role": "Player Agent",
+                    "description": "Player agent - free agency and contracts"
+                })
+    except Exception:
+        # Fallback generic agents
+        for i, name in enumerate(["Mike Sullivan", "Rachel Torres", "David Kim"], 1):
+            contacts.append({
+                "id": f"agent_{i}",
+                "name": name,
+                "type": "agent",
+                "role": "Player Agent",
+                "description": "Player agent - free agency and contracts"
+            })
+
+    return contacts
+
+
 @app.get("/messages/{team_id}")
 async def get_team_messages(team_id: int, unread_only: bool = False, priority: str = None):
     """Get messages for a specific team."""
@@ -1851,22 +2026,29 @@ class MessageSend(BaseModel):
     recipient_type: str = "system"
     recipient_id: int = 0
     reply_to_id: int = None
+    recipient_name: str = None
+    subject: str = None
     body: str
 
 @app.post("/messages/send")
 async def send_user_message(msg: MessageSend):
-    """Send a message (reply) to a GM, owner, or agent."""
+    """Send a message (reply or new) to a GM, owner, agent, coach, or reporter."""
+    import random as _rnd
     state = query("SELECT * FROM game_state WHERE id=1")
     game_date = state[0]["current_date"] if state else "2026-02-14"
     team_id = state[0]["user_team_id"] if state else 0
 
+    subject = msg.subject
+    is_new_message = msg.reply_to_id is None and msg.recipient_name
+
     # If replying, get the original message's sender info
-    subject = None
     if msg.reply_to_id:
         orig = query("SELECT sender_name, subject FROM messages WHERE id=?", (msg.reply_to_id,))
         if orig:
-            subject = f"Re: {orig[0]['subject']}" if orig[0].get('subject') else None
+            if not subject:
+                subject = f"Re: {orig[0]['subject']}" if orig[0].get('subject') else None
 
+    # Store the user's outgoing message
     execute("""
         INSERT INTO messages (game_date, sender_type, sender_name, sender_id,
             recipient_type, recipient_id, subject, body, is_read)
@@ -1874,7 +2056,70 @@ async def send_user_message(msg: MessageSend):
     """, (game_date, team_id, msg.recipient_type, msg.recipient_id,
           subject, msg.body))
 
-    return {"sent": True, "message": "Message sent"}
+    # For NEW messages (not replies), generate an AI response from the character
+    ai_response = None
+    if is_new_message and msg.recipient_name:
+        recipient_name = msg.recipient_name
+        rtype = msg.recipient_type
+
+        # Template-based response system keyed by character type
+        _owner_responses = [
+            "I appreciate you reaching out. Let me think about this and get back to you.",
+            "Good to hear from you. I've been meaning to discuss this. Let me review the situation and we'll talk soon.",
+            "Noted. I'll have my people look into this. We'll circle back shortly.",
+            "I read your message. This is important to me too. Let's schedule a sit-down this week.",
+            "Thanks for being proactive on this. That's what I like to see from my GM. I'll review and respond.",
+        ]
+        _coach_responses = [
+            "Got your message, skip. I'll take a look at what we've got and get back to you with my thoughts.",
+            "Appreciate you looping me in. Let me talk to my staff and we'll have some ideas for you.",
+            "Good thinking. I've been mulling over something similar. Let me put together my thoughts.",
+            "Roger that. I'll work on this during practice and have something for you by end of day.",
+            "Thanks for reaching out. I'll review the numbers and the film and get you my recommendation.",
+        ]
+        _gm_responses = [
+            "Hey, thanks for reaching out. Always good to keep the lines of communication open. Let me think about what we might be able to do here.",
+            "Interesting. I've been looking at my roster too. Let me see what makes sense on our end and I'll get back to you.",
+            "Got your message. I'm open to talking, but I'll need to run things by my analytics department first.",
+            "Appreciate the call. We might have some mutual interests here. Let me crunch some numbers and circle back.",
+            "Hey, good to hear from you. Let me see what pieces we might be willing to move and we'll chat.",
+        ]
+        _reporter_responses = [
+            "Thanks for the tip. I'll look into this and see if there's a story here. Off the record for now?",
+            "Interesting. I've been hearing some rumblings about this too. Let me do some digging.",
+            "Appreciate you reaching out. I'll keep this between us for now. Any chance we can set up a more formal interview?",
+            "Got it. This could make for a great piece. I'll fact-check a few things and may follow up with questions.",
+            "On the record or off? Either way, thanks for the heads up. I'll see what I can confirm from other sources.",
+        ]
+        _agent_responses = [
+            "Thanks for reaching out. I'm always happy to discuss opportunities for my clients.",
+            "Good to hear from you. Let me check my client list and see who might be a fit for what you need.",
+            "Appreciate the proactive approach. Most GMs wait for me to call them. What specifically are you looking for?",
+            "Got your message. I may have some clients who'd be interested. Let me make some calls.",
+            "Hey, thanks for thinking of us. Let me review the situation and get back to you with some options.",
+        ]
+
+        response_map = {
+            "owner": _owner_responses,
+            "coach": _coach_responses,
+            "gm": _gm_responses,
+            "reporter": _reporter_responses,
+            "agent": _agent_responses,
+        }
+
+        templates = response_map.get(rtype, _gm_responses)
+        ai_response = _rnd.choice(templates)
+
+        # Insert the AI character's response as a separate message
+        response_subject = f"Re: {subject}" if subject else "Re: Your message"
+        execute("""
+            INSERT INTO messages (game_date, sender_type, sender_name, sender_id,
+                recipient_type, recipient_id, subject, body, is_read, priority, category)
+            VALUES (?, ?, ?, ?, 'user', ?, ?, ?, 0, 'normal', 'general')
+        """, (game_date, rtype, recipient_name, msg.recipient_id,
+              team_id, response_subject, ai_response))
+
+    return {"sent": True, "message": "Message sent", "ai_response": ai_response}
 
 
 # ============================================================
@@ -5822,7 +6067,19 @@ async def update_fan_sentiments():
 
 @app.get("/player/{player_id}/portrait")
 async def get_player_portrait(player_id: int):
-    """Return SVG portrait for a player, generating one if needed."""
+    """Return portrait for a player. Real players get MLB headshot redirect; generated players get SVG."""
+    from fastapi.responses import Response, RedirectResponse
+
+    # Check if this is a real MLB player with an mlb_id
+    try:
+        player = query("SELECT mlb_id FROM players WHERE id=?", (player_id,))
+        if player and player[0].get("mlb_id"):
+            mlb_id = player[0]["mlb_id"]
+            headshot_url = f"https://img.mlbstatic.com/mlb-photos/image/upload/d_people:generic:headshot:67:current.png/w_213,q_auto:best/v1/people/{mlb_id}/headshot/67/current"
+            return RedirectResponse(url=headshot_url, status_code=302)
+    except Exception:
+        pass  # Fall through to SVG portrait
+
     from ..ai.player_portraits import get_portrait, regenerate_portrait
 
     svg = get_portrait(player_id)
@@ -5830,7 +6087,6 @@ async def get_player_portrait(player_id: int):
         svg = regenerate_portrait(player_id)
     if not svg:
         raise HTTPException(404, "Player not found")
-    from fastapi.responses import Response
     return Response(content=svg, media_type="image/svg+xml")
 
 

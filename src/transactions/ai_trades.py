@@ -13,6 +13,7 @@ import json
 import random
 from datetime import date
 from ..database.db import get_connection, query, execute
+from ..ai.proactive_messaging import send_trade_reaction_messages
 
 
 def _row_get(row, key, default=None):
@@ -913,6 +914,23 @@ def accept_trade_offer(message_id: int, db_path: str = None) -> dict:
 
     conn.commit()
     conn.close()
+
+    # Trigger beat writer and owner reactions
+    try:
+        user_team_name = f"{team2_info['city']} {team2_info['name']}" if team2_info else "Your Team"
+        other_team_name = f"{team1_info['city']} {team1_info['name']}" if team1_info else "Other Team"
+
+        trade_reaction_details = {
+            "offered_names": requested_names,   # What the user gave up
+            "requested_names": offered_names,    # What the user received
+            "team_name": user_team_name,
+            "other_team_name": other_team_name,
+        }
+        send_trade_reaction_messages(
+            receiving_team_id, game_date, trade_reaction_details, db_path=db_path
+        )
+    except Exception:
+        pass  # Don't let reaction failures break trade acceptance
 
     return {
         "success": True,

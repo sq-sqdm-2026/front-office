@@ -6,6 +6,7 @@ reach out to the user/GM based on game events.
 Each character type has trigger conditions and personality-driven message
 templates. A cooldown system prevents message spam.
 """
+import json
 import random
 from datetime import date as dt_date, timedelta
 from ..database.db import query, execute
@@ -25,6 +26,112 @@ BEAT_WRITER_COOLDOWN_DAYS = 5
 # ============================================================
 # PUBLIC API
 # ============================================================
+
+def send_trade_reaction_messages(team_id: int, game_date: str,
+                                  trade_details: dict,
+                                  db_path: str = None) -> list:
+    """
+    Send beat writer and owner reaction messages after a trade is executed.
+
+    Args:
+        team_id: The user's team ID
+        game_date: Current game date string
+        trade_details: Dict with keys: offered_names, requested_names,
+                       team_name, other_team_name
+        db_path: Database path
+
+    Returns list of messages sent.
+    """
+    sent = []
+    _ensure_table_exists(db_path)
+
+    offered_names = trade_details.get("offered_names", [])
+    requested_names = trade_details.get("requested_names", [])
+    team_name = trade_details.get("team_name", "your team")
+    other_team_name = trade_details.get("other_team_name", "the other team")
+
+    offered_str = ", ".join(offered_names) if offered_names else "players"
+    requested_str = ", ".join(requested_names) if requested_names else "players"
+
+    # --- Beat writer reaction ---
+    writer_name = random.choice(BEAT_WRITER_NAMES)
+
+    beat_writer_templates = [
+        (f"Breaking: {team_name} has traded {offered_str} to {other_team_name} "
+         f"in exchange for {requested_str}. This is a big move. "
+         "Any comment for the fans on the thinking behind this deal?"),
+        (f"Just got word on the {offered_str}-for-{requested_str} trade with "
+         f"{other_team_name}. My readers are going to want to hear from you on this one. "
+         "What's the message to the fanbase?"),
+        (f"The trade wires are buzzing. {offered_str} headed to {other_team_name}, "
+         f"{requested_str} coming back. I'm filing my story in an hour - "
+         "can I get a quote from the GM?"),
+    ]
+
+    beat_body = random.choice(beat_writer_templates)
+
+    response_options = {
+        "options": [
+            "I'm excited about what this means for our future",
+            "No comment",
+            "We felt this was the best move for the organization",
+        ]
+    }
+
+    # Send beat writer message with response options
+    execute("""
+        INSERT INTO messages (game_date, sender_type, sender_name, recipient_type,
+                             recipient_id, subject, body, is_read, requires_response,
+                             response_options_json)
+        VALUES (?, ?, ?, 'user', ?, ?, ?, 0, 1, ?)
+    """, (game_date, "reporter", f"{writer_name} (Beat Writer)", team_id,
+          f"Trade Reaction: {offered_str} for {requested_str}",
+          beat_body, json.dumps(response_options)), db_path=db_path)
+
+    sent.append({"character_type": "beat_writer", "trigger": "trade_reaction",
+                "character_name": writer_name})
+
+    # --- Owner reaction ---
+    owner = query("SELECT * FROM owner_characters WHERE team_id=?",
+                  (team_id,), db_path=db_path)
+    if owner:
+        owner = owner[0]
+        owner_name = f"{owner['first_name']} {owner['last_name']}"
+
+        # Determine tone: positive if team acquired more players than it gave up,
+        # or concerned if it gave up more
+        gave_up_count = len(offered_names)
+        got_back_count = len(requested_names)
+
+        if got_back_count >= gave_up_count:
+            owner_templates = [
+                (f"I like this deal. Bringing in {requested_str} shows we're serious "
+                 f"about competing. Good work."),
+                (f"I just heard about the trade. {requested_str} - that's the kind of "
+                 f"player who puts fans in seats. Well done."),
+                (f"Nice move getting {requested_str}. I trust your judgment on this one. "
+                 f"Let's make it count."),
+            ]
+        else:
+            owner_templates = [
+                (f"I see we gave up {offered_str} to get {requested_str}. "
+                 f"That's a lot of talent going out the door. I hope you know what you're doing."),
+                (f"Just saw the trade. Giving up {offered_str} makes me nervous. "
+                 f"I need {requested_str} to be worth it. Don't let me down."),
+                (f"That's a bold move trading {offered_str}. The fans liked those guys. "
+                 f"{requested_str} better produce."),
+            ]
+
+        owner_body = random.choice(owner_templates)
+        _send_character_message(
+            team_id, "owner", owner_name, "About the Trade",
+            owner_body, game_date, db_path
+        )
+        sent.append({"character_type": "owner", "trigger": "trade_reaction",
+                    "character_name": owner_name})
+
+    return sent
+
 
 def check_and_send_proactive_messages(team_id: int, game_date: str,
                                        db_path: str = None) -> list:
