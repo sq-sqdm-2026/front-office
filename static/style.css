@@ -3431,6 +3431,20 @@ tr.standings-playoff:hover {
   border-left: 3px solid var(--accent);
   background: var(--bg-hover);
 }
+.news-preview {
+  font-size: 13px;
+  color: var(--text-tertiary);
+  line-height: 1.5;
+}
+.news-body-full {
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.7;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-light);
+}
+.news-card.clickable { cursor: pointer; }
 .news-podcast-preview {
   white-space: pre-wrap;
   font-family: var(--font-body);

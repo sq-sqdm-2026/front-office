@@ -5633,6 +5633,17 @@ async def api_mark_podcast_read(episode_id: int):
     return {"success": True}
 
 
+@app.post("/podcast/{episode_id}/audio")
+async def api_generate_podcast_audio(episode_id: int):
+    """Generate MP3 audio from podcast script using macOS text-to-speech."""
+    from ..ai.podcast_audio import generate_podcast_audio
+    result = await generate_podcast_audio(episode_id)
+    if result["success"]:
+        return result
+    else:
+        raise HTTPException(500, result.get("error", "Audio generation failed"))
+
+
 @app.get("/news/feed")
 async def get_news_feed(limit: int = 30):
     """Aggregated news feed from all sources - articles, TV segments, podcasts, transactions."""

@@ -561,12 +561,15 @@
       <div id="s-news" class="content-screen">
         <div class="section-bar">
           <span class="section-title">News & Media</span>
-          <div style="display:flex;gap:6px;">
+          <div style="display:flex;gap:6px;align-items:center">
             <button class="tab-btn active" onclick="loadNews('all')" id="news-tab-all">All</button>
             <button class="tab-btn" onclick="loadNews('article')" id="news-tab-article">Articles</button>
             <button class="tab-btn" onclick="loadNews('tv_segment')" id="news-tab-tv">TV</button>
             <button class="tab-btn" onclick="loadNews('podcast')" id="news-tab-podcast">Podcast</button>
             <button class="tab-btn" onclick="loadNews('transaction')" id="news-tab-txn">Transactions</button>
+            <span style="border-left:1px solid var(--border);height:20px;margin:0 4px"></span>
+            <button class="tab-btn active" onclick="setNewsScope('all')" id="news-scope-all">All Teams</button>
+            <button class="tab-btn" onclick="setNewsScope('local')" id="news-scope-local">My Team</button>
           </div>
         </div>
         <div id="news-feed"></div>

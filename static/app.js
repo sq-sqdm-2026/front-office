@@ -6938,6 +6938,16 @@ async function init() {
 let newsFeedData = [];
 let newsFilter = 'all';
 
+let newsScope = 'all'; // 'all' or 'local'
+
+function setNewsScope(scope) {
+  newsScope = scope;
+  document.querySelectorAll('[id^="news-scope-"]').forEach(t => t.classList.remove('active'));
+  const btn = document.getElementById('news-scope-' + scope);
+  if (btn) btn.classList.add('active');
+  loadNews(newsFilter);
+}
+
 async function loadNews(filter) {
   newsFilter = filter || 'all';
 
@@ -6949,7 +6959,18 @@ async function loadNews(filter) {
   const feed = await api('/news/feed?limit=50') || [];
   newsFeedData = feed;
 
-  const filtered = newsFilter === 'all' ? feed : feed.filter(f => f.type === newsFilter);
+  let filtered = newsFilter === 'all' ? feed : feed.filter(f => f.type === newsFilter);
+
+  // Local/national filter
+  if (newsScope === 'local' && STATE.userTeamId) {
+    const teamAbbr = STATE.teamAbbr || '';
+    const teamName = STATE.teamName || '';
+    filtered = filtered.filter(f =>
+      (f.team_id && f.team_id === STATE.userTeamId) ||
+      (f.headline && (f.headline.includes(teamAbbr) || f.headline.includes(teamName))) ||
+      (f.body && (f.body.includes(teamAbbr) || f.body.includes(teamName)))
+    );
+  }
 
   const el = document.getElementById('news-feed');
   if (!filtered.length) {
@@ -6970,37 +6991,52 @@ function renderArticleCard(item) {
   const sentimentIcon = item.sentiment === 'positive' ? '\u{1F4C8}' :
                         item.sentiment === 'negative' ? '\u{1F4C9}' :
                         item.sentiment === 'critical' ? '\u{1F525}' : '\u{1F4F0}';
-  return `<div class="news-card news-article">
+  const preview = (item.body || '').slice(0, 120) + '...';
+  const uid = 'art-' + Math.random().toString(36).slice(2, 8);
+  return `<div class="news-card news-article clickable" onclick="toggleNewsBody('${uid}')">
     <div class="news-card-header">
       <span class="news-source">${sentimentIcon} ${item.source || 'News'}</span>
       <span class="news-date">${item.date}</span>
     </div>
     <div class="news-headline">${item.headline}</div>
     <div class="news-byline">By ${item.author}</div>
-    <div class="news-body">${item.body}</div>
+    <div class="news-preview" id="${uid}-preview">${preview}</div>
+    <div class="news-body-full" id="${uid}-full" style="display:none">${item.body}</div>
   </div>`;
 }
 
 function renderTVCard(item) {
-  return `<div class="news-card news-tv">
+  const uid = 'tv-' + Math.random().toString(36).slice(2, 8);
+  return `<div class="news-card news-tv clickable" onclick="toggleNewsBody('${uid}')">
     <div class="news-card-header">
       <span class="news-network-badge">${item.source || 'ESPN'}</span>
       <span class="news-date">${item.date}</span>
     </div>
     <div class="news-headline">${item.headline}</div>
     <div class="news-byline">${item.author} \u2014 ${item.segment_type || 'Analysis'}</div>
-    <div class="news-body">${item.body}</div>
+    <div class="news-preview" id="${uid}-preview">${(item.body || '').slice(0, 120)}...</div>
+    <div class="news-body-full" id="${uid}-full" style="display:none">${item.body}</div>
   </div>`;
 }
 
 function renderPodcastCard(item) {
+  const uid = 'pod-' + Math.random().toString(36).slice(2, 8);
+  const scriptPreview = (item.body || '').split('\n').slice(0, 3).join('\n');
   return `<div class="news-card news-podcast">
     <div class="news-card-header">
       <span class="news-source">\u{1F399}\uFE0F ${item.source}</span>
       <span class="news-date">${item.date}</span>
     </div>
-    <div class="news-headline">Episode ${item.episode || '?'}: ${item.headline}</div>
-    <div class="news-body news-podcast-preview">${item.body}</div>
+    <div class="news-headline clickable" onclick="toggleNewsBody('${uid}')">Episode ${item.episode || '?'}: ${item.headline}</div>
+    <div style="display:flex;gap:8px;margin:8px 0">
+      <button class="btn btn-sm btn-primary" onclick="event.stopPropagation();generatePodcastAudio(${item.episode_id || 0})">
+        \u{1F50A} Generate Audio
+      </button>
+      <button class="btn btn-sm" onclick="event.stopPropagation();toggleNewsBody('${uid}')">
+        Read Script
+      </button>
+    </div>
+    <div class="news-body-full" id="${uid}-full" style="display:none;white-space:pre-wrap;font-family:var(--font-mono);font-size:12px;max-height:400px;overflow-y:auto">${item.body}</div>
   </div>`;
 }
 
@@ -7013,6 +7049,33 @@ function renderTransactionCard(item) {
     <div class="news-headline">${item.headline}</div>
     <div class="news-body">${item.body}</div>
   </div>`;
+}
+
+function toggleNewsBody(uid) {
+  const preview = document.getElementById(uid + '-preview');
+  const full = document.getElementById(uid + '-full');
+  if (!full) return;
+  if (full.style.display === 'none') {
+    full.style.display = 'block';
+    if (preview) preview.style.display = 'none';
+  } else {
+    full.style.display = 'none';
+    if (preview) preview.style.display = 'block';
+  }
+}
+
+async function generatePodcastAudio(episodeId) {
+  if (!episodeId) { showToast('No episode ID', 'error'); return; }
+  showToast('Generating audio... this takes a minute', 'info');
+  const r = await post('/podcast/' + episodeId + '/audio', {});
+  if (r?.success) {
+    showToast('Audio ready!', 'success');
+    // Create audio player
+    const audio = new Audio(r.download_url);
+    audio.play();
+  } else {
+    showToast(r?.error || r?.detail || 'Audio generation failed', 'error');
+  }
 }
 
 // ============================================================
