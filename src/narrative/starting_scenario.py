@@ -263,12 +263,20 @@ def select_starting_team(team_id: int, db_path: str = None) -> dict:
                 db_path=db_path,
             )
 
-    # 3. Initialize owner_characters row if not already present
+    # 3. Initialize or update owner_characters row with correct scenario owner
     existing_owner = query(
         "SELECT id FROM owner_characters WHERE team_id=?",
         (team_id,),
         db_path=db_path,
     )
+    # Always update with scenario owner name (seeder uses random names)
+    if existing_owner and raw_scenario:
+        name_parts = raw_scenario["owner_name"].split(" ", 1)
+        execute(
+            "UPDATE owner_characters SET first_name=?, last_name=? WHERE team_id=?",
+            (name_parts[0], name_parts[1] if len(name_parts) > 1 else "", team_id),
+            db_path=db_path,
+        )
     if not existing_owner and raw_scenario:
         import json
         name_parts = raw_scenario["owner_name"].split(" ", 1)
@@ -313,5 +321,55 @@ def select_starting_team(team_id: int, db_path: str = None) -> dict:
             ),
             db_path=db_path,
         )
+
+    # 5. Beat reporter welcome message
+    team_data = query("SELECT city, name FROM teams WHERE id=?", (team_id,), db_path=db_path)
+    team_city = team_data[0]["city"] if team_data else "the city"
+    team_name = team_data[0]["name"] if team_data else "the team"
+    owner_name_str = raw_scenario["owner_name"] if raw_scenario else "the owner"
+
+    reporter_names = ["Chris Martinez", "Sarah Kim", "Mike O'Brien", "Rachel Torres", "James Wright"]
+    import random
+    reporter = random.choice(reporter_names)
+    execute(
+        """INSERT INTO messages
+           (game_date, sender_type, sender_name, recipient_type,
+            recipient_id, subject, body, is_read, requires_response,
+            priority, category)
+           VALUES ('2026-02-14', 'reporter', ?, 'user', ?, ?, ?, 0, 0, 'normal', 'general')""",
+        (
+            f"{reporter} (Beat Writer)",
+            team_id,
+            f"New GM in Town",
+            f"Hey, {reporter} here — I cover the {team_city} {team_name} for the Daily Tribune. "
+            f"Just heard {owner_name_str} brought you in. Interesting hire. You're not exactly "
+            f"the traditional baseball exec, which is either going to be refreshing or a disaster. "
+            f"I'll be fair but I won't sugarcoat things. Looking forward to watching how this plays out. "
+            f"Welcome to {team_city}.",
+        ),
+        db_path=db_path,
+    )
+
+    # 6. Owner budget communication
+    budget = query("SELECT payroll_budget FROM teams WHERE id=?", (team_id,), db_path=db_path)
+    budget_val = budget[0]["payroll_budget"] if budget and budget[0].get("payroll_budget") else 80_000_000
+    execute(
+        """INSERT INTO messages
+           (game_date, sender_type, sender_name, recipient_type,
+            recipient_id, subject, body, is_read, requires_response,
+            priority, category)
+           VALUES ('2026-02-14', 'owner', ?, 'user', ?, ?, ?, 0, 0, 'important', 'general')""",
+        (
+            raw_scenario["owner_name"] if raw_scenario else "Owner",
+            team_id,
+            "Budget Expectations",
+            f"One more thing — let's talk money. I've set the payroll budget at "
+            f"${budget_val:,.0f} for this season. That's what I'm comfortable with. "
+            f"You can find the details in the Finances tab. "
+            f"I understand you might need to make moves, but keep me in the loop if "
+            f"you're going to push past that number significantly.",
+        ),
+        db_path=db_path,
+    )
 
     return scenario

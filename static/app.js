@@ -4872,7 +4872,7 @@ function renderMessageConversation(msg) {
     <div class="msg-item priority-${priority}">
       <span class="msg-from">${msg.sender_name || 'System'}</span>
       <span class="msg-date">${msg.game_date || ''}</span>
-      <div class="msg-body" style="margin-top:8px; white-space:pre-wrap;">${msg.body || ''}</div>
+      <div class="msg-body" style="margin-top:8px; white-space:pre-wrap;">${linkifyTradeMessage(msg)}</div>
       ${responseHtml}
     </div>`;
 
@@ -4884,6 +4884,37 @@ function renderMessageConversation(msg) {
     (msg.requires_response && !msg.response_options_json);
   if (inputArea) {
     inputArea.style.display = showInput ? 'flex' : 'none';
+  }
+}
+
+function linkifyTradeMessage(msg) {
+  let body = msg.body || '';
+  if (!msg.response_options_json) return body;
+  try {
+    const opts = typeof msg.response_options_json === 'string' ? JSON.parse(msg.response_options_json) : msg.response_options_json;
+    const trade = opts.trade_data;
+    if (!trade) return body;
+    // Collect all player IDs from the trade
+    const playerIds = [...(trade.offered_player_ids || []), ...(trade.requested_player_ids || [])];
+    if (trade.target_player_id) playerIds.push(trade.target_player_id);
+    // Replace player names with clickable links
+    // Pattern: "- PlayerName (Position, age N)"
+    body = body.replace(/- ([A-Z][a-záéíóú]+ [A-Z][a-záéíóú]+(?:\s[A-Z][a-z]+)?)\s*\((\w+),\s*age\s*(\d+)\)/g,
+      (match, name, pos, age) => {
+        // Try to find matching player ID
+        return `- <span class="clickable" style="color:var(--accent);text-decoration:underline;cursor:pointer" onclick="findAndShowPlayer('${name}')">${name}</span> (${pos}, age ${age})`;
+      });
+  } catch (e) {}
+  return body;
+}
+
+async function findAndShowPlayer(name) {
+  const parts = name.split(' ');
+  const data = await api('/players/search?q=' + encodeURIComponent(name));
+  if (data && data.length > 0) {
+    showPlayer(data[0].id);
+  } else {
+    showToast('Player not found: ' + name, 'error');
   }
 }
 
