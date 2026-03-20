@@ -1647,6 +1647,12 @@ async def extend_contract(req: ContractExtensionRequest):
 # ============================================================
 # COACHING STAFF
 # ============================================================
+@app.get("/coaching-staff/available")
+async def get_available_coaches_endpoint(role: str = None):
+    """Get available free agent coaches."""
+    from ..transactions.coaching import get_available_coaches
+    return get_available_coaches(role)
+
 @app.get("/coaching-staff/{team_id}")
 async def get_team_coaching_staff(team_id: int):
     """Get coaching staff for a team."""
@@ -1654,12 +1660,6 @@ async def get_team_coaching_staff(team_id: int):
     staff = get_coaching_staff(team_id)
     impact = get_coaching_impact(team_id)
     return {"staff": staff or [], "impact": impact}
-
-@app.get("/coaching-staff/available")
-async def get_available_coaches_endpoint(role: str = None):
-    """Get available free agent coaches."""
-    from ..transactions.coaching import get_available_coaches
-    return get_available_coaches(role)
 
 @app.post("/coaching-staff/{team_id}/hire/{coach_id}")
 async def hire_coach_endpoint(team_id: int, coach_id: int):
@@ -1848,23 +1848,33 @@ async def mark_message_read(message_id: int):
 
 
 class MessageSend(BaseModel):
-    recipient_type: str  # gm, owner
-    recipient_id: int
+    recipient_type: str = "system"
+    recipient_id: int = 0
+    reply_to_id: int = None
     body: str
 
 @app.post("/messages/send")
 async def send_user_message(msg: MessageSend):
-    """Send a message to a GM or owner."""
+    """Send a message (reply) to a GM, owner, or agent."""
     state = query("SELECT * FROM game_state WHERE id=1")
-    game_date = state[0]["current_date"] if state else "2025-03-27"
+    game_date = state[0]["current_date"] if state else "2026-02-14"
+    team_id = state[0]["user_team_id"] if state else 0
+
+    # If replying, get the original message's sender info
+    subject = None
+    if msg.reply_to_id:
+        orig = query("SELECT sender_name, subject FROM messages WHERE id=?", (msg.reply_to_id,))
+        if orig:
+            subject = f"Re: {orig[0]['subject']}" if orig[0].get('subject') else None
 
     execute("""
-        INSERT INTO messages (game_date, sender_type, sender_name,
-            recipient_type, recipient_id, body)
-        VALUES (?, 'user', 'You', ?, ?, ?)
-    """, (game_date, msg.recipient_type, msg.recipient_id, msg.body))
+        INSERT INTO messages (game_date, sender_type, sender_name, sender_id,
+            recipient_type, recipient_id, subject, body, is_read)
+        VALUES (?, 'user', 'You', ?, ?, ?, ?, ?, 1)
+    """, (game_date, team_id, msg.recipient_type, msg.recipient_id,
+          subject, msg.body))
 
-    return {"sent": True}
+    return {"sent": True, "message": "Message sent"}
 
 
 # ============================================================

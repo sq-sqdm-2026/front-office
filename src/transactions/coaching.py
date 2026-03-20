@@ -33,7 +33,7 @@ def generate_coach(role: str, quality: str = "average") -> dict:
         "role": role,
         "age": random.randint(38, 72),
         "experience": random.randint(1, 30),
-        "skill_rating": random.randint(low, high),
+        "reputation": random.randint(low, high),
         "philosophy": random.choice(["aggressive", "balanced", "conservative", "analytics"]),
         "specialty": random.choice([None, "player_development", "game_strategy", "pitching_mechanics", "hitting_approach"]),
         "salary": random.randint(500000, 3000000),
@@ -52,10 +52,10 @@ def seed_coaching_staff(db_path: str = None):
             coach = generate_coach(role)
             execute("""
                 INSERT INTO coaching_staff (team_id, role, first_name, last_name, age, experience,
-                    skill_rating, philosophy, specialty, salary, contract_years, is_available)
+                    reputation, philosophy, specialty, salary, contract_years, is_available)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
             """, (team["id"], coach["role"], coach["first_name"], coach["last_name"],
-                  coach["age"], coach["experience"], coach["skill_rating"],
+                  coach["age"], coach["experience"], coach["reputation"],
                   coach["philosophy"], coach["specialty"], coach["salary"],
                   coach["contract_years"]), db_path=db_path)
 
@@ -65,10 +65,10 @@ def seed_coaching_staff(db_path: str = None):
         coach = generate_coach(role)
         execute("""
             INSERT INTO coaching_staff (team_id, role, first_name, last_name, age, experience,
-                skill_rating, philosophy, specialty, salary, contract_years, is_available)
+                reputation, philosophy, specialty, salary, contract_years, is_available)
             VALUES (0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
         """, (coach["role"], coach["first_name"], coach["last_name"],
-              coach["age"], coach["experience"], coach["skill_rating"],
+              coach["age"], coach["experience"], coach["reputation"],
               coach["philosophy"], coach["specialty"], coach["salary"],
               coach["contract_years"]), db_path=db_path)
 
@@ -85,9 +85,9 @@ def get_coaching_staff(team_id: int, db_path: str = None) -> list:
 def get_available_coaches(role: str = None, db_path: str = None) -> list:
     """Get available free agent coaches."""
     if role:
-        return query("SELECT * FROM coaching_staff WHERE is_available=1 AND role=? ORDER BY skill_rating DESC",
+        return query("SELECT * FROM coaching_staff WHERE is_available=1 AND role=? ORDER BY reputation DESC",
                      (role,), db_path=db_path)
-    return query("SELECT * FROM coaching_staff WHERE is_available=1 ORDER BY skill_rating DESC", db_path=db_path)
+    return query("SELECT * FROM coaching_staff WHERE is_available=1 ORDER BY reputation DESC", db_path=db_path)
 
 def hire_coach(team_id: int, coach_id: int, db_path: str = None) -> dict:
     """Hire a free agent coach."""
@@ -107,7 +107,7 @@ def hire_coach(team_id: int, coach_id: int, db_path: str = None) -> dict:
 
 def fire_coach(team_id: int, coach_id: int, db_path: str = None) -> dict:
     """Fire a coach (makes them available)."""
-    execute("UPDATE coaching_staff SET team_id=0, is_available=1 WHERE id=? AND team_id=?",
+    execute("UPDATE coaching_staff SET team_id=NULL, is_available=1 WHERE id=? AND team_id=?",
             (coach_id, team_id), db_path=db_path)
     return {"success": True}
 
@@ -123,7 +123,7 @@ def get_coaching_impact(team_id: int, db_path: str = None) -> dict:
     strategy_bonus = 0
 
     for coach in staff:
-        skill = coach["skill_rating"]
+        skill = coach["reputation"]
         bonus = (skill - 50) / 50  # -1 to +0.9 range
 
         if coach["role"] == "manager":
