@@ -894,7 +894,139 @@ def generate_all_daily_articles(game_date: str, db_path: str = None) -> list:
     except Exception:
         pass
 
+    # 4) Ambient league flavor events (rare, immersive color)
+    try:
+        if random.random() < 0.08 and phase == "regular_season":
+            flavor = _generate_league_flavor_article(game_date, db_path)
+            if flavor:
+                all_articles.append(flavor)
+    except Exception:
+        pass
+
     return all_articles
+
+
+# ============================================================
+# AMBIENT LEAGUE FLAVOR
+# ============================================================
+
+LEAGUE_FLAVOR_EVENTS = [
+    {"headline": "{pitcher} Throws No-Hitter for {team}!",
+     "body": "In a masterful performance, {pitcher} of the {team} threw a no-hitter "
+             "against the {opponent}, striking out {so} batters in {innings} innings of work. "
+             "It's the {ordinal} no-hitter in franchise history.",
+     "type": "no_hitter"},
+    {"headline": "{player} Hits Walk-Off Grand Slam for {team}",
+     "body": "{player} of the {team} hit a walk-off grand slam in the bottom of the 9th "
+             "against the {opponent}, capping a dramatic {score} comeback victory. "
+             "The crowd of {crowd} went absolutely wild.",
+     "type": "walk_off"},
+    {"headline": "Benches Clear in {team} vs {opponent} Brawl",
+     "body": "Tempers flared in the {inning} inning when {player} was hit by a pitch "
+             "from {pitcher}. Both benches emptied and several ejections followed. "
+             "The rivalry between the {team} and {opponent} just got a lot more heated.",
+     "type": "brawl"},
+    {"headline": "{player} Extends Hitting Streak to {streak} Games",
+     "body": "{player} of the {team} extended his hitting streak to {streak} games "
+             "with a {hit_type} in the {inning} inning against the {opponent}. "
+             "The streak is the longest in the majors this season.",
+     "type": "hitting_streak"},
+    {"headline": "{manager} Ejected After Animated Argument",
+     "body": "{team} manager {manager} was ejected in the {inning} inning after "
+             "a heated argument with home plate umpire over a called third strike. "
+             "{manager} had to be restrained by coaches before leaving the field.",
+     "type": "ejection"},
+    {"headline": "Rain Delay Drama: {team} Game Suspended",
+     "body": "The game between the {team} and {opponent} was suspended in the "
+             "{inning} inning due to severe weather. The game will resume tomorrow "
+             "with the {team} leading {score}.",
+     "type": "rain_delay"},
+    {"headline": "{player} Collects 5 Hits in {team} Rout",
+     "body": "{player} went 5-for-5 with {rbi} RBI as the {team} routed the "
+             "{opponent} {score}. It's the first 5-hit game for {player} in his career.",
+     "type": "big_game"},
+]
+
+
+def _generate_league_flavor_article(game_date: str, db_path=None):
+    """Generate an ambient league flavor event."""
+    # Pick two random non-user teams
+    teams = query("""
+        SELECT t.id, t.city, t.name, t.abbreviation FROM teams t
+        ORDER BY RANDOM() LIMIT 2
+    """, db_path=db_path)
+    if not teams or len(teams) < 2:
+        return None
+
+    team = teams[0]
+    opp = teams[1]
+    team_name = f"{team['city']} {team['name']}"
+    opp_name = f"{opp['city']} {opp['name']}"
+
+    # Get random players from these teams
+    players = query("""
+        SELECT first_name, last_name, position FROM players
+        WHERE team_id=? AND roster_status='active' ORDER BY RANDOM() LIMIT 3
+    """, (team["id"],), db_path=db_path)
+    opp_players = query("""
+        SELECT first_name, last_name, position FROM players
+        WHERE team_id=? AND roster_status='active' ORDER BY RANDOM() LIMIT 2
+    """, (opp["id"],), db_path=db_path)
+
+    if not players:
+        return None
+
+    p = players[0]
+    player_name = f"{p['first_name']} {p['last_name']}"
+
+    pitchers = [pl for pl in players if pl["position"] in ("SP", "RP")]
+    pitcher_name = f"{pitchers[0]['first_name']} {pitchers[0]['last_name']}" if pitchers else player_name
+    opp_pitcher = f"{opp_players[0]['first_name']} {opp_players[0]['last_name']}" if opp_players else "the pitcher"
+
+    # Get a manager
+    mgr = query("""
+        SELECT first_name, last_name FROM coaching_staff
+        WHERE team_id=? AND role='manager' LIMIT 1
+    """, (team["id"],), db_path=db_path)
+    mgr_name = f"{mgr[0]['first_name']} {mgr[0]['last_name']}" if mgr else "the manager"
+
+    event = random.choice(LEAGUE_FLAVOR_EVENTS)
+
+    context = {
+        "player": player_name, "pitcher": pitcher_name, "team": team_name,
+        "opponent": opp_name, "manager": mgr_name,
+        "so": random.randint(8, 14), "innings": 9,
+        "ordinal": random.choice(["2nd", "3rd", "5th", "7th", "10th"]),
+        "score": f"{random.randint(4, 10)}-{random.randint(1, 3)}",
+        "crowd": f"{random.randint(25, 48)},{random.randint(100, 999):03d}",
+        "inning": random.choice(["3rd", "5th", "6th", "7th", "8th"]),
+        "streak": random.randint(15, 30),
+        "hit_type": random.choice(["single", "double", "line drive single", "ground rule double"]),
+        "rbi": random.randint(2, 5),
+    }
+
+    try:
+        headline = event["headline"].format(**context)
+        body = event["body"].format(**context)
+    except KeyError:
+        return None
+
+    # Get a national writer to attribute it to
+    writer = query(
+        "SELECT * FROM beat_writers WHERE team_id IS NULL ORDER BY RANDOM() LIMIT 1",
+        db_path=db_path,
+    )
+    writer_id = writer[0]["id"] if writer else None
+
+    if writer_id:
+        execute(
+            """INSERT INTO articles (writer_id, team_id, game_date, headline, body,
+               article_type, sentiment) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (writer_id, team["id"], game_date, headline, body, "league_news", "neutral"),
+            db_path=db_path,
+        )
+
+    return {"headline": headline, "body": body, "type": "league_flavor"}
 
 
 def get_all_articles(limit: int = 30, db_path: str = None) -> list:
